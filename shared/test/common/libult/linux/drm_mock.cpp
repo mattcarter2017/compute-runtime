@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,12 +9,14 @@
 
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
+#include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/linux/i915.h"
+#include "shared/source/os_interface/linux/sys_calls.h"
+#include "shared/test/common/helpers/debug_manager_state_restore.h"
 
 #include "gtest/gtest.h"
 
-#include <cmath>
 #include <cstring>
 
 const int DrmMock::mockFd;
@@ -31,6 +33,8 @@ DrmMock::DrmMock(int fd, RootDeviceEnvironment &rootDeviceEnvironment) : Drm(std
         }
     }
 
+    DebugManagerStateRestore restore;
+    debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
     setupIoctlHelper(rootDeviceEnvironment.getHardwareInfo()->platform.eProductFamily);
     if (!isPerContextVMRequired()) {
         createVirtualMemoryAddressSpace(GfxCoreHelper::getSubDevicesCount(rootDeviceEnvironment.getHardwareInfo()));
@@ -42,6 +46,10 @@ DrmMock::DrmMock(int fd, RootDeviceEnvironment &rootDeviceEnvironment) : Drm(std
 }
 
 int DrmMock::handleRemainingRequests(DrmIoctl request, void *arg) {
+    if (request == DrmIoctl::gemWaitUserFence && arg != nullptr) {
+        return 0;
+    }
+
     ioctlCallsCount--;
     return -1;
 };
@@ -93,10 +101,6 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
             *gp->value = this->storedPreemptionSupport;
             return this->storedRetVal;
         }
-        if (gp->param == I915_PARAM_HAS_EXEC_SOFTPIN) {
-            *gp->value = this->storedExecSoftPin;
-            return this->storedRetVal;
-        }
         if (gp->param == I915_PARAM_CS_TIMESTAMP_FREQUENCY) {
             *gp->value = this->storedCsTimestampFrequency;
             return this->storedRetVal;
@@ -124,6 +128,15 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
 
                 return this->storedRetVal;
             }
+        }
+    }
+
+    if ((request == DrmIoctl::perfOpen) && (arg != nullptr)) {
+        ioctlCount.perfOpen++;
+        if (failPerfOpen) {
+            return -1;
+        } else {
+            return NEO::SysCalls::ioctl(mockFd, DRM_IOCTL_I915_PERF_OPEN, arg);
         }
     }
 
@@ -265,7 +278,7 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
         return storedRetValForGemClose;
     }
     if (request == DrmIoctl::getResetStats && arg != nullptr) {
-        ioctlCount.gemResetStats++;
+        ioctlCount.getResetStats++;
         auto outResetStats = static_cast<ResetStats *>(arg);
         for (const auto &resetStats : resetStatsToReturn) {
             if (resetStats.contextId == outResetStats->contextId) {
@@ -283,8 +296,17 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
         auto queryItemArg = reinterpret_cast<QueryItem *>(queryArg->itemsPtr);
         storedQueryItem = *queryItemArg;
 
-        auto realEuCount = std::max(rootDeviceEnvironment.getHardwareInfo()->gtSystemInfo.EUCount, static_cast<uint32_t>(this->storedEUVal));
-        auto dataSize = static_cast<size_t>(std::ceil(realEuCount / 8.0));
+        UNRECOVERABLE_IF((this->storedSVal != 0) && (this->storedSSVal % this->storedSVal != 0));
+        UNRECOVERABLE_IF((this->storedSSVal != 0) && (this->storedEUVal % this->storedSSVal != 0));
+
+        const uint16_t subslicesPerSlice = this->storedSVal ? (this->storedSSVal / this->storedSVal) : 0u;
+        const uint16_t eusPerSubslice = this->storedSSVal ? (this->storedEUVal / this->storedSSVal) : 0u;
+        const uint16_t subsliceOffset = static_cast<uint16_t>(Math::divideAndRoundUp(this->storedSVal, 8u));
+        const uint16_t subsliceStride = static_cast<uint16_t>(Math::divideAndRoundUp(subslicesPerSlice, 8u));
+        const uint16_t euOffset = subsliceOffset + this->storedSVal * subsliceStride;
+        const uint16_t euStride = static_cast<uint16_t>(Math::divideAndRoundUp(eusPerSubslice, 8u));
+
+        const uint16_t dataSize = euOffset + this->storedSSVal * euStride;
 
         if (queryItemArg->length == 0) {
             if (queryItemArg->queryId == DRM_I915_QUERY_TOPOLOGY_INFO) {
@@ -298,13 +320,17 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
                     return -1;
                 }
                 topologyArg->maxSlices = this->storedSVal;
-                topologyArg->maxSubslices = this->storedSVal ? (this->storedSSVal / this->storedSVal) : 0;
-                topologyArg->maxEusPerSubslice = this->storedSSVal ? (this->storedEUVal / this->storedSSVal) : 0;
+                topologyArg->maxSubslices = subslicesPerSlice;
+                topologyArg->maxEusPerSubslice = eusPerSubslice;
+                topologyArg->subsliceOffset = subsliceOffset;
+                topologyArg->subsliceStride = subsliceStride;
+                topologyArg->euOffset = euOffset;
+                topologyArg->euStride = euStride;
 
                 if (this->disableSomeTopology) {
-                    memset(topologyArg->data, 0xCA, dataSize);
+                    memset(topologyArg->data, 0b11000110, dataSize);
                 } else {
-                    memset(topologyArg->data, 0xFF, dataSize);
+                    memset(topologyArg->data, 0b11111111, dataSize);
                 }
 
                 return 0;
@@ -314,9 +340,9 @@ int DrmMock::ioctl(DrmIoctl request, void *arg) {
 
     return handleRemainingRequests(request, arg);
 }
-int DrmMock::waitUserFence(uint32_t ctxIdx, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) {
+int DrmMock::waitUserFence(uint32_t ctxIdx, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
     waitUserFenceParams.push_back({ctxIdx, address, value, dataWidth, timeout, flags});
-    return Drm::waitUserFence(ctxIdx, address, value, dataWidth, timeout, flags);
+    return Drm::waitUserFence(ctxIdx, address, value, dataWidth, timeout, flags, userInterrupt, externalInterruptId, allocForInterruptWait);
 }
 int DrmMockEngine::handleRemainingRequests(DrmIoctl request, void *arg) {
     if ((request == DrmIoctl::query) && (arg != nullptr)) {

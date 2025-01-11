@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -142,6 +142,7 @@ bool CommandQueueHw<Family>::isCacheFlushForBcsRequired() const {
 
 template <typename TSPacketType>
 inline bool waitForTimestampsWithinContainer(TimestampPacketContainer *container, CommandStreamReceiver &csr, WaitStatus &status) {
+    bool printWaitForCompletion = debugManager.flags.LogWaitingForCompletion.get();
     bool waited = false;
     status = WaitStatus::notReady;
 
@@ -149,13 +150,22 @@ inline bool waitForTimestampsWithinContainer(TimestampPacketContainer *container
         auto lastHangCheckTime = std::chrono::high_resolution_clock::now();
         for (const auto &timestamp : container->peekNodes()) {
             for (uint32_t i = 0; i < timestamp->getPacketsUsed(); i++) {
+                if (printWaitForCompletion) {
+                    printf("\nWaiting for TS 0x%" PRIx64, timestamp->getGpuAddress() + (i * timestamp->getSinglePacketSize()));
+                }
                 while (timestamp->getContextEndValue(i) == 1) {
                     csr.downloadAllocation(*timestamp->getBaseGraphicsAllocation()->getGraphicsAllocation(csr.getRootDeviceIndex()));
                     WaitUtils::waitFunctionWithPredicate<const TSPacketType>(static_cast<TSPacketType const *>(timestamp->getContextEndAddress(i)), 1u, std::not_equal_to<TSPacketType>());
                     if (csr.checkGpuHangDetected(std::chrono::high_resolution_clock::now(), lastHangCheckTime)) {
                         status = WaitStatus::gpuHang;
+                        if (printWaitForCompletion) {
+                            printf("\nWaiting for TS failed");
+                        }
                         return false;
                     }
+                }
+                if (printWaitForCompletion) {
+                    printf("\nWaiting for TS completed");
                 }
                 status = WaitStatus::ready;
                 waited = true;
@@ -172,14 +182,16 @@ bool CommandQueueHw<Family>::waitForTimestamps(Range<CopyEngineState> copyEngine
     bool waited = false;
 
     if (isWaitForTimestampsEnabled()) {
-        TakeOwnershipWrapper<CommandQueue> queueOwnership(*this);
-        waited = waitForTimestampsWithinContainer<TSPacketType>(mainContainer, getGpgpuCommandStreamReceiver(), status);
+        {
+            TakeOwnershipWrapper<CommandQueue> queueOwnership(*this);
+            waited = waitForTimestampsWithinContainer<TSPacketType>(mainContainer, getGpgpuCommandStreamReceiver(), status);
+        }
 
         if (waited) {
-            getGpgpuCommandStreamReceiver().downloadAllocations();
+            getGpgpuCommandStreamReceiver().downloadAllocations(true);
             for (const auto &copyEngine : copyEnginesToWait) {
                 auto bcsCsr = getBcsCommandStreamReceiver(copyEngine.engineType);
-                bcsCsr->downloadAllocations();
+                bcsCsr->downloadAllocations(true);
             }
         }
     }
@@ -203,14 +215,30 @@ void CommandQueueHw<Family>::setupBlitAuxTranslation(MultiDispatchInfo &multiDis
 }
 
 template <typename Family>
-bool CommandQueueHw<Family>::isGpgpuSubmissionForBcsRequired(bool queueBlocked, TimestampPacketDependencies &timestampPacketDependencies) const {
+bool CommandQueueHw<Family>::isGpgpuSubmissionForBcsRequired(bool queueBlocked, TimestampPacketDependencies &timestampPacketDependencies, bool containsCrossEngineDependency) const {
     if (queueBlocked || timestampPacketDependencies.barrierNodes.peekNodes().size() > 0u) {
         return true;
     }
+    if (isOOQEnabled()) {
+        return containsCrossEngineDependency;
+    }
 
-    bool required = (latestSentEnqueueType != EnqueueProperties::Operation::blit) &&
-                    (latestSentEnqueueType != EnqueueProperties::Operation::none) &&
-                    (isCacheFlushForBcsRequired() || !(getGpgpuCommandStreamReceiver().getDispatchMode() == DispatchMode::immediateDispatch || getGpgpuCommandStreamReceiver().isLatestTaskCountFlushed()));
+    bool required = false;
+    switch (latestSentEnqueueType) {
+    case NEO::EnqueueProperties::Operation::explicitCacheFlush:
+    case NEO::EnqueueProperties::Operation::enqueueWithoutSubmission:
+    case NEO::EnqueueProperties::Operation::gpuKernel:
+    case NEO::EnqueueProperties::Operation::profilingOnly:
+        required = isCacheFlushForBcsRequired() || !(getGpgpuCommandStreamReceiver().getDispatchMode() == DispatchMode::immediateDispatch || getGpgpuCommandStreamReceiver().isLatestTaskCountFlushed());
+        break;
+    case NEO::EnqueueProperties::Operation::dependencyResolveOnGpu:
+        return true;
+        break;
+    case NEO::EnqueueProperties::Operation::none:
+    case NEO::EnqueueProperties::Operation::blit:
+    default:
+        break;
+    }
 
     if (debugManager.flags.ForceGpgpuSubmissionForBcsEnqueue.get() == 1) {
         required = true;
@@ -229,7 +257,7 @@ void CommandQueueHw<Family>::setupEvent(EventBuilder &eventBuilder, cl_event *ou
         if (eventObj->isProfilingEnabled()) {
             eventObj->setQueueTimeStamp();
 
-            if (isCommandWithoutKernel(cmdType) && cmdType != CL_COMMAND_MARKER) {
+            if (isCommandWithoutKernel(cmdType) && !isFlushForProfilingRequired(cmdType)) {
                 eventObj->setCPUProfilingPath(true);
             }
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -156,16 +156,12 @@ TEST_F(FabricVertexFixture, givenFabricVerticesAreCreatedWhenzeFabricVertexGetPr
     }
 }
 
-TEST(FabricEngineInstanceTest, GivenEngineInstancedDeviceWhenFabricVerticesAreCreatedThenSkipCreationForEngineInstanced) {
+TEST(FabricEngineInstanceTest, GivenSubDeviceWhenFabricVerticesAreCreatedThenSkipCreationForSubDevice) {
 
     auto hwInfo = *NEO::defaultHwInfo.get();
     auto executionEnvironment = NEO::MockDevice::prepareExecutionEnvironment(&hwInfo, 0u);
     std::vector<std::unique_ptr<NEO::Device>> devices(1);
     devices[0].reset(static_cast<NEO::Device *>(NEO::MockDevice::createWithExecutionEnvironment<NEO::MockDevice>(&hwInfo, executionEnvironment, 0u)));
-
-    auto mockDevice = static_cast<NEO::MockDevice *>(devices[0].get());
-    NEO::SubDevice *subDevice = static_cast<NEO::SubDevice *>(mockDevice->createEngineInstancedSubDevice(0, defaultHwInfo->capabilityTable.defaultEngineType));
-    mockDevice->subdevices.push_back(subDevice);
 
     std::unique_ptr<Mock<L0::DriverHandleImp>> driverHandle;
     driverHandle = std::make_unique<Mock<L0::DriverHandleImp>>();
@@ -366,6 +362,59 @@ TEST_F(FabricEdgeFixture, GivenFabricVerticesAreCreatedWhenZeFabricEdgeGetExpIsC
                                                         driverHandle->fabricVertices[0]->toHandle(),
                                                         &count,
                                                         edgeHandles.data()));
+}
+
+TEST_F(FabricEdgeFixture, GivenFabricVerticesAreCreatedForIndirectEdgesWhenZeFabricEdgeGetExpIsCalledThenReturnSuccess) {
+    // initialize
+    uint32_t count = 0;
+    std::vector<ze_fabric_vertex_handle_t> phVertices;
+    ze_result_t res = driverHandle->fabricVertexGetExp(&count, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, res);
+    phVertices.resize(count);
+    res = driverHandle->fabricVertexGetExp(&count, phVertices.data());
+    EXPECT_EQ(ZE_RESULT_SUCCESS, res);
+
+    // Delete existing fabric edges
+    for (auto edge : driverHandle->fabricEdges) {
+        delete edge;
+    }
+    driverHandle->fabricEdges.clear();
+
+    for (auto edge : driverHandle->fabricIndirectEdges) {
+        delete edge;
+    }
+    driverHandle->fabricIndirectEdges.clear();
+
+    ze_fabric_edge_exp_properties_t dummyProperties = {};
+    driverHandle->fabricEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+
+    std::vector<ze_fabric_edge_handle_t> edgeHandles(10);
+    count = 0;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeFabricEdgeGetExp(driverHandle->fabricVertices[0]->toHandle(),
+                                                        driverHandle->fabricVertices[1]->toHandle(),
+                                                        &count,
+                                                        edgeHandles.data()));
+    EXPECT_EQ(count, 4u);
+    count = 3;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeFabricEdgeGetExp(driverHandle->fabricVertices[1]->toHandle(),
+                                                        driverHandle->fabricVertices[0]->toHandle(),
+                                                        &count,
+                                                        edgeHandles.data()));
+
+    for (auto edge : driverHandle->fabricEdges) {
+        delete edge;
+    }
+    driverHandle->fabricEdges.clear();
+
+    for (auto edge : driverHandle->fabricIndirectEdges) {
+        delete edge;
+    }
+    driverHandle->fabricIndirectEdges.clear();
 }
 
 TEST_F(FabricEdgeFixture, GivenFabricEdgesAreCreatedWhenZeFabricEdgeGetVerticesExpIsCalledThenReturnCorrectVertices) {

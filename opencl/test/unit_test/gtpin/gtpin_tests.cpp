@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -435,7 +435,7 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenBufferUnMapFails) {
 }
 
 TEST_F(GTPinTests, givenValidRequestForHugeMemoryAllocationThenBufferAllocateFails) {
-
+    [[maybe_unused]] auto cmdQ = pContext->getSpecialQueue(0);
     DebugManagerStateRestore restorer;
     for (auto &allocationInUSMShared : ::testing::Bool()) {
         debugManager.flags.GTPinAllocateBufferInSharedMemory.set(allocationInUSMShared);
@@ -2376,7 +2376,7 @@ HWTEST_F(GTPinTestsWithLocalMemory, givenGtPinCanUseSharedAllocationWhenGtPinBuf
         size_t sizeToPatch = gpuAllocation->getUnderlyingBufferSize();
         Buffer::setSurfaceState(&pDevice->getDevice(), &expectedSurfaceState, false, false,
                                 sizeToPatch, addressToPatch, 0, gpuAllocation, 0, 0,
-                                pKernel->getKernelInfo().kernelDescriptor.kernelAttributes.flags.useGlobalAtomics, pContext->getNumDevices());
+                                pContext->getNumDevices());
     }
     EXPECT_EQ(0, memcmp(&expectedSurfaceState, surfaceState, renderSurfaceSize));
 
@@ -2517,7 +2517,7 @@ TEST(GTPinInitNotifyTests, givenAvailablePlatformsAndNoEnvironmentVariableSetWhe
     VariableBackup<uint32_t> gtpinCounterBackup(&gtpinInitTimesCalled, 0u);
     uint32_t (*openPinHandler)(void *) = [](void *arg) -> uint32_t { gtpinInitTimesCalled++; return 0; };
     MockOsLibrary::loadLibraryNewObject = new MockOsLibrary(reinterpret_cast<void *>(openPinHandler), false);
-    NEO::PinContext::osLibraryLoadFunction = MockOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibrary::load};
 
     gtPinTryNotifyInit();
     EXPECT_EQ(0u, gtpinInitTimesCalled);
@@ -2536,7 +2536,7 @@ TEST(GTPinInitNotifyTests, givenNoPlatformsAvailableAndEnvironmentVariableSetWhe
 
     uint32_t (*openPinHandler)(void *) = [](void *arg) -> uint32_t { gtpinInitTimesCalled++; return 0; };
     MockOsLibrary::loadLibraryNewObject = new MockOsLibrary(reinterpret_cast<void *>(openPinHandler), false);
-    NEO::PinContext::osLibraryLoadFunction = MockOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibrary::load};
 
     gtPinTryNotifyInit();
     EXPECT_EQ(0u, gtpinInitTimesCalled);
@@ -2556,7 +2556,7 @@ TEST(GTPinInitNotifyTests, givenAvailablePlatformsAndEnvironmentVariableSetWhenT
 
     uint32_t (*openPinHandler)(void *) = [](void *arg) -> uint32_t { gtpinInitTimesCalled++; return 0; };
     MockOsLibrary::loadLibraryNewObject = new MockOsLibrary(reinterpret_cast<void *>(openPinHandler), false);
-    NEO::PinContext::osLibraryLoadFunction = MockOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibrary::load};
 
     gtPinTryNotifyInit();
     EXPECT_EQ(1u, gtpinInitTimesCalled);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,8 +35,8 @@ struct L0DebuggerWindowsFixture {
     void setUp() {
         debugManager.flags.ForcePreferredAllocationMethod.set(static_cast<int32_t>(GfxMemoryAllocationMethod::useUmdSystemPtr));
         executionEnvironment = new NEO::ExecutionEnvironment;
-        executionEnvironment->prepareRootDeviceEnvironments(1);
         executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
+        executionEnvironment->prepareRootDeviceEnvironments(1);
         rootDeviceEnvironment = executionEnvironment->rootDeviceEnvironments[0].get();
         auto osEnvironment = new OsEnvironmentWin();
         gdi = new MockGdi();
@@ -89,7 +89,7 @@ TEST_F(L0DebuggerWindowsTest, givenWindowsOSWhenL0DebuggerIsCreatedAddressModeIs
 HWTEST_F(L0DebuggerWindowsTest, givenDebuggingEnabledAndCommandQueuesAreCreatedAndDestroyedThanDebuggerL0IsNotified) {
     auto debuggerL0Hw = static_cast<MockDebuggerL0Hw<FamilyType> *>(device->getL0Debugger());
 
-    neoDevice->getDefaultEngine().commandStreamReceiver->getOsContext().ensureContextInitialized();
+    neoDevice->getDefaultEngine().commandStreamReceiver->getOsContext().ensureContextInitialized(false);
 
     ze_command_queue_desc_t queueDesc = {};
     ze_result_t returnValue;
@@ -223,36 +223,6 @@ TEST_F(L0DebuggerWindowsTest, givenProgramDebuggingEnabledAndDebugAttachAvailabl
 
     ze_result_t result = driverHandle->initialize(std::move(devices));
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-}
-
-TEST_F(L0DebuggerWindowsTest, givenProgramDebuggingEnabledAndDebugAttachNotAvailableWhenInitializingDriverThenErrorIsReturned) {
-    auto executionEnvironment = new NEO::ExecutionEnvironment();
-    executionEnvironment->prepareRootDeviceEnvironments(1);
-    executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
-    auto hwInfo = *NEO::defaultHwInfo.get();
-    executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(&hwInfo);
-
-    WddmEuDebugInterfaceMock *wddm = new WddmEuDebugInterfaceMock(*executionEnvironment->rootDeviceEnvironments[0]);
-    wddm->callBaseDestroyAllocations = false;
-    wddm->callBaseMapGpuVa = false;
-    wddm->callBaseWaitFromCpu = false;
-
-    auto osInterface = new OSInterface();
-    executionEnvironment->rootDeviceEnvironments[0]->osInterface.reset(osInterface);
-    executionEnvironment->rootDeviceEnvironments[0]->osInterface->setDriverModel(std::unique_ptr<DriverModel>(wddm));
-    wddm->init();
-    executionEnvironment->memoryManager.reset(new MockWddmMemoryManager(*executionEnvironment));
-
-    auto neoDevice = NEO::MockDevice::create<NEO::MockDevice>(executionEnvironment, 0u);
-    NEO::DeviceVector devices;
-    devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
-    auto driverHandle = std::make_unique<Mock<L0::DriverHandleImp>>();
-
-    driverHandle->enableProgramDebugging = NEO::DebuggingMode::online;
-    wddm->debugAttachAvailable = false;
-
-    ze_result_t result = driverHandle->initialize(std::move(devices));
-    EXPECT_EQ(ZE_RESULT_ERROR_DEPENDENCY_UNAVAILABLE, result);
 }
 
 } // namespace ult

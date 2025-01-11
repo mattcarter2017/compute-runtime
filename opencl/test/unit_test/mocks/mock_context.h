@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -36,6 +36,7 @@ class MockContext : public Context {
     using Context::smallBufferPoolAllocator;
     using Context::specialQueues;
     using Context::svmAllocsManager;
+    using Context::usmPoolInitialized;
 
     MockContext(ClDevice *pDevice, bool noSpecialQueue = false);
     MockContext(const ClDeviceVector &clDeviceVector, bool noSpecialQueue = true);
@@ -56,6 +57,7 @@ class MockContext : public Context {
     class MockBufferPoolAllocator : public BufferPoolAllocator {
       public:
         using BufferPoolAllocator::bufferPools;
+        using BufferPoolAllocator::calculateMaxPoolCount;
         using BufferPoolAllocator::isAggregatedSmallBuffersEnabled;
     };
 

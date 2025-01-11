@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/device_factory.h"
@@ -28,76 +29,47 @@ const DeviceDescriptor deviceDescriptorTable[] = {
 #include "devices.inl"
 #undef DEVICE
 #undef NAMEDDEVICE
-    {0, nullptr, nullptr}};
+    {0, nullptr, nullptr, ""}};
 
 Drm *Drm::create(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment) {
-    auto drm = std::unique_ptr<Drm>(new Drm(std::move(hwDeviceId), rootDeviceEnvironment));
+    std::unique_ptr<Drm> drm{new Drm(std::move(hwDeviceId), rootDeviceEnvironment)};
 
     if (!drm->queryDeviceIdAndRevision()) {
         return nullptr;
     }
-    auto hwInfo = rootDeviceEnvironment.getMutableHardwareInfo();
-    if (!DeviceFactory::isAllowedDeviceId(hwInfo->platform.usDeviceID, debugManager.flags.FilterDeviceId.get())) {
+
+    const auto usDeviceID = rootDeviceEnvironment.getHardwareInfo()->platform.usDeviceID;
+    const auto usRevId = rootDeviceEnvironment.getHardwareInfo()->platform.usRevId;
+    if (!DeviceFactory::isAllowedDeviceId(usDeviceID, debugManager.flags.FilterDeviceId.get())) {
         return nullptr;
     }
 
     const DeviceDescriptor *deviceDescriptor = nullptr;
-    const char *deviceName = "";
     for (auto &deviceDescriptorEntry : deviceDescriptorTable) {
-        if (hwInfo->platform.usDeviceID == deviceDescriptorEntry.deviceId) {
+        if (usDeviceID == deviceDescriptorEntry.deviceId) {
             deviceDescriptor = &deviceDescriptorEntry;
-            deviceName = deviceDescriptorEntry.devName;
             break;
         }
     }
-    int ret = 0;
-    if (deviceDescriptor) {
-        ret = drm->setupHardwareInfo(deviceDescriptor, true);
-        if (ret != 0) {
-            return nullptr;
-        }
-        hwInfo->capabilityTable.deviceName = deviceName;
-    } else {
+    if (!deviceDescriptor) {
         printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr,
-                         "FATAL: Unknown device: deviceId: %04x, revisionId: %04x\n", hwInfo->platform.usDeviceID, hwInfo->platform.usRevId);
+                         "FATAL: Unknown device: deviceId: %04x, revisionId: %04x\n", usDeviceID, usRevId);
         return nullptr;
     }
 
-    // Detect device parameters
-    int hasExecSoftPin = 0;
-    ret = drm->getExecSoftPin(hasExecSoftPin);
-    if (ret != 0) {
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query Soft Pin parameter!\n");
+    if (drm->setupHardwareInfo(deviceDescriptor, true)) {
         return nullptr;
     }
 
-    if (!hasExecSoftPin) {
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s",
-                         "FATAL: Device doesn't support Soft-Pin but this is required.\n");
-        return nullptr;
-    }
-
-    // Activate the Turbo Boost Frequency feature
-    ret = drm->enableTurboBoost();
-    if (ret != 0) {
+    if (drm->enableTurboBoost()) {
         printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to request OCL Turbo Boost\n");
-    }
-
-    if (!drm->queryMemoryInfo()) {
-        drm->setPerContextVMRequired(true);
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to query memory info\n");
-    }
-
-    if (!drm->queryEngineInfo()) {
-        drm->setPerContextVMRequired(true);
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to query engine info\n");
     }
 
     drm->checkContextDebugSupport();
 
     drm->queryPageFaultSupport();
-
-    if (rootDeviceEnvironment.executionEnvironment.isDebuggingEnabled()) {
+    auto &compilerProductHelper = rootDeviceEnvironment.getHelper<CompilerProductHelper>();
+    if (rootDeviceEnvironment.executionEnvironment.isDebuggingEnabled() && !compilerProductHelper.isHeaplessModeEnabled()) {
         if (drm->getRootDeviceEnvironment().executionEnvironment.getDebuggingMode() == DebuggingMode::offline) {
             drm->setPerContextVMRequired(false);
         } else {
@@ -111,6 +83,9 @@ Drm *Drm::create(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironm
 
     drm->isSetPairAvailable();
     drm->isChunkingAvailable();
+
+    drm->configureScratchPagePolicy();
+    drm->configureGpuFaultCheckThreshold();
 
     if (!drm->isPerContextVMRequired()) {
         if (!drm->createVirtualMemoryAddressSpace(GfxCoreHelper::getSubDevicesCount(rootDeviceEnvironment.getHardwareInfo()))) {

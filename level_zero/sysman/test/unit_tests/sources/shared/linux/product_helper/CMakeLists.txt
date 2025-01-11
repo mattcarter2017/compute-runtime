@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020-2023 Intel Corporation
+# Copyright (C) 2020-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -14,6 +14,10 @@ if(UNIX)
                  ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_frequency_tests.cpp
                  ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_ras_tests.cpp
                  ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_power_tests.cpp
+                 ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_pmt_tests.cpp
+                 ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_device_tests.cpp
+                 ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_pci_tests.cpp
+                 ${CMAKE_CURRENT_SOURCE_DIR}/sysman_product_helper_init_tests.cpp
   )
 endif()
-
+add_subdirectories()

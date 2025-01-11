@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,9 +25,9 @@ class MemoryManager;
 template <typename PoolT>
 struct SmallBuffersParams {
   protected:
-    static constexpr auto aggregatedSmallBuffersPoolSize = 64 * MemoryConstants::kiloByte;
-    static constexpr auto smallBufferThreshold = 4 * MemoryConstants::kiloByte;
-    static constexpr auto chunkAlignment = 512u;
+    static constexpr auto aggregatedSmallBuffersPoolSize = 2 * MemoryConstants::megaByte;
+    static constexpr auto smallBufferThreshold = 1 * MemoryConstants::megaByte;
+    static constexpr auto chunkAlignment = MemoryConstants::pageSize64k;
     static constexpr auto startingOffset = chunkAlignment;
 };
 
@@ -49,6 +49,8 @@ struct AbstractBuffersPool : public SmallBuffersParams<PoolT>, public NonCopyabl
     AbstractBuffersPool(MemoryManager *memoryManager, OnChunkFreeCallback onChunkFreeCallback);
     AbstractBuffersPool(AbstractBuffersPool<PoolT, BufferType, BufferParentType> &&bufferPool);
     AbstractBuffersPool &operator=(AbstractBuffersPool &&) = delete;
+    virtual ~AbstractBuffersPool() = default;
+
     void tryFreeFromPoolBuffer(BufferParentType *possiblePoolBuffer, size_t offset, size_t size);
     bool isPoolBuffer(const BufferParentType *buffer) const;
     void drain();
@@ -79,9 +81,10 @@ class AbstractBuffersAllocator : public SmallBuffersParams<BuffersPoolType> {
     using Params::startingOffset;
     static_assert(aggregatedSmallBuffersPoolSize > smallBufferThreshold, "Largest allowed buffer needs to fit in pool");
 
-    void releaseSmallBufferPool() { this->bufferPools.clear(); }
+    void releasePools() { this->bufferPools.clear(); }
     bool isPoolBuffer(const BufferParentType *buffer) const;
     void tryFreeFromPoolBuffer(BufferParentType *possiblePoolBuffer, size_t offset, size_t size);
+    uint32_t getPoolsCount() { return static_cast<uint32_t>(this->bufferPools.size()); }
 
   protected:
     inline bool isSizeWithinThreshold(size_t size) const { return smallBufferThreshold >= size; }

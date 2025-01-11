@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/helpers/string.h"
 
 #include "level_zero/sysman/source/shared/firmware_util/sysman_firmware_util.h"
+#include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
 #include "level_zero/sysman/source/sysman_const.h"
 
@@ -21,12 +22,18 @@ namespace Sysman {
 
 static const std::string mtdDescriptor("/proc/mtd");
 
-ze_result_t OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman) {
+void OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman) {
     LinuxSysmanImp *pLinuxSysmanImp = static_cast<LinuxSysmanImp *>(pOsSysman);
     FirmwareUtil *pFwInterface = pLinuxSysmanImp->getFwUtilInterface();
-    std::vector<std ::string> deviceSupportedFwTypes;
+    std::vector<std ::string> deviceSupportedFwTypes = {};
+    supportedFwTypes.clear();
     if (pFwInterface != nullptr) {
-        pFwInterface->getDeviceSupportedFwTypes(deviceSupportedFwTypes);
+        auto pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
+        pSysmanProductHelper->getDeviceSupportedFwTypes(pFwInterface, deviceSupportedFwTypes);
+    }
+
+    if (deviceSupportedFwTypes.empty()) {
+        return;
     }
 
     FsAccessInterface *pFsAccess = &pLinuxSysmanImp->getFsAccess();
@@ -34,7 +41,7 @@ ze_result_t OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedF
     ze_result_t result = pFsAccess->read(mtdDescriptor, mtdDescriptorStrings);
     if (result != ZE_RESULT_SUCCESS) {
         NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to read %s and returning error:0x%x \n", __FUNCTION__, mtdDescriptor.c_str(), result);
-        return result;
+        return;
     }
     for (const auto &readByteLine : mtdDescriptorStrings) {
         for (const auto &fwType : deviceSupportedFwTypes) {
@@ -45,18 +52,33 @@ ze_result_t OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedF
             }
         }
     }
-    return ZE_RESULT_SUCCESS;
 }
 
 void LinuxFirmwareImp::osGetFwProperties(zes_firmware_properties_t *pProperties) {
     if (ZE_RESULT_SUCCESS != getFirmwareVersion(osFwType, pProperties)) {
-        strncpy_s(static_cast<char *>(pProperties->version), ZES_STRING_PROPERTY_SIZE, unknown.c_str(), ZES_STRING_PROPERTY_SIZE - 1);
+        strncpy_s(static_cast<char *>(pProperties->version), ZES_STRING_PROPERTY_SIZE, unknown.data(), ZES_STRING_PROPERTY_SIZE - 1);
     }
     pProperties->canControl = true; // Assuming that user has permission to flash the firmware
 }
 
 ze_result_t LinuxFirmwareImp::osFirmwareFlash(void *pImage, uint32_t size) {
     return pFwInterface->flashFirmware(osFwType, pImage, size);
+}
+
+ze_result_t LinuxFirmwareImp::osGetSecurityVersion(char *pVersion) {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t LinuxFirmwareImp::osSetSecurityVersion() {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t LinuxFirmwareImp::osGetConsoleLogs(size_t *pSize, char *pFirmwareLog) {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t LinuxFirmwareImp::osGetFirmwareFlashProgress(uint32_t *pCompletionPercent) {
+    return pFwInterface->getFlashFirmwareProgress(pCompletionPercent);
 }
 
 LinuxFirmwareImp::LinuxFirmwareImp(OsSysman *pOsSysman, const std::string &fwType) : osFwType(fwType) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -41,8 +41,9 @@ TEST(ApiSpecificConfigOclTests, WhenGettingRegistryPathThenOclRegistryPathIsRetu
     EXPECT_STREQ(oclRegPath, ApiSpecificConfig::getRegistryPath());
 }
 
-TEST(ApiSpecificConfigOclTests, WhenCheckingIfDeviceAllocationCacheIsEnabledThenReturnFalse) {
-    EXPECT_FALSE(ApiSpecificConfig::isDeviceAllocationCacheEnabled());
+TEST(ApiSpecificConfigOclTests, WhenCheckingIfHostOrDeviceAllocationCacheIsEnabledThenReturnCorrectValue) {
+    EXPECT_TRUE(ApiSpecificConfig::isHostAllocationCacheEnabled());
+    EXPECT_TRUE(ApiSpecificConfig::isDeviceAllocationCacheEnabled());
 }
 
 TEST(ApiSpecificConfigOclTests, givenEnableStatelessCompressionWhenProvidingSvmGpuAllocationThenPreferCompressedBuffer) {
@@ -70,4 +71,13 @@ TEST(ApiSpecificConfigOclTests, givenEnableStatelessCompressionWhenProvidingPrin
 
     EXPECT_TRUE(NEO::CompressionSelector::preferCompressedAllocation(properties));
 }
+
+TEST(ApiSpecificConfigOclTests, WhenGettingCompilerCacheFileExtensionThenReturnProperFileExtensionString) {
+    EXPECT_EQ(0, strcmp(".cl_cache", ApiSpecificConfig::compilerCacheFileExtension().c_str()));
+}
+
+TEST(ApiSpecificConfigOclTests, WhenCheckingIfCompilerCacheIsEnabledByDefaultThenReturnTrue) {
+    EXPECT_EQ(1u, ApiSpecificConfig::compilerCacheDefaultEnabled());
+}
+
 } // namespace NEO

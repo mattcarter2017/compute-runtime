@@ -1,14 +1,17 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "shared/source/helpers/driver_model_type.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/linux/drm_memory_manager.h"
 #include "shared/source/os_interface/linux/drm_neo.h"
+#include "shared/source/os_interface/os_context.h"
+#include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/mocks/linux/mock_drm_wrappers.h"
 
@@ -18,6 +21,7 @@
 using NEO::Drm;
 using NEO::DrmIoctl;
 using NEO::HwDeviceIdDrm;
+using NEO::OsContext;
 using NEO::RootDeviceEnvironment;
 
 extern const int mockFd;
@@ -45,19 +49,25 @@ class Ioctls {
     std::atomic<int32_t> gemSetDomain;
     std::atomic<int32_t> gemWait;
     std::atomic<int32_t> gemClose;
-    std::atomic<int32_t> gemResetStats;
+    std::atomic<int32_t> getResetStats;
     std::atomic<int32_t> regRead;
     std::atomic<int32_t> getParam;
     std::atomic<int32_t> contextGetParam;
     std::atomic<int32_t> contextSetParam;
     std::atomic<int32_t> contextCreate;
     std::atomic<int32_t> contextDestroy;
+    std::atomic<int32_t> perfOpen;
+    std::atomic<int32_t> perfEnable;
+    std::atomic<int32_t> perfDisable;
 };
 
 class DrmMockSuccess : public Drm {
   public:
     using Drm::setupIoctlHelper;
     DrmMockSuccess(int fd, RootDeviceEnvironment &rootDeviceEnvironment) : Drm(std::make_unique<HwDeviceIdDrm>(fd, mockPciPath), rootDeviceEnvironment) {
+
+        DebugManagerStateRestore restore;
+        debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
         setupIoctlHelper(NEO::defaultHwInfo->platform.eProductFamily);
     }
 
@@ -67,6 +77,8 @@ class DrmMockSuccess : public Drm {
 class DrmMockFail : public Drm {
   public:
     DrmMockFail(RootDeviceEnvironment &rootDeviceEnvironment) : Drm(std::make_unique<HwDeviceIdDrm>(mockFd, mockPciPath), rootDeviceEnvironment) {
+        DebugManagerStateRestore restore;
+        debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
         setupIoctlHelper(NEO::defaultHwInfo->platform.eProductFamily);
     }
 
@@ -77,8 +89,10 @@ class DrmMockTime : public DrmMockSuccess {
   public:
     using DrmMockSuccess::DrmMockSuccess;
     int ioctl(DrmIoctl request, void *arg) override {
-        auto *reg = reinterpret_cast<NEO::RegisterRead *>(arg);
-        reg->value = getVal() << 32 | 0x1;
+        if (DrmIoctl::regRead == request) {
+            auto *reg = reinterpret_cast<NEO::RegisterRead *>(arg);
+            reg->value = getVal() << 32 | 0x1;
+        }
         return 0;
     };
 
@@ -88,12 +102,19 @@ class DrmMockTime : public DrmMockSuccess {
     }
 };
 
-class DrmMockCustom : public Drm {
-  public:
+struct DrmMockCustom : public Drm {
+    using Drm::memoryInfoQueried;
+    static constexpr NEO::DriverModelType driverModelType = NEO::DriverModelType::drm;
+
+    static std::unique_ptr<DrmMockCustom> create(RootDeviceEnvironment &rootDeviceEnvironment);
+    static std::unique_ptr<DrmMockCustom> create(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment);
+
     using Drm::bindAvailable;
-    using Drm::cacheInfo;
+    using Drm::checkToDisableScratchPage;
     using Drm::completionFenceSupported;
+    using Drm::disableScratch;
     using Drm::ioctlHelper;
+    using Drm::l3CacheInfo;
     using Drm::memoryInfo;
     using Drm::pageFaultSupported;
     using Drm::queryTopology;
@@ -116,6 +137,8 @@ class DrmMockCustom : public Drm {
 
         uint32_t called = 0u;
         uint32_t failSpecificCall = 0;
+        bool failOnWaitUserFence = false;
+        int errnoForFailedWaitUserFence = 0;
     };
 
     struct IsVmBindAvailableCall {
@@ -136,9 +159,7 @@ class DrmMockCustom : public Drm {
         uint32_t called = 0u;
     };
 
-    DrmMockCustom(RootDeviceEnvironment &rootDeviceEnvironment);
-
-    int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) override;
+    int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, NEO::GraphicsAllocation *allocForInterruptWait) override;
 
     bool getSetPairAvailable() override;
 
@@ -177,12 +198,17 @@ class DrmMockCustom : public Drm {
 
     virtual void execBufferExtensions(void *execbuf) {
     }
-    int queryGttSize(uint64_t &gttSizeOutput) override {
+    int queryGttSize(uint64_t &gttSizeOutput, bool alignUpToFullRange) override {
         if (callBaseQueryGttSize) {
-            return Drm::queryGttSize(gttSizeOutput);
+            return Drm::queryGttSize(gttSizeOutput, alignUpToFullRange);
         }
-        gttSizeOutput = 1;
+        gttSizeOutput = NEO::defaultHwInfo->capabilityTable.gpuAddressSpace + 1;
         return 0u;
+    }
+
+    bool checkResetStatus(OsContext &osContext) override {
+        checkResetStatusCalled++;
+        return Drm::checkResetStatus(osContext);
     }
 
     Ioctls ioctlCnt{};
@@ -197,6 +223,8 @@ class DrmMockCustom : public Drm {
     IsChunkingAvailableCall getChunkingAvailableCall{};
     ChunkingModeCall getChunkingModeCall{};
     IsChunkingAvailableCall isChunkingAvailableCall{};
+
+    size_t checkResetStatusCalled = 0u;
 
     std::atomic<int> ioctlRes;
     std::atomic<IoctlResExt *> ioctlResExt;
@@ -246,6 +274,8 @@ class DrmMockCustom : public Drm {
     uint64_t mmapOffsetFlags = 0;
     bool failOnMmapOffset = false;
     bool failOnPrimeFdToHandle = false;
+    bool failOnSecondPrimeFdToHandle = false;
+    bool failOnPrimeHandleToFd = false;
 
     // DRM_IOCTL_I915_GEM_CREATE_EXT
     uint64_t createExtSize = 0;
@@ -259,4 +289,8 @@ class DrmMockCustom : public Drm {
 
     bool returnIoctlExtraErrorValue = false;
     bool callBaseQueryGttSize = false;
+
+  protected:
+    // Don't call directly, use the create() function
+    DrmMockCustom(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment);
 };

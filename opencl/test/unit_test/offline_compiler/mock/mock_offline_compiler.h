@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,6 +20,7 @@ class MockOclocIgcFacade;
 
 class MockOfflineCompiler : public OfflineCompiler {
   public:
+    using OfflineCompiler::addressingMode;
     using OfflineCompiler::allowCaching;
     using OfflineCompiler::appendExtraInternalOptions;
     using OfflineCompiler::argHelper;
@@ -66,6 +67,7 @@ class MockOfflineCompiler : public OfflineCompiler {
     using OfflineCompiler::parseCommandLine;
     using OfflineCompiler::parseDebugSettings;
     using OfflineCompiler::perDeviceOptions;
+    using OfflineCompiler::releaseHelper;
     using OfflineCompiler::revisionId;
     using OfflineCompiler::setStatelessToStatefulBufferOffsetFlag;
     using OfflineCompiler::sourceCode;

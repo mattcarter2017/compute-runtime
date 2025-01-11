@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,10 @@
 
 #include "shared/test/common/tests_configuration.h"
 
+#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/hw_info.h"
+#include "shared/source/helpers/options.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/source/release_helper/release_helper.h"
 
@@ -25,7 +27,7 @@ void adjustHwInfoForTests(HardwareInfo &hwInfoForTests, uint32_t euPerSubSlice, 
     uint32_t threadsPerEu = releaseHelper ? releaseHelper->getNumThreadsPerEu() : 7u;
 
     // set Gt and FeatureTable to initial state
-    bool setupFeatureTableAndWorkaroundTable = testMode == TestMode::aubTests ? true : false;
+    bool setupFeatureTableAndWorkaroundTable = isAubTestMode(testMode);
     hardwareInfoSetup[hwInfoForTests.platform.eProductFamily](&hwInfoForTests, setupFeatureTableAndWorkaroundTable, hwInfoConfig, releaseHelper.get());
     GT_SYSTEM_INFO &gtSystemInfo = hwInfoForTests.gtSystemInfo;
 
@@ -37,6 +39,8 @@ void adjustHwInfoForTests(HardwareInfo &hwInfoForTests, uint32_t euPerSubSlice, 
     gtSystemInfo.SliceCount = sliceCount;
     for (uint32_t slice = 0; slice < sliceCount; slice++) {
         gtSystemInfo.SliceInfo[slice].Enabled = true;
+        gtSystemInfo.SliceInfo[slice].SubSliceInfo[0].EuEnabledCount = 1;
+        gtSystemInfo.SliceInfo[slice].SubSliceInfo[0].Enabled = true;
     }
     for (uint32_t slice = sliceCount; slice < GT_MAX_SLICE; slice++) {
         gtSystemInfo.SliceInfo[slice].Enabled = false;
@@ -48,5 +52,17 @@ void adjustHwInfoForTests(HardwareInfo &hwInfoForTests, uint32_t euPerSubSlice, 
     gtSystemInfo.MaxEuPerSubSlice = std::max(gtSystemInfo.MaxEuPerSubSlice, euPerSubSlice);
     gtSystemInfo.MaxSlicesSupported = std::max(gtSystemInfo.MaxSlicesSupported, gtSystemInfo.SliceCount);
     gtSystemInfo.MaxSubSlicesSupported = std::max(gtSystemInfo.MaxSubSlicesSupported, gtSystemInfo.SubSliceCount);
+    gtSystemInfo.SLMSizeInKb = 1;
+}
+void adjustCsrType(TestMode testMode) {
+    if (testMode == TestMode::aubTestsWithTbx) {
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(CommandStreamReceiverType::tbxWithAub));
+    } else if (testMode == TestMode::aubTests) {
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(CommandStreamReceiverType::aub));
+    } else if (testMode == TestMode::tbxTests) {
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(CommandStreamReceiverType::tbx));
+    } else if (testMode == TestMode::aubTestsWithoutOutputFiles) {
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(CommandStreamReceiverType::nullAub));
+    }
 }
 } // namespace NEO

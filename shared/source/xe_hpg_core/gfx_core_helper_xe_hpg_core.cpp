@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -47,11 +47,11 @@ uint32_t GfxCoreHelperHw<Family>::getMetricsLibraryGenId() const {
 }
 
 template <>
-void GfxCoreHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo, const ProductHelper &productHelper) {
+void GfxCoreHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo, const ProductHelper &productHelper, AILConfiguration *ailConfiguration) {
     if (!pHwInfo->featureTable.flags.ftrCCSNode) {
         pHwInfo->capabilityTable.defaultEngineType = aub_stream::ENGINE_RCS;
     }
-    if (productHelper.isDefaultEngineTypeAdjustmentRequired(*pHwInfo)) {
+    if (productHelper.isDefaultEngineTypeAdjustmentRequired(*pHwInfo) || (ailConfiguration && ailConfiguration->forceRcs())) {
         pHwInfo->capabilityTable.defaultEngineType = aub_stream::ENGINE_RCS;
     }
 }
@@ -64,9 +64,9 @@ bool GfxCoreHelperHw<Family>::is1MbAlignmentSupported(const HardwareInfo &hwInfo
 template <>
 void GfxCoreHelperHw<Family>::setL1CachePolicy(bool useL1Cache, typename Family::RENDER_SURFACE_STATE *surfaceState, const HardwareInfo *hwInfo) const {
     if (useL1Cache) {
-        surfaceState->setL1CachePolicyL1CacheControl(Family::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB);
+        surfaceState->setL1CacheControlCachePolicy(Family::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB);
         if (debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get() != -1) {
-            surfaceState->setL1CachePolicyL1CacheControl(static_cast<typename Family::RENDER_SURFACE_STATE::L1_CACHE_POLICY>(debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get()));
+            surfaceState->setL1CacheControlCachePolicy(static_cast<typename Family::RENDER_SURFACE_STATE::L1_CACHE_CONTROL>(debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get()));
         }
     }
 }
@@ -91,7 +91,7 @@ template <>
 void MemorySynchronizationCommands<Family>::addAdditionalSynchronizationForDirectSubmission(LinearStream &commandStream, uint64_t gpuAddress, bool acquire, const RootDeviceEnvironment &rootDeviceEnvironment) {
     using COMPARE_OPERATION = typename Family::MI_SEMAPHORE_WAIT::COMPARE_OPERATION;
 
-    EncodeSemaphore<Family>::addMiSemaphoreWaitCommand(commandStream, gpuAddress, EncodeSemaphore<Family>::invalidHardwareTag, COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, false, false, false);
+    EncodeSemaphore<Family>::addMiSemaphoreWaitCommand(commandStream, gpuAddress, EncodeSemaphore<Family>::invalidHardwareTag, COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, false, false, false, false, nullptr);
 }
 
 template <>
@@ -108,32 +108,12 @@ bool GfxCoreHelperHw<Family>::isBufferSizeSuitableForCompression(const size_t si
 }
 
 template <>
-uint32_t GfxCoreHelperHw<Family>::computeSlmValues(const HardwareInfo &hwInfo, uint32_t slmSize) const {
-    using SHARED_LOCAL_MEMORY_SIZE = typename Family::INTERFACE_DESCRIPTOR_DATA::SHARED_LOCAL_MEMORY_SIZE;
-
-    auto slmValue = std::max(slmSize, 1024u);
-    slmValue = Math::nextPowerOfTwo(slmValue);
-    slmValue = Math::getMinLsbSet(slmValue);
-    slmValue = slmValue - 9;
-    DEBUG_BREAK_IF(slmValue > 7);
-    slmValue *= !!slmSize;
-    return slmValue;
-}
-
-template <>
 bool GfxCoreHelperHw<Family>::copyThroughLockedPtrEnabled(const HardwareInfo &hwInfo, const ProductHelper &productHelper) const {
     if (debugManager.flags.ExperimentalCopyThroughLock.get() != -1) {
         return debugManager.flags.ExperimentalCopyThroughLock.get() == 1;
     }
 
     return this->isLocalMemoryEnabled(hwInfo) && !productHelper.isUnlockingLockedPtrNecessary(hwInfo);
-}
-template <>
-uint32_t GfxCoreHelperHw<Family>::calculateAvailableThreadCount(const HardwareInfo &hwInfo, uint32_t grfCount) const {
-    if (grfCount > GrfConfig::defaultGrfNumber) {
-        return hwInfo.gtSystemInfo.ThreadCount / 2u;
-    }
-    return hwInfo.gtSystemInfo.ThreadCount;
 }
 
 template <>
@@ -183,6 +163,37 @@ template <>
 bool MemorySynchronizationCommands<Family>::isBarrierPriorToPipelineSelectWaRequired(const RootDeviceEnvironment &rootDeviceEnvironment) {
     return rootDeviceEnvironment.getReleaseHelper()->isPipeControlPriorToPipelineSelectWaRequired();
 }
+
+template <>
+const EngineInstancesContainer GfxCoreHelperHw<Family>::getGpgpuEngineInstances(const RootDeviceEnvironment &rootDeviceEnvironment) const {
+    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
+    auto defaultEngine = getChosenEngineType(hwInfo);
+
+    EngineInstancesContainer engines;
+    auto ailHelper = rootDeviceEnvironment.getAILConfigurationHelper();
+    auto forceRcs = ailHelper && ailHelper->forceRcs();
+    if (hwInfo.featureTable.flags.ftrCCSNode && !forceRcs) {
+        for (uint32_t i = 0; i < hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled; i++) {
+            engines.push_back({static_cast<aub_stream::EngineType>(i + aub_stream::ENGINE_CCS), EngineUsage::regular});
+        }
+    }
+
+    if ((debugManager.flags.NodeOrdinal.get() == static_cast<int32_t>(aub_stream::EngineType::ENGINE_RCS)) ||
+        hwInfo.featureTable.flags.ftrRcsNode ||
+        forceRcs) {
+        engines.push_back({aub_stream::ENGINE_RCS, EngineUsage::regular});
+    }
+
+    engines.push_back({defaultEngine, EngineUsage::lowPriority});
+    engines.push_back({defaultEngine, EngineUsage::internal});
+
+    if (hwInfo.capabilityTable.blitterOperationsSupported && hwInfo.featureTable.ftrBcsInfo.test(0)) {
+        engines.push_back({aub_stream::ENGINE_BCS, EngineUsage::regular});
+        engines.push_back({aub_stream::ENGINE_BCS, EngineUsage::internal}); // internal usage
+    }
+
+    return engines;
+};
 
 template class GfxCoreHelperHw<Family>;
 template class FlatBatchBufferHelperHw<Family>;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,6 +28,7 @@ template <typename GfxFamily, typename Dispatcher>
 DrmDirectSubmission<GfxFamily, Dispatcher>::DrmDirectSubmission(const DirectSubmissionInputParams &inputParams)
     : DirectSubmissionHw<GfxFamily, Dispatcher>(inputParams) {
 
+    this->completionFenceValue = inputParams.initialCompletionFenceValue;
     if (debugManager.flags.OverrideUserFenceStartValue.get() != -1) {
         this->completionFenceValue = static_cast<decltype(completionFenceValue)>(debugManager.flags.OverrideUserFenceStartValue.get());
     }
@@ -93,7 +94,7 @@ inline DrmDirectSubmission<GfxFamily, Dispatcher>::~DrmDirectSubmission() {
         auto osContextLinux = static_cast<OsContextLinux *>(&this->osContext);
         auto &drm = osContextLinux->getDrm();
         auto completionFenceCpuAddress = reinterpret_cast<uint64_t>(this->completionFenceAllocation->getUnderlyingBuffer()) + TagAllocationLayout::completionFenceOffset;
-        drm.waitOnUserFences(*osContextLinux, completionFenceCpuAddress, this->completionFenceValue, this->activeTiles, this->immWritePostSyncOffset);
+        drm.waitOnUserFences(*osContextLinux, completionFenceCpuAddress, this->completionFenceValue, this->activeTiles, -1, this->immWritePostSyncOffset, false, NEO::InterruptId::notUsed, nullptr);
     }
     this->deallocateResources();
     if (this->pciBarrierPtr) {
@@ -245,12 +246,31 @@ bool DrmDirectSubmission<GfxFamily, Dispatcher>::isCompletionFenceSupported() {
 
 template <typename GfxFamily, typename Dispatcher>
 void DrmDirectSubmission<GfxFamily, Dispatcher>::wait(TaskCountType taskCountToWait) {
+    auto lastHangCheckTime = std::chrono::high_resolution_clock::now();
     auto pollAddress = this->tagAddress;
     for (uint32_t i = 0; i < this->activeTiles; i++) {
-        while (!WaitUtils::waitFunction(pollAddress, taskCountToWait)) {
+        while (!WaitUtils::waitFunction(pollAddress, taskCountToWait) &&
+               !isGpuHangDetected(lastHangCheckTime)) {
         }
         pollAddress = ptrOffset(pollAddress, this->immWritePostSyncOffset);
     }
+}
+
+template <typename GfxFamily, typename Dispatcher>
+bool DrmDirectSubmission<GfxFamily, Dispatcher>::isGpuHangDetected(std::chrono::high_resolution_clock::time_point &lastHangCheckTime) {
+    if (!this->detectGpuHang) {
+        return false;
+    }
+
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    auto elapsedTimeSinceGpuHangCheck = std::chrono::duration_cast<std::chrono::microseconds>(currentTime - lastHangCheckTime);
+    if (elapsedTimeSinceGpuHangCheck.count() >= gpuHangCheckPeriod.count()) {
+        lastHangCheckTime = currentTime;
+        auto osContextLinux = static_cast<OsContextLinux *>(&this->osContext);
+        auto &drm = osContextLinux->getDrm();
+        return drm.isGpuHangDetected(this->osContext);
+    }
+    return false;
 }
 
 } // namespace NEO

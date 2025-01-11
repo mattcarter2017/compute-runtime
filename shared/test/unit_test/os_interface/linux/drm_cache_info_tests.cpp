@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/source/helpers/constants.h"
 #include "shared/source/os_interface/linux/cache_info.h"
+#include "shared/source/os_interface/product_helper.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/libult/linux/drm_query_mock.h"
@@ -21,14 +22,14 @@ TEST(DrmCacheInfoTest, givenCacheRegionsExistsWhenCallingSetUpCacheInfoThenCache
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
 
-    auto &gfxCoreHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
+    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<ProductHelper>();
 
     drm.setupCacheInfo(*defaultHwInfo.get());
 
-    auto cacheInfo = drm.getCacheInfo();
+    auto cacheInfo = drm.getL3CacheInfo();
     EXPECT_NE(nullptr, cacheInfo);
 
-    if (gfxCoreHelper.getNumCacheRegions() == 0) {
+    if (productHelper.getNumCacheRegions() == 0) {
         EXPECT_EQ(0u, cacheInfo->getMaxReservationCacheSize());
         EXPECT_EQ(0u, cacheInfo->getMaxReservationNumCacheRegions());
         EXPECT_EQ(0u, cacheInfo->getMaxReservationNumWays());
@@ -40,7 +41,7 @@ TEST(DrmCacheInfoTest, givenCacheRegionsExistsWhenCallingSetUpCacheInfoThenCache
         constexpr uint16_t maxReservationNumWays = std::min(globalReservationLimit, clientReservationLimit);
         const size_t totalCacheSize = gtSysInfo->L3CacheSizeInKb * MemoryConstants::kiloByte;
         const size_t maxReservationCacheSize = (totalCacheSize * maxReservationNumWays) / maxNumWays;
-        const size_t maxReservationNumCacheRegions = gfxCoreHelper.getNumCacheRegions() - 1;
+        const size_t maxReservationNumCacheRegions = productHelper.getNumCacheRegions() - 1;
 
         EXPECT_EQ(maxReservationCacheSize, cacheInfo->getMaxReservationCacheSize());
         EXPECT_EQ(maxReservationNumCacheRegions, cacheInfo->getMaxReservationNumCacheRegions());
@@ -55,8 +56,8 @@ TEST(DrmCacheInfoTest, givenDebugFlagSetWhenCallingSetUpCacheInfoThenCacheInfoIs
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
 
     drm.setupCacheInfo(*defaultHwInfo.get());
-    EXPECT_NE(nullptr, drm.getCacheInfo());
-    auto cacheInfo = drm.getCacheInfo();
+    EXPECT_NE(nullptr, drm.getL3CacheInfo());
+    auto cacheInfo = drm.getL3CacheInfo();
 
     EXPECT_EQ(0u, cacheInfo->getMaxReservationCacheSize());
     EXPECT_EQ(0u, cacheInfo->getMaxReservationNumCacheRegions());
@@ -67,7 +68,7 @@ TEST(DrmCacheInfoTest, givenCacheInfoCreatedWhenGetCacheRegionSucceedsToReserveC
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    CacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, 32);
+    CacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, 32);
     size_t cacheReservationSize = cacheInfo.getMaxReservationCacheSize();
 
     EXPECT_TRUE(cacheInfo.getCacheRegion(cacheReservationSize, CacheRegion::region1));
@@ -79,7 +80,7 @@ TEST(DrmCacheInfoTest, givenCacheInfoCreatedWhenGetCacheRegionFailsToReserveCach
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    CacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, 32);
+    CacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, 32);
     size_t cacheReservationSize = cacheInfo.getMaxReservationCacheSize();
 
     drm.context.closIndex = 0xFFFF;
@@ -92,7 +93,7 @@ TEST(DrmCacheInfoTest, givenCacheInfoWithReservedCacheRegionWhenGetCacheRegionIs
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    CacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, 32);
+    CacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, 32);
     size_t cacheReservationSize = cacheInfo.getMaxReservationCacheSize();
 
     EXPECT_EQ(CacheRegion::region1, cacheInfo.reserveCacheRegion(cacheReservationSize));
@@ -106,7 +107,7 @@ TEST(DrmCacheInfoTest, givenCacheInfoCreatedWhenGetCacheRegionIsCalledForReserva
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    CacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, 32);
+    CacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, 32);
     size_t regionSize = cacheInfo.getMaxReservationCacheSize() / cacheInfo.getMaxReservationNumCacheRegions();
 
     EXPECT_TRUE(cacheInfo.getCacheRegion(regionSize, CacheRegion::region1));
@@ -125,15 +126,14 @@ TEST(DrmCacheInfoTest, givenCacheInfoWhenSpecificNumCacheWaysIsRequestedThenRese
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    MockCacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, maxNumCacheWays);
+    MockCacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, maxNumCacheWays);
     size_t maxReservationCacheSize = cacheInfo.getMaxReservationCacheSize();
 
     EXPECT_EQ(CacheRegion::region1, cacheInfo.reserveCacheRegion(maxReservationCacheSize));
     EXPECT_TRUE(cacheInfo.isRegionReserved(CacheRegion::region1, maxReservationCacheSize));
 
-    auto cacheRegion = cacheInfo.cacheRegionsReserved.begin();
-    EXPECT_EQ(CacheRegion::region1, cacheRegion->first);
-    EXPECT_EQ(maxReservationCacheSize / 2, cacheRegion->second);
+    auto expectedRegionSize = cacheInfo.reservedCacheRegionsSize[toUnderlying(CacheRegion::region1)];
+    EXPECT_EQ(maxReservationCacheSize / 2, expectedRegionSize);
 
     EXPECT_EQ(CacheRegion::region1, cacheInfo.freeCacheRegion(CacheRegion::region1));
 }
@@ -144,7 +144,7 @@ TEST(DrmCacheInfoTest, givenCacheInfoWhenNumCacheWaysIsExceededThenDontReserveCa
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    MockCacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, maxNumCacheWays);
+    MockCacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, maxNumCacheWays);
     size_t maxReservationCacheSize = cacheInfo.getMaxReservationCacheSize();
 
     EXPECT_EQ(CacheRegion::region1, cacheInfo.reserveCacheRegion(maxReservationCacheSize));
@@ -158,8 +158,8 @@ TEST(DrmCacheInfoTest, givenCacheInfoCreatedWhenFreeCacheRegionIsCalledForNonRes
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
 
     DrmQueryMock drm(*executionEnvironment->rootDeviceEnvironments[0]);
-    MockCacheInfo cacheInfo(drm, 32 * MemoryConstants::kiloByte, 2, 32);
+    MockCacheInfo cacheInfo(*drm.getIoctlHelper(), 32 * MemoryConstants::kiloByte, 2, 32);
 
-    cacheInfo.cacheRegionsReserved.insert({CacheRegion::region1, MemoryConstants::kiloByte});
+    cacheInfo.reservedCacheRegionsSize[toUnderlying(CacheRegion::region1)] = MemoryConstants::kiloByte;
     EXPECT_EQ(CacheRegion::none, cacheInfo.freeCacheRegion(CacheRegion::region1));
 }

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 Intel Corporation
+# Copyright (C) 2023-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -20,12 +20,18 @@ zello_ipc_copy_dma_buf_p2p:
 zello_timestamp:
   skip: true
 
-zello_world_gpu:
-  skip: true
-
 zello_world_usm:
   skip: true
 
-zello_function_pointers_cl:
-  exclude:
-    - skl
+zello_metrics:
+  skip: true
+
+zello_bindless_kernel:
+  cases:
+    - exclude:
+        - tgllp
+
+zello_global_bindless_kernel:
+  cases:
+    - exclude:
+        - tgllp

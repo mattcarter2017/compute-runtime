@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -98,6 +98,8 @@ class MockKernel : public Kernel {
     using Kernel::anyKernelArgumentUsingSystemMemory;
     using Kernel::auxTranslationRequired;
     using Kernel::containsStatelessWrites;
+    using Kernel::crossThreadData;
+    using Kernel::crossThreadDataSize;
     using Kernel::dataParameterSimdSize;
     using Kernel::executionType;
     using Kernel::getDevice;
@@ -181,8 +183,6 @@ class MockKernel : public Kernel {
 
     bool isPatched() const override;
 
-    bool canTransformImages() const override;
-
     ////////////////////////////////////////////////////////////////////////////////
     void setCrossThreadData(const void *crossThreadDataPattern, uint32_t newCrossThreadDataSize) {
         if ((crossThreadData != nullptr) && (crossThreadData != mockCrossThreadData.data())) {
@@ -191,8 +191,7 @@ class MockKernel : public Kernel {
             crossThreadDataSize = 0;
         }
         if (crossThreadDataPattern && (newCrossThreadDataSize > 0)) {
-            mockCrossThreadData.clear();
-            mockCrossThreadData.insert(mockCrossThreadData.begin(), (char *)crossThreadDataPattern, ((char *)crossThreadDataPattern) + newCrossThreadDataSize);
+            mockCrossThreadData.assign((char *)crossThreadDataPattern, ((char *)crossThreadDataPattern) + newCrossThreadDataSize);
         } else {
             mockCrossThreadData.resize(newCrossThreadDataSize, 0);
         }
@@ -245,8 +244,6 @@ class MockKernel : public Kernel {
     void getResidency(std::vector<Surface *> &dst) override;
 
     void setSystolicPipelineSelectMode(bool value) { systolicPipelineSelectMode = value; }
-
-    bool requiresCacheFlushCommand(const CommandQueue &commandQueue) const override;
 
     cl_int setArgSvmAlloc(uint32_t argIndex, void *svmPtr, GraphicsAllocation *svmAlloc, uint32_t allocId) override;
 
@@ -353,18 +350,18 @@ class MockKernelWithInternals {
     operator MockKernel *() {
         return mockKernel;
     }
+    alignas(64) char sshLocal[128];
+    alignas(64) char dshLocal[128];
+    char crossThreadData[256];
+    uint32_t kernelIsa[32];
+    MockKernelInfo kernelInfo;
 
     MockMultiDeviceKernel *mockMultiDeviceKernel = nullptr;
     MockKernel *mockKernel;
     MockProgram *mockProgram;
     Context *mockContext;
     KernelInfoContainer kernelInfos;
-    MockKernelInfo kernelInfo;
     SKernelBinaryHeaderCommon kernelHeader = {};
-    uint32_t kernelIsa[32];
-    char crossThreadData[256];
-    alignas(64) char sshLocal[128];
-    alignas(64) char dshLocal[128];
     std::vector<Kernel::SimpleKernelArgInfo> defaultKernelArguments;
 };
 class MockDebugKernel : public MockKernel {

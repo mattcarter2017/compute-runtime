@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -63,11 +63,6 @@ ADLSTEST_F(AdlsHwInfo, whenPlatformIsAdlsThenExpectSvmIsSet) {
     EXPECT_TRUE(hardwareInfo.capabilityTable.ftrSvm);
 }
 
-ADLSTEST_F(AdlsHwInfo, givenAdlsWhenCheckL0ThenReturnTrue) {
-    const HardwareInfo &hardwareInfo = ADLS::hwInfo;
-    EXPECT_TRUE(hardwareInfo.capabilityTable.levelZeroSupported);
-}
-
 using AdlsProductHelper = ProductHelperTest;
 
 ADLSTEST_F(AdlsProductHelper, whenGettingAubstreamProductFamilyThenProperEnumValueIsReturned) {
@@ -98,7 +93,6 @@ ADLSTEST_F(AdlsProductHelper, givenProductHelperWhenGetCommandsStreamPropertiesS
     EXPECT_FALSE(productHelper->getScmPropertyLargeGrfModeSupport());
     EXPECT_FALSE(productHelper->getScmPropertyDevicePreemptionModeSupport());
 
-    EXPECT_FALSE(productHelper->getStateBaseAddressPropertyGlobalAtomicsSupport());
     EXPECT_FALSE(productHelper->getStateBaseAddressPropertyBindingTablePoolBaseAddressSupport());
 
     EXPECT_TRUE(productHelper->getFrontEndPropertyScratchSizeSupport());

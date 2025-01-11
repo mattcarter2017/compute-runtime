@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,11 +23,27 @@ namespace L0 {
 namespace Sysman {
 namespace ult {
 
+class MockEngineSysmanHwDeviceIdDrm : public MockSysmanHwDeviceIdDrm {
+  public:
+    using L0::Sysman::ult::MockSysmanHwDeviceIdDrm::MockSysmanHwDeviceIdDrm;
+    int returnOpenFileDescriptor = -1;
+    int returnCloseFileDescriptor = 0;
+
+    int openFileDescriptor() override {
+        return returnOpenFileDescriptor;
+    }
+
+    int closeFileDescriptor() override {
+        return returnCloseFileDescriptor;
+    }
+};
+
 struct MockEngineNeoDrm : public Drm {
     using Drm::getEngineInfo;
     using Drm::setupIoctlHelper;
     const int mockFd = 0;
     MockEngineNeoDrm(RootDeviceEnvironment &rootDeviceEnvironment) : Drm(std::make_unique<MockSysmanHwDeviceIdDrm>(mockFd, ""), rootDeviceEnvironment) {}
+    MockEngineNeoDrm(RootDeviceEnvironment &rootDeviceEnvironment, int mockFileDescriptor) : Drm(std::make_unique<MockEngineSysmanHwDeviceIdDrm>(mockFileDescriptor, ""), rootDeviceEnvironment) {}
 
     bool mockSysmanQueryEngineInfoReturnFalse = true;
     bool sysmanQueryEngineInfo() override {
@@ -49,13 +65,16 @@ struct MockEngineNeoDrm : public Drm {
         i915engineInfo[5].engine.engineClass = UINT16_MAX;
         i915engineInfo[5].engine.engineInstance = 0;
 
-        this->engineInfo.reset(new EngineInfo(this, i915engineInfo));
+        StackVec<std::vector<NEO::EngineCapabilities>, 2> engineInfosPerTile{i915engineInfo};
+
+        this->engineInfo.reset(new EngineInfo(this, engineInfosPerTile));
         return true;
     }
 };
 
 struct MockEnginePmuInterfaceImp : public L0::Sysman::PmuInterfaceImp {
     using PmuInterfaceImp::perfEventOpen;
+    using PmuInterfaceImp::pSysmanKmdInterface;
     int64_t mockPmuFd = 0;
     uint64_t mockTimestamp = 0;
     uint64_t mockActiveTime = 0;

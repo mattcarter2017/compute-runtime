@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,6 +28,7 @@ class CommandStreamReceiverSimulatedHw : public CommandStreamReceiverSimulatedCo
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::aubManager;
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::hardwareContextController;
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::writeMemory;
+    using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::downloadAllocations;
 
   public:
     uint32_t getMemoryBank(GraphicsAllocation *allocation) const {
@@ -85,8 +86,8 @@ class CommandStreamReceiverSimulatedHw : public CommandStreamReceiverSimulatedCo
         }
         return AubMemDump::AddressSpaceValues::TraceNonlocal;
     }
-    PhysicalAddressAllocator *createPhysicalAddressAllocator(const HardwareInfo *hwInfo) {
-        const auto bankSize = AubHelper::getPerTileLocalMemorySize(hwInfo);
+    PhysicalAddressAllocator *createPhysicalAddressAllocator(const HardwareInfo *hwInfo, const ReleaseHelper *releaseHelper) {
+        const auto bankSize = AubHelper::getPerTileLocalMemorySize(hwInfo, releaseHelper);
         const auto devicesCount = GfxCoreHelper::getSubDevicesCount(hwInfo);
         return new PhysicalAddressAllocatorHw<GfxFamily>(bankSize, devicesCount);
     }
@@ -111,7 +112,7 @@ class CommandStreamReceiverSimulatedHw : public CommandStreamReceiverSimulatedCo
         auto gmm = graphicsAllocation.getDefaultGmm();
 
         if (gmm) {
-            allocationParams.additionalParams.compressionEnabled = gmm->isCompressionEnabled;
+            allocationParams.additionalParams.compressionEnabled = gmm->isCompressionEnabled();
             allocationParams.additionalParams.uncached = CacheSettingsHelper::isUncachedType(gmm->resourceParams.Usage);
         }
 

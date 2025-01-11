@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,7 +13,7 @@
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/os_interface.h"
 
-#include "level_zero/core/source/get_extension_function_lookup_map.h"
+#include "level_zero/core/source/driver/extension_function_address.h"
 #include "level_zero/sysman/source/device/sysman_device.h"
 #include "level_zero/sysman/source/driver/os_sysman_driver.h"
 #include "level_zero/sysman/source/driver/sysman_driver.h"
@@ -30,9 +30,6 @@ SysmanDriverHandleImp::SysmanDriverHandleImp() = default;
 
 ze_result_t SysmanDriverHandleImp::initialize(NEO::ExecutionEnvironment &executionEnvironment) {
     for (uint32_t rootDeviceIndex = 0u; rootDeviceIndex < executionEnvironment.rootDeviceEnvironments.size(); rootDeviceIndex++) {
-        if (!executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getHardwareInfo()->capabilityTable.levelZeroSupported) {
-            continue;
-        }
         auto pSysmanDevice = SysmanDevice::create(executionEnvironment, rootDeviceIndex);
         if (pSysmanDevice != nullptr) {
             this->sysmanDevices.push_back(pSysmanDevice);
@@ -49,9 +46,8 @@ ze_result_t SysmanDriverHandleImp::initialize(NEO::ExecutionEnvironment &executi
 }
 
 ze_result_t SysmanDriverHandleImp::getExtensionFunctionAddress(const char *pFuncName, void **pfunc) {
-    auto funcAddr = extensionFunctionsLookupMap.find(std::string(pFuncName));
-    if (funcAddr != extensionFunctionsLookupMap.end()) {
-        *pfunc = funcAddr->second;
+    *pfunc = ExtensionFunctionAddressHelper::getExtensionFunctionAddress(pFuncName);
+    if (*pfunc) {
         return ZE_RESULT_SUCCESS;
     }
     return ZE_RESULT_ERROR_INVALID_ARGUMENT;
@@ -69,7 +65,6 @@ SysmanDriverHandle *SysmanDriverHandle::create(NEO::ExecutionEnvironment &execut
         return nullptr;
     }
 
-    driverHandle->extensionFunctionsLookupMap = getExtensionFunctionsLookupMap();
     globalSysmanDriver = driverHandle;
     *returnValue = res;
     return driverHandle;
@@ -94,6 +89,17 @@ ze_result_t SysmanDriverHandleImp::getDevice(uint32_t *pCount, zes_device_handle
     }
 
     return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t SysmanDriverHandleImp::getDeviceByUuid(zes_uuid_t uuid, zes_device_handle_t *phDevice, ze_bool_t *onSubdevice, uint32_t *subdeviceId) {
+    for (uint32_t index = 0; index < this->numDevices; index++) {
+        ze_bool_t deviceFound = this->sysmanDevices[index]->getDeviceInfoByUuid(uuid, onSubdevice, subdeviceId);
+        if (deviceFound) {
+            *phDevice = this->sysmanDevices[index];
+            return ZE_RESULT_SUCCESS;
+        }
+    }
+    return ZE_RESULT_ERROR_INVALID_ARGUMENT;
 }
 
 ze_result_t SysmanDriverHandleImp::getExtensionProperties(uint32_t *pCount, zes_driver_extension_properties_t *pExtensionProperties) {

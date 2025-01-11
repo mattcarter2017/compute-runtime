@@ -51,13 +51,15 @@ void CommandStreamReceiverSimulatedCommonHw<GfxFamily>::setupContext(OsContext &
 
     if (osContext.isHighPriority()) {
         flags |= aub_stream::hardwareContextFlags::highPriority;
+    } else if (osContext.isLowPriority()) {
+        flags |= aub_stream::hardwareContextFlags::lowPriority;
     }
 
     if (debugManager.flags.AppendAubStreamContextFlags.get() != -1) {
         flags |= static_cast<uint32_t>(debugManager.flags.AppendAubStreamContextFlags.get());
     }
 
-    if (aubManager && !osContext.isLowPriority()) {
+    if (aubManager) {
         hardwareContextController = std::make_unique<HardwareContextController>(*aubManager, osContext, flags);
     }
 }
@@ -129,10 +131,19 @@ template <typename GfxFamily>
 CommandStreamReceiverSimulatedCommonHw<GfxFamily>::CommandStreamReceiverSimulatedCommonHw(ExecutionEnvironment &executionEnvironment,
                                                                                           uint32_t rootDeviceIndex,
                                                                                           const DeviceBitfield deviceBitfield)
-    : CommandStreamReceiverHw<GfxFamily>(executionEnvironment, rootDeviceIndex, deviceBitfield) {
+    : CommandStreamReceiverHw<GfxFamily>(executionEnvironment, rootDeviceIndex, deviceBitfield),
+      releaseHelper(executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getReleaseHelper()) {
     this->useNewResourceImplicitFlush = false;
     this->useGpuIdleImplicitFlush = false;
 }
 template <typename GfxFamily>
-CommandStreamReceiverSimulatedCommonHw<GfxFamily>::~CommandStreamReceiverSimulatedCommonHw() = default;
+CommandStreamReceiverSimulatedCommonHw<GfxFamily>::~CommandStreamReceiverSimulatedCommonHw() {
+    if (aubManager) {
+        if (hardwareContextController) {
+            for (auto &hardwareContext : hardwareContextController->hardwareContexts) {
+                aubManager->releaseHardwareContext(hardwareContext.release());
+            }
+        }
+    }
+}
 } // namespace NEO

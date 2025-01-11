@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,10 @@
 
 #include "shared/test/common/helpers/virtual_file_system_listener.h"
 
+#include "shared/test/common/helpers/mock_file_io.h"
+
 namespace NEO {
-std::set<std::string> virtualFileList;
+std::map<std::string, std::stringstream> virtualFileList;
 
 void VirtualFileSystemListener::OnTestStart(const ::testing::TestInfo &testInfo) {
 }

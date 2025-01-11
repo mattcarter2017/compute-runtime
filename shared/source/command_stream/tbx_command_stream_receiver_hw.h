@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,6 +18,7 @@ namespace NEO {
 
 class AubSubCaptureManager;
 class TbxStream;
+class CpuPageFaultManager;
 
 template <typename GfxFamily>
 class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFamily> {
@@ -27,10 +28,20 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
     using BaseClass::forceSkipResourceCleanupRequired;
     using BaseClass::getParametersForMemory;
     using BaseClass::osContext;
+    using BaseClass::pollForCompletion;
 
     uint32_t getMaskAndValueForPollForCompletion() const;
     bool getpollNotEqualValueForPollForCompletion() const;
-    void flushSubmissionsAndDownloadAllocations(TaskCountType taskCount);
+    void flushSubmissionsAndDownloadAllocations(TaskCountType taskCount, bool skipAllocationsDownload);
+    MOCKABLE_VIRTUAL uint64_t getNonBlockingDownloadTimeoutMs() const {
+        return 2000; // 2s
+    }
+
+    bool isAllocTbxFaultable(GraphicsAllocation *gfxAlloc);
+    void registerAllocationWithTbxFaultMngrIfTbxFaultable(GraphicsAllocation *gfxAllocation, void *cpuAddress, size_t size);
+    void allowCPUMemoryAccessIfTbxFaultable(GraphicsAllocation *gfxAllocation, void *cpuAddress, size_t size);
+    void protectCPUMemoryAccessIfTbxFaultable(GraphicsAllocation *gfxAllocation, void *cpuAddress, size_t size);
+    void protectCPUMemoryFromWritesIfTbxFaultable(GraphicsAllocation *gfxAllocation, void *cpuAddress, size_t size);
 
   public:
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::initAdditionalMMIO;
@@ -45,12 +56,12 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
 
     WaitStatus waitForTaskCountWithKmdNotifyFallback(TaskCountType taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, QueueThrottle throttle) override;
     WaitStatus waitForCompletionWithTimeout(const WaitParams &params, TaskCountType taskCountToWait) override;
-    void downloadAllocations() override;
+    void downloadAllocations(bool blockingWait, TaskCountType taskCount) override;
     void downloadAllocationTbx(GraphicsAllocation &gfxAllocation);
     void removeDownloadAllocation(GraphicsAllocation *alloc) override;
 
     void processEviction() override;
-    SubmissionStatus processResidency(const ResidencyContainer &allocationsForResidency, uint32_t handleId) override;
+    SubmissionStatus processResidency(ResidencyContainer &allocationsForResidency, uint32_t handleId) override;
     void writeMemory(uint64_t gpuAddress, void *cpuAddress, size_t size, uint32_t memoryBank, uint64_t entryBits) override;
     bool writeMemory(GraphicsAllocation &gfxAllocation, bool isChunkCopy, uint64_t gpuVaChunkOffset, size_t chunkSize) override;
     void writeMMIO(uint32_t offset, uint32_t value) override;
@@ -60,7 +71,7 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
 
     // Family specific version
     MOCKABLE_VIRTUAL void submitBatchBufferTbx(uint64_t batchBufferGpuAddress, const void *batchBuffer, size_t batchBufferSize, uint32_t memoryBank, uint64_t entryBits, bool overrideRingHead);
-    void pollForCompletion() override;
+    void pollForCompletion(bool skipTaskCountCheck) override;
 
     void dumpAllocation(GraphicsAllocation &gfxAllocation) override;
 
@@ -77,9 +88,11 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
 
     void initializeEngine() override;
 
-    MemoryManager *getMemoryManager() {
+    MOCKABLE_VIRTUAL MemoryManager *getMemoryManager() {
         return CommandStreamReceiver::getMemoryManager();
     }
+
+    MOCKABLE_VIRTUAL CpuPageFaultManager *getTbxPageFaultManager();
 
     TbxStream tbxStream;
     std::unique_ptr<AubSubCaptureManager> subCaptureManager;
@@ -95,7 +108,7 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
     std::set<GraphicsAllocation *> allocationsForDownload = {};
 
     CommandStreamReceiverType getType() const override {
-        return CommandStreamReceiverType::CSR_TBX;
+        return CommandStreamReceiverType::tbx;
     }
 
     bool dumpTbxNonWritable = false;

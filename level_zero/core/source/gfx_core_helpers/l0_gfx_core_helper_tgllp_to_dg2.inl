@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -86,6 +86,7 @@ std::vector<EuThread::ThreadId> L0GfxCoreHelperHw<Family>::getThreadsFromAttenti
                         return threads;
                     }
 
+                    UNRECOVERABLE_IF(!bitmask);
                     std::bitset<8> bits(bitmask[offset]);
                     for (uint32_t i = 0; i < 8; i++) {
                         if (bits.test(i)) {
@@ -109,6 +110,11 @@ std::vector<EuThread::ThreadId> L0GfxCoreHelperHw<Family>::getThreadsFromAttenti
 template <typename Family>
 bool L0GfxCoreHelperHw<Family>::isResumeWARequired() {
     return true;
+}
+
+template <typename Family>
+bool L0GfxCoreHelperHw<Family>::synchronizedDispatchSupported() const {
+    return false;
 }
 
 } // namespace L0

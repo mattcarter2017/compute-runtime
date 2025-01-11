@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 #
 
-if(DEFINED AUB_STREAM_PROJECT_NAME)
+if(NOT NEO_SKIP_AUB_TESTS AND DEFINED AUB_STREAM_PROJECT_NAME)
   link_libraries(${ASAN_LIBS} ${TSAN_LIBS})
 
   set(TARGET_NAME ${TARGET_NAME_L0}_aub_tests)
@@ -13,6 +13,7 @@ if(DEFINED AUB_STREAM_PROJECT_NAME)
   list(APPEND L0_AUB_TESTS__TARGET_OBJECTS
        ${CMAKE_CURRENT_SOURCE_DIR}/aub_hello_world_test.cpp
        ${NEO_SHARED_TEST_DIRECTORY}/common/common_main.cpp
+       ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/virtual_file_system_listener.cpp
        ${NEO_SHARED_TEST_DIRECTORY}/common/tests_configuration.h
   )
 
@@ -31,6 +32,12 @@ if(DEFINED AUB_STREAM_PROJECT_NAME)
   )
 
   set_target_properties(${TARGET_NAME} PROPERTIES FOLDER ${TARGET_NAME_L0})
+
+  if(MSVC)
+    set_target_properties(${TARGET_NAME} PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY ${TargetDir})
+  endif()
+
+  set_property(TARGET ${TARGET_NAME} PROPERTY ENABLE_EXPORTS TRUE)
 
   target_sources(${TARGET_NAME} PRIVATE
                  ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -71,6 +78,7 @@ if(DEFINED AUB_STREAM_PROJECT_NAME)
   target_link_libraries(${TARGET_NAME} ${HW_LIBS_ULT})
   target_link_libraries(${TARGET_NAME} gmock-gtest)
   target_link_libraries(${TARGET_NAME} ${NEO_EXTRA_LIBS})
+  target_link_libraries(${TARGET_NAME} ${AUB_STREAM_PROJECT_NAME})
 
   if(UNIX)
     target_link_libraries(${TARGET_NAME} rt)
@@ -88,6 +96,7 @@ if(DEFINED AUB_STREAM_PROJECT_NAME)
                              ${CIF_BASE_DIR}
                              ${NEO__GMM_INCLUDE_DIR}
                              ${WDK_DIR}
+                             ${NEO_SOURCE_DIR}/level_zero/include
   )
 
   create_project_source_tree(${TARGET_NAME})

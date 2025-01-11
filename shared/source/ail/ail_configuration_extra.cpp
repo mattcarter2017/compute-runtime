@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,9 +24,29 @@ std::map<std::string_view, std::vector<AILEnumeration>> applicationMap = {{"blen
                                                                           // Modify reported platform name to ensure older versions of Adobe Premiere Pro are able to recognize the GPU device
                                                                           {"Adobe Premiere Pro", {AILEnumeration::enableLegacyPlatformName}}};
 
-std::map<std::string_view, std::vector<AILEnumeration>> applicationMapMTL = {{"svchost", {AILEnumeration::disableDirectSubmission}}};
+std::map<std::string_view, std::vector<AILEnumeration>> applicationMapMTL = {{"svchost", {AILEnumeration::disableDirectSubmission}},
+                                                                             {"aomhost64", {AILEnumeration::disableDirectSubmission}},
+                                                                             {"Zoom", {AILEnumeration::disableDirectSubmission}}};
+
+const std::set<std::string_view> applicationsForceRcsDg2 = {};
 
 const std::set<std::string_view> applicationsContextSyncFlag = {};
+
+const std::set<std::string_view> applicationsBufferPoolDisabled = {};
+
+const std::set<std::string_view> applicationsBufferPoolDisabledXe = {};
+
+const std::set<std::string_view> applicationsOverfetchDisabled = {};
+
+const std::set<std::string_view> applicationsDrainHostptrsDisabled = {};
+
+const std::set<std::string_view> applicationsDeviceUSMRecyclingLimited = {};
+
+const std::set<std::string_view> applicationsFallbackToPatchtokensRequiredDg2 = {};
+
+const std::set<std::string_view> applicationsMicrosecontResolutionAdjustment = {};
+
+const uint32_t microsecondAdjustment = 1000;
 
 AILConfigurationCreateFunctionType ailConfigurationFactory[IGFX_MAX_PRODUCT];
 

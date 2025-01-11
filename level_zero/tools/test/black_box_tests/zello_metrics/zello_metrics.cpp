@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,13 +14,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 
 namespace zmu = ZelloMetricsUtility;
-
-std::map<std::string, std::function<bool()>> ZelloMetricsTestList::tests = {};
 
 ZelloMetricsTestList &ZelloMetricsTestList::get() {
     static ZelloMetricsTestList testList;
@@ -28,11 +24,13 @@ ZelloMetricsTestList &ZelloMetricsTestList::get() {
 }
 
 bool ZelloMetricsTestList::add(std::string testName, std::function<bool()> testFunction) {
+    auto &tests = getTests();
     tests[testName] = testFunction;
     return true;
 }
 
 std::map<std::string, std::function<bool()>> &ZelloMetricsTestList::getTests() {
+    static std::map<std::string, std::function<bool()>> tests;
     return tests;
 }
 
@@ -87,19 +85,23 @@ bool SingleDeviceTestRunner::run() {
     }
 
     EXPECT(status == true);
-    for (auto collector : collectorList) {
-        status &= collector->isDataAvailable();
-        LOG(zmu::LogLevel::DEBUG) << "Data Available : " << std::boolalpha << status << std::endl;
-    }
-
-    EXPECT(status == true);
     for (auto workload : workloadList) {
-        status &= workload->validate();
+        workload->validate();
     }
 
     EXPECT(status == true);
     for (auto collector : collectorList) {
         collector->showResults();
+    }
+
+    EXPECT(status == true);
+    for (auto collector : collectorList) {
+        auto status = collector->isDataAvailable();
+        if (!status) {
+            LOG(zmu::LogLevel::INFO) << "[W]Event was not generated !!" << std::endl;
+        } else {
+            LOG(zmu::LogLevel::DEBUG) << "Data Available : " << std::boolalpha << status << std::endl;
+        }
     }
 
     for (auto collector : collectorList) {
@@ -114,40 +116,14 @@ bool SingleDeviceTestRunner::run() {
 
 int main(int argc, char *argv[]) {
 
-    auto &tests = ZelloMetricsTestList::getTests();
+    auto &tests = ZelloMetricsTestList::get().getTests();
 
     auto testSettings = zmu::TestSettings::get();
     testSettings->parseArguments(argc, argv);
 
     int32_t runStatus = 0;
     if (testSettings->testName == "all") {
-        // Run all tests
-        for (auto const &[testName, testFn] : tests) {
-            LOG(zmu::LogLevel::INFO) << "\n== Start " << testName << " == \n";
-            // Run each test in a new process
-            pid_t pid = fork();
-            if (pid == 0) {
-                int32_t status = 0;
-                if (testFn() == true) {
-                    LOG(zmu::LogLevel::INFO) << testName << " : PASS\n";
-                } else {
-                    LOG(zmu::LogLevel::ERROR) << testName << " : FAIL \n";
-                    status = 1;
-                }
-                exit(status);
-            }
-
-            int32_t testStatus = 0;
-            // Wait for the process to complete
-            waitpid(pid, &testStatus, 0);
-            LOG(zmu::LogLevel::INFO) << "\n== End " << testName << " == \n";
-            if (WIFEXITED(testStatus) != true) {
-                runStatus = 1;
-            } else {
-                runStatus += WEXITSTATUS(testStatus);
-            }
-        }
-        return std::min(1, runStatus);
+        return zmu::osRunAllTests(runStatus);
     }
 
     // Run test.

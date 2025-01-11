@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -70,9 +70,8 @@ void MockCompilerEnableGuard::Enable() {
     if (enabled == false) {
         // load mock from self (don't load dynamic libraries)
         this->oldFclDllName = Os::frontEndDllName;
-        this->oldIgcDllName = Os::igcDllName;
         Os::frontEndDllName = "";
-        Os::igcDllName = "";
+        igcNameGuard = pushIgcDllName("");
         MockCIFMain::setGlobalCreatorFunc<NEO::MockIgcOclDeviceCtx>(NEO::MockIgcOclDeviceCtx::Create);
         MockCIFMain::setGlobalCreatorFunc<NEO::MockFclOclDeviceCtx>(NEO::MockFclOclDeviceCtx::Create);
         if (fclDebugVars == nullptr) {
@@ -89,7 +88,7 @@ void MockCompilerEnableGuard::Enable() {
 void MockCompilerEnableGuard::Disable() {
     if (enabled) {
         Os::frontEndDllName = this->oldFclDllName;
-        Os::igcDllName = this->oldIgcDllName;
+        igcNameGuard.reset();
 
         MockCIFMain::removeGlobalCreatorFunc<NEO::MockIgcOclDeviceCtx>();
         MockCIFMain::removeGlobalCreatorFunc<NEO::MockFclOclDeviceCtx>();
@@ -204,6 +203,8 @@ DEFINE_GET_SET(GTSystemInfo, 1, IsDynamicallyPopulated, bool);
 
 DEFINE_GET_SET(GTSystemInfo, 3, DualSubSliceCount, uint32_t);
 DEFINE_GET_SET(GTSystemInfo, 3, MaxDualSubSlicesSupported, uint32_t);
+
+DEFINE_GET_SET(GTSystemInfo, 4, SLMSizeInKb, uint32_t);
 
 #undef DEFINE_GET_SET
 
@@ -543,12 +544,15 @@ bool MockIgcOclDeviceCtx::GetSystemRoutine(IGC::SystemRoutineType::SystemRoutine
 
     if (debugVars.binaryToReturnSize > 0 && debugVars.binaryToReturn != nullptr) {
         outSystemRoutineBuffer->PushBackRawBytes(debugVars.binaryToReturn, debugVars.binaryToReturnSize);
-        stateSaveAreaHeaderInit->PushBackRawBytes(mockData2, 64);
-        return true;
+    } else {
+        outSystemRoutineBuffer->PushBackRawBytes(mockData1, 64);
     }
 
-    outSystemRoutineBuffer->PushBackRawBytes(mockData1, 64);
-    stateSaveAreaHeaderInit->PushBackRawBytes(mockData2, 64);
+    if (debugVars.stateSaveAreaHeaderToReturnSize > 0 && debugVars.stateSaveAreaHeaderToReturn != nullptr) {
+        stateSaveAreaHeaderInit->PushBackRawBytes(debugVars.stateSaveAreaHeaderToReturn, debugVars.stateSaveAreaHeaderToReturnSize);
+    } else {
+        stateSaveAreaHeaderInit->PushBackRawBytes(mockData2, 64);
+    }
     return true;
 }
 

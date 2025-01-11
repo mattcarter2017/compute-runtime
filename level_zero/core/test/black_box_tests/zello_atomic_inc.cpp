@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,12 +10,6 @@
 
 #include <cstring>
 
-const char *moduleSrc = R"===(
-__kernel void testKernel(__global uint *dst){
-        atomic_inc(dst);
-}
-)===";
-
 static bool inverseOrder = false;
 
 void executeKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &device, bool &outputValidationSuccessful) {
@@ -23,7 +17,7 @@ void executeKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &
     ze_command_list_handle_t cmdList1;
     ze_command_list_handle_t cmdList2;
 
-    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device);
+    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device, false);
     cmdQueueDesc.index = 0;
     cmdQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
 
@@ -32,22 +26,18 @@ void executeKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &
 
     constexpr size_t allocSize = 4096;
     ze_device_mem_alloc_desc_t deviceDesc = {ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC};
-    deviceDesc.flags = ZE_DEVICE_MEM_ALLOC_FLAG_BIAS_UNCACHED;
-    deviceDesc.ordinal = 0;
 
     ze_host_mem_alloc_desc_t hostDesc = {ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
     hostDesc.flags = ZE_HOST_MEM_ALLOC_FLAG_BIAS_UNCACHED;
 
     void *dstBuffer = nullptr;
-    SUCCESS_OR_TERMINATE(zeMemAllocHost(context, &hostDesc, allocSize, 4096, &dstBuffer));
+    SUCCESS_OR_TERMINATE(zeMemAllocShared(context, &deviceDesc, &hostDesc, allocSize, 4096, 0, &dstBuffer));
 
     memset(dstBuffer, 0, allocSize);
 
     std::string buildLog;
-    auto spirV = LevelZeroBlackBoxTests::compileToSpirV(moduleSrc, "", buildLog);
-    if (buildLog.size() > 0) {
-        std::cout << "Build log " << buildLog;
-    }
+    auto spirV = LevelZeroBlackBoxTests::compileToSpirV(LevelZeroBlackBoxTests::atomicIncSrc, "", buildLog);
+    LevelZeroBlackBoxTests::printBuildLog(buildLog);
     SUCCESS_OR_TERMINATE((0 == spirV.size()));
 
     ze_module_handle_t module = nullptr;
@@ -66,11 +56,11 @@ void executeKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &
 
         char *strLog = (char *)malloc(szLog);
         zeModuleBuildLogGetString(buildlog, &szLog, strLog);
-        std::cout << "Build log:" << strLog << std::endl;
+        LevelZeroBlackBoxTests::printBuildLog(strLog);
 
         free(strLog);
         SUCCESS_OR_TERMINATE(zeModuleBuildLogDestroy(buildlog));
-        std::cout << "\nModule creation error." << std::endl;
+        std::cerr << "\nModule creation error." << std::endl;
         SUCCESS_OR_TERMINATE_BOOL(false);
     }
 
@@ -101,10 +91,10 @@ void executeKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> events(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP),
+                                                     ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, false, nullptr, nullptr,
                                                      numEvents, events.data(),
                                                      ZE_EVENT_SCOPE_FLAG_DEVICE,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     auto buffer = reinterpret_cast<uint32_t *>(dstBuffer);
     auto offsetedBuffer = &(buffer[1]);

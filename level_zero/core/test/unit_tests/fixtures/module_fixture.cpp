@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #include "level_zero/core/test/unit_tests/fixtures/module_fixture.h"
 
 #include "shared/source/command_container/implicit_scaling.h"
+#include "shared/source/helpers/api_specific_config.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_graphics_allocation.h"
 
@@ -21,11 +22,11 @@ namespace ult {
 ModuleImmutableDataFixture::MockImmutableMemoryManager::MockImmutableMemoryManager(NEO::ExecutionEnvironment &executionEnvironment) : NEO::MockMemoryManager(const_cast<NEO::ExecutionEnvironment &>(executionEnvironment)) {}
 
 ModuleImmutableDataFixture::MockImmutableData::MockImmutableData(uint32_t perHwThreadPrivateMemorySize) : MockImmutableData(perHwThreadPrivateMemorySize, 0, 0) {}
-ModuleImmutableDataFixture::MockImmutableData::MockImmutableData(uint32_t perHwThreadPrivateMemorySize, uint32_t perThreadScratchSize, uint32_t perThreaddPrivateScratchSize) {
+ModuleImmutableDataFixture::MockImmutableData::MockImmutableData(uint32_t perHwThreadPrivateMemorySize, uint32_t perThreadScratchSlot0Size, uint32_t perThreadScratchSlot1Size) {
     mockKernelDescriptor = new NEO::KernelDescriptor;
     mockKernelDescriptor->kernelAttributes.perHwThreadPrivateMemorySize = perHwThreadPrivateMemorySize;
-    mockKernelDescriptor->kernelAttributes.perThreadScratchSize[0] = perThreadScratchSize;
-    mockKernelDescriptor->kernelAttributes.perThreadScratchSize[1] = perThreaddPrivateScratchSize;
+    mockKernelDescriptor->kernelAttributes.perThreadScratchSize[0] = perThreadScratchSlot0Size;
+    mockKernelDescriptor->kernelAttributes.perThreadScratchSize[1] = perThreadScratchSlot1Size;
     kernelDescriptor = mockKernelDescriptor;
 
     mockKernelInfo = new NEO::KernelInfo;
@@ -35,6 +36,7 @@ ModuleImmutableDataFixture::MockImmutableData::MockImmutableData(uint32_t perHwT
 
     auto ptr = reinterpret_cast<void *>(0x1234);
     isaGraphicsAllocation.reset(new NEO::MockGraphicsAllocation(0,
+                                                                1u /*num gmms*/,
                                                                 NEO::AllocationType::kernelIsa,
                                                                 ptr,
                                                                 0x1000,
@@ -127,6 +129,7 @@ void ModuleImmutableDataFixture::tearDown() {
 
 void ModuleFixture::setUp(bool skipCreatingModules) {
     debugManager.flags.FailBuildProgramWithStatefulAccess.set(0);
+    debugManager.flags.SelectCmdListHeapAddressModel.set(0);
 
     DeviceFixture::setUp();
     if (skipCreatingModules == false) {
@@ -161,6 +164,9 @@ void ModuleFixture::createKernel() {
     kernel = std::make_unique<WhiteBox<::L0::KernelImp>>();
     kernel->module = module.get();
     kernel->initialize(&desc);
+    if (NEO::ApiSpecificConfig::getBindlessMode(*device->getNEODevice())) {
+        const_cast<KernelDescriptor &>(kernel->getKernelDescriptor()).kernelAttributes.bufferAddressingMode = KernelDescriptor::Bindless;
+    }
 }
 
 std::unique_ptr<WhiteBox<::L0::KernelImp>> ModuleFixture::createKernelWithName(std::string name) {
@@ -187,6 +193,7 @@ void MultiDeviceModuleFixture::setUp() {
 void MultiDeviceModuleFixture::createModuleFromMockBinary(uint32_t rootDeviceIndex) {
     DebugManagerStateRestore restore;
     debugManager.flags.FailBuildProgramWithStatefulAccess.set(0);
+    debugManager.flags.SelectCmdListHeapAddressModel.set(0);
 
     auto device = driverHandle->devices[rootDeviceIndex];
     zebinData = std::make_unique<ZebinTestData::ZebinWithL0TestCommonModule>(device->getHwInfo());
@@ -198,11 +205,9 @@ void MultiDeviceModuleFixture::createModuleFromMockBinary(uint32_t rootDeviceInd
     moduleDesc.inputSize = src.size();
 
     ModuleBuildLog *moduleBuildLog = nullptr;
-    ze_result_t result = ZE_RESULT_SUCCESS;
 
-    modules[rootDeviceIndex].reset(Module::create(device,
-                                                  &moduleDesc,
-                                                  moduleBuildLog, ModuleType::user, &result));
+    modules[rootDeviceIndex].reset(new WhiteBox<::L0::Module>{device, moduleBuildLog, ModuleType::user});
+    modules[rootDeviceIndex]->initialize(&moduleDesc, device->getNEODevice());
 }
 
 void MultiDeviceModuleFixture::createKernel(uint32_t rootDeviceIndex) {
@@ -229,6 +234,7 @@ ModuleWithZebinFixture::MockImmutableData::MockImmutableData(L0::Device *device)
     this->device = device;
     auto ptr = reinterpret_cast<void *>(0x1234);
     isaGraphicsAllocation.reset(new NEO::MockGraphicsAllocation(0,
+                                                                1u /*num gmms*/,
                                                                 NEO::AllocationType::kernelIsa,
                                                                 ptr,
                                                                 0x1000,
@@ -250,6 +256,7 @@ void ModuleWithZebinFixture::MockModuleWithZebin::addSegments() {
     auto ptr = reinterpret_cast<void *>(0x1234);
     auto canonizedGpuAddress = castToUint64(ptr);
     translationUnit->globalVarBuffer = new NEO::MockGraphicsAllocation(0,
+                                                                       1u /*num gmms*/,
                                                                        NEO::AllocationType::globalSurface,
                                                                        ptr,
                                                                        0x1000,
@@ -258,6 +265,7 @@ void ModuleWithZebinFixture::MockModuleWithZebin::addSegments() {
                                                                        MemoryManager::maxOsContextCount,
                                                                        canonizedGpuAddress);
     translationUnit->globalConstBuffer = new NEO::MockGraphicsAllocation(0,
+                                                                         1u /*num gmms*/,
                                                                          NEO::AllocationType::globalSurface,
                                                                          ptr,
                                                                          0x1000,

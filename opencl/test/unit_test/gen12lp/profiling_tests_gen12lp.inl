@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,7 +32,6 @@ struct ProfilingTestsGen12LP : public CommandEnqueueFixture,
 
 GEN12LPTEST_F(ProfilingTestsGen12LP, GivenCommandQueueWithProflingWhenWalkerIsDispatchedThenTwoPIPECONTROLSWithOPERATION_WRITE_TIMESTAMPArePresentInCS) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
-    typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
     size_t globalOffsets[3] = {0, 0, 0};
     size_t workItems[3] = {1, 1, 1};
@@ -85,17 +84,17 @@ struct MockTagNode : public TagNode<TagType> {
 };
 
 class MyDeviceTime : public DeviceTime {
-    double getDynamicDeviceTimerResolution(HardwareInfo const &hwInfo) const override {
+    double getDynamicDeviceTimerResolution() const override {
         EXPECT_FALSE(true);
         return 1.0;
     }
-    uint64_t getDynamicDeviceTimerClock(HardwareInfo const &hwInfo) const override {
+    uint64_t getDynamicDeviceTimerClock() const override {
         EXPECT_FALSE(true);
         return 0;
     }
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *) override {
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *) override {
         EXPECT_FALSE(true);
-        return false;
+        return TimeQueryStatus::deviceLost;
     }
 };
 

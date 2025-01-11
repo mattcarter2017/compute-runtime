@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -75,12 +75,15 @@ HardwareInfo *RootDeviceEnvironment::getMutableHardwareInfo() const {
 }
 
 void RootDeviceEnvironment::setHwInfoAndInitHelpers(const HardwareInfo *hwInfo) {
-    *this->hwInfo = *hwInfo;
+    setHwInfo(hwInfo);
     initHelpers();
 }
 
 void RootDeviceEnvironment::setHwInfo(const HardwareInfo *hwInfo) {
     *this->hwInfo = *hwInfo;
+    if (debugManager.flags.DisableSupportForL0Debugger.get() == 1) {
+        this->hwInfo->capabilityTable.l0DebuggerSupported = false;
+    }
 }
 
 bool RootDeviceEnvironment::isFullRangeSvm() const {
@@ -124,6 +127,8 @@ void RootDeviceEnvironment::initGmm() {
 void RootDeviceEnvironment::initOsTime() {
     if (!osTime) {
         osTime = OSTime::create(osInterface.get());
+        osTime->setDeviceTimerResolution();
+        osTime->setDeviceTimestampWidth(gfxCoreHelper->getDeviceTimestampWidth());
     }
 }
 
@@ -135,8 +140,8 @@ const ProductHelper &RootDeviceEnvironment::getProductHelper() const {
     return *productHelper;
 }
 
-void RootDeviceEnvironment::createBindlessHeapsHelper(MemoryManager *memoryManager, bool availableDevices, uint32_t rootDeviceIndex, DeviceBitfield deviceBitfield) {
-    bindlessHeapsHelper = std::make_unique<BindlessHeapsHelper>(memoryManager, availableDevices, rootDeviceIndex, deviceBitfield);
+void RootDeviceEnvironment::createBindlessHeapsHelper(Device *rootDevice, bool availableDevices) {
+    bindlessHeapsHelper = std::make_unique<BindlessHeapsHelper>(rootDevice, availableDevices);
 }
 
 CompilerInterface *RootDeviceEnvironment::getCompilerInterface() {
@@ -153,10 +158,17 @@ CompilerInterface *RootDeviceEnvironment::getCompilerInterface() {
 void RootDeviceEnvironment::initHelpers() {
     initProductHelper();
     initGfxCoreHelper();
+    initializeGfxCoreHelperFromHwInfo();
     initApiGfxCoreHelper();
     initCompilerProductHelper();
     initReleaseHelper();
     initAilConfigurationHelper();
+}
+
+void RootDeviceEnvironment::initializeGfxCoreHelperFromHwInfo() {
+    if (gfxCoreHelper != nullptr) {
+        gfxCoreHelper->initializeDefaultHpCopyEngine(*this->getHardwareInfo());
+    }
 }
 
 void RootDeviceEnvironment::initGfxCoreHelper() {
@@ -239,19 +251,16 @@ void RootDeviceEnvironment::initDummyAllocation() {
 }
 
 void RootDeviceEnvironment::setDummyBlitProperties(uint32_t rootDeviceIndex) {
-    size_t size = 4 * 4096u;
-    this->dummyBlitProperties = std::make_unique<AllocationProperties>(
-        rootDeviceIndex,
-        true,
-        size,
-        NEO::AllocationType::buffer,
-        false,
-        false,
-        systemMemoryBitfield);
+    size_t size = 32 * MemoryConstants::kiloByte;
+    this->dummyBlitProperties = std::make_unique<AllocationProperties>(rootDeviceIndex, size, NEO::AllocationType::buffer, systemMemoryBitfield);
 }
 
 GraphicsAllocation *RootDeviceEnvironment::getDummyAllocation() const {
     return dummyAllocation.get();
+}
+
+void RootDeviceEnvironment::releaseDummyAllocation() {
+    dummyAllocation.reset();
 }
 
 AssertHandler *RootDeviceEnvironment::getAssertHandler(Device *neoDevice) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -53,7 +53,7 @@ TEST(GetDeviceInfo, GivenInvalidParametersWhenGettingDeviceInfoThenValueSizeRetI
     EXPECT_EQ(0x1234u, valueSizeRet);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GetDeviceInfoMemCapabilitiesTest, GivenValidParametersWhenGetDeviceInfoIsCalledForBdwAndLaterThenClSuccessIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GetDeviceInfoMemCapabilitiesTest, GivenValidParametersWhenGetDeviceInfoIsCalledForBdwAndLaterThenClSuccessIsReturned) {
 
     std::vector<TestParams> params = {
         {CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL,
@@ -538,18 +538,24 @@ TEST(GetDeviceInfo, GivenPreferredInteropsWhenGettingDeviceInfoThenCorrectValueI
     EXPECT_EQ(sizeof(cl_bool), size);
     EXPECT_TRUE(value == 1u);
 }
+
 TEST(GetDeviceInfo, WhenQueryingIlsWithVersionThenProperValueIsReturned) {
     auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
-    cl_name_version ilsWithVersion[1];
+    constexpr auto ilCount = 4;
+    cl_name_version ilsWithVersion[ilCount];
     size_t paramRetSize;
 
     const auto retVal = device->getDeviceInfo(CL_DEVICE_ILS_WITH_VERSION, sizeof(ilsWithVersion), &ilsWithVersion,
                                               &paramRetSize);
     EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(sizeof(cl_name_version), paramRetSize);
-    EXPECT_EQ(CL_MAKE_VERSION(1u, 2u, 0u), ilsWithVersion->version);
-    EXPECT_STREQ("SPIR-V", ilsWithVersion->name);
+    EXPECT_EQ(sizeof(cl_name_version) * ilCount, paramRetSize);
+    for (int i = 0; i < ilCount; i++) {
+        EXPECT_EQ(1u, CL_VERSION_MAJOR(ilsWithVersion[i].version));
+        EXPECT_GT(4u, CL_VERSION_MINOR(ilsWithVersion[i].version));
+        EXPECT_EQ(0u, CL_VERSION_PATCH(ilsWithVersion[i].version));
+        EXPECT_STREQ("SPIR-V", ilsWithVersion[i].name);
+    }
 }
 
 TEST(GetDeviceInfo, WhenQueryingAtomicMemoryCapabilitiesThenProperValueIsReturned) {
@@ -991,7 +997,7 @@ cl_device_info deviceInfoParams[] = {
     CL_DRIVER_VERSION,
     CL_DRIVER_UUID_KHR};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     Device_,
     GetDeviceInfo,
     testing::ValuesIn(deviceInfoParams));
@@ -1116,13 +1122,8 @@ struct DeviceAttributeQueryTest : public ::testing::TestWithParam<uint32_t /*cl_
             auto pDeviceIpVersion = reinterpret_cast<cl_version *>(object.get());
             auto &hwInfo = device.getHardwareInfo();
 
-            if (debugManager.flags.UseDeprecatedClDeviceIpVersion.get()) {
-                auto &clGfxCoreHelper = device.getRootDeviceEnvironment().getHelper<ClGfxCoreHelper>();
-                EXPECT_EQ(clGfxCoreHelper.getDeviceIpVersion(hwInfo), *pDeviceIpVersion);
-            } else {
-                auto &compilerProductHelper = device.getCompilerProductHelper();
-                EXPECT_EQ(static_cast<cl_version>(compilerProductHelper.getHwIpVersion(hwInfo)), *pDeviceIpVersion);
-            }
+            auto &compilerProductHelper = device.getCompilerProductHelper();
+            EXPECT_EQ(static_cast<cl_version>(compilerProductHelper.getHwIpVersion(hwInfo)), *pDeviceIpVersion);
             EXPECT_EQ(sizeof(cl_version), sizeReturned);
             break;
         }
@@ -1141,8 +1142,7 @@ struct DeviceAttributeQueryTest : public ::testing::TestWithParam<uint32_t /*cl_
         }
         case CL_DEVICE_NUM_SUB_SLICES_PER_SLICE_INTEL: {
             auto pNumSubslicesPerSlice = reinterpret_cast<cl_uint *>(object.get());
-            const auto &gtSysInfo = device.getHardwareInfo().gtSystemInfo;
-            EXPECT_EQ(gtSysInfo.SubSliceCount / gtSysInfo.SliceCount, *pNumSubslicesPerSlice);
+            EXPECT_EQ(4u, *pNumSubslicesPerSlice);
             EXPECT_EQ(sizeof(cl_uint), sizeReturned);
             break;
         }
@@ -1177,23 +1177,16 @@ struct DeviceAttributeQueryTest : public ::testing::TestWithParam<uint32_t /*cl_
     DebugManagerStateRestore restorer;
 };
 
-TEST_P(DeviceAttributeQueryTest, givenDeprecatedDeviceIpVersionWhenVerifyDeviceAttributeThenCorrectResultsAreReturned) {
-    debugManager.flags.UseDeprecatedClDeviceIpVersion.set(true);
-    auto pClDevice = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
-    verifyDeviceAttribute(*pClDevice);
-}
-
-TEST_P(DeviceAttributeQueryTest, givenNewDeviceIpVersionWhenVerifyDeviceAttributeThenCorrectResultsAreReturned) {
-    debugManager.flags.UseDeprecatedClDeviceIpVersion.set(false);
-    auto pClDevice = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
-    verifyDeviceAttribute(*pClDevice);
-}
-
 TEST_P(DeviceAttributeQueryTest, givenGetDeviceInfoWhenDeviceAttributeIsQueriedOnRootDeviceAndSubDevicesThenReturnCorrectAttributeValues) {
     debugManager.flags.CreateMultipleSubDevices.set(2);
     VariableBackup<bool> mockDeviceFlagBackup(&MockDevice::createSingleDevice, false);
 
-    auto pRootClDevice = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    HardwareInfo hwInfo = *defaultHwInfo;
+    hwInfo.gtSystemInfo.SliceCount = 2;
+    hwInfo.gtSystemInfo.DualSubSliceCount = 7;
+    hwInfo.gtSystemInfo.SubSliceCount = 7;
+
+    auto pRootClDevice = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
     ASSERT_EQ(2u, pRootClDevice->subDevices.size());
 
     verifyDeviceAttribute(*pRootClDevice);
@@ -1212,7 +1205,7 @@ cl_device_info deviceAttributeQueryParams[] = {
     CL_DEVICE_NUM_THREADS_PER_EU_INTEL,
     CL_DEVICE_FEATURE_CAPABILITIES_INTEL};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     Device_,
     DeviceAttributeQueryTest,
     testing::ValuesIn(deviceAttributeQueryParams));

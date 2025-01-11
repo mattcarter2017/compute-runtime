@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -131,6 +131,8 @@ enum Power {
     DisableEnergyThreshold,
     CurrentEnergyCounter,
     CurrentEnergyCounter64Bit,
+    PowerSupportedSubDevices,
+    PowerLimit4Enabled,
 
     MaxPowerRequests,
 };
@@ -359,6 +361,13 @@ enum TemperatureDomainsType {
     TemperatureDomainHBM,
 
     TempetatureMaxDomainTypes,
+};
+
+enum class PowerDomainsType {
+    powerDomainPackage = 0,
+    powerDomainCard,
+
+    powerMaxDomainTypes,
 };
 
 enum ActivityDomainsType {

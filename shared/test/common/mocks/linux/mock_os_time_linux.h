@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,16 +17,29 @@ class MockDeviceTimeDrm : public DeviceTimeDrm {
     using DeviceTimeDrm::DeviceTimeDrm;
     using DeviceTimeDrm::pDrm;
 
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+        getGpuCpuTimeImplCalled++;
         if (callBaseGetGpuCpuTimeImpl) {
             return DeviceTimeDrm::getGpuCpuTimeImpl(pGpuCpuTime, osTime);
         }
         *pGpuCpuTime = gpuCpuTimeValue;
         return getGpuCpuTimeImplResult;
     }
+
+    double getDynamicDeviceTimerResolution() const override {
+        if (callGetDynamicDeviceTimerResolution) {
+            return DeviceTimeDrm::getDynamicDeviceTimerResolution();
+        }
+        return dynamicDeviceTimerResolutionValue;
+    }
+
     bool callBaseGetGpuCpuTimeImpl = true;
-    bool getGpuCpuTimeImplResult = true;
+    TimeQueryStatus getGpuCpuTimeImplResult = TimeQueryStatus::success;
     TimeStampData gpuCpuTimeValue{};
+    uint32_t getGpuCpuTimeImplCalled = 0;
+
+    bool callGetDynamicDeviceTimerResolution = false;
+    double dynamicDeviceTimerResolutionValue = 1.0;
 };
 
 class MockOSTimeLinux : public OSTimeLinux {

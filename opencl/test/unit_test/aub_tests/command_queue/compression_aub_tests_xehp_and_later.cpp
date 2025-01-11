@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -90,7 +90,7 @@ void CompressionXeHPAndLater<testLocalMemory>::givenCompressedBuffersWhenWriting
     auto compressedAllocation = compressedBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
     memset(compressedAllocation->getUnderlyingBuffer(), 0, bufferSize);
     EXPECT_NE(nullptr, compressedAllocation->getDefaultGmm()->gmmResourceInfo->peekHandle());
-    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled());
     if (testLocalMemory) {
         EXPECT_EQ(MemoryPool::localMemory, compressedAllocation->getMemoryPool());
     } else {
@@ -101,7 +101,7 @@ void CompressionXeHPAndLater<testLocalMemory>::givenCompressedBuffersWhenWriting
     auto nonCompressedAllocation = notCompressedBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
     nonCompressedAllocation->setAllocationType(AllocationType::buffer);
     if (nonCompressedAllocation->getDefaultGmm()) {
-        nonCompressedAllocation->getDefaultGmm()->isCompressionEnabled = false;
+        nonCompressedAllocation->getDefaultGmm()->setCompressionEnabled(false);
     }
     memset(nonCompressedAllocation->getUnderlyingBuffer(), 0, bufferSize);
 
@@ -175,10 +175,10 @@ void CompressionXeHPAndLater<testLocalMemory>::givenCompressedImage2DFromBufferW
     // make sure our objects are in in fact compressed
     auto graphicsAllocation = compressedBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
     EXPECT_NE(nullptr, graphicsAllocation->getDefaultGmm());
-    EXPECT_TRUE(graphicsAllocation->getDefaultGmm()->isCompressionEnabled);
-    EXPECT_TRUE(compressedImage->getGraphicsAllocation(device->getRootDeviceIndex())->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(graphicsAllocation->getDefaultGmm()->isCompressionEnabled());
+    EXPECT_TRUE(compressedImage->getGraphicsAllocation(device->getRootDeviceIndex())->getDefaultGmm()->isCompressionEnabled());
 
-    expectNotEqualMemory<FamilyType>(reinterpret_cast<void *>(graphicsAllocation->getGpuAddress()), writePattern, bufferSize);
+    expectNotEqualMemory<FamilyType>(addrToPtr(ptrOffset(graphicsAllocation->getGpuAddress(), compressedBuffer->getOffset())), writePattern, bufferSize);
 
     clReleaseMemObject(clCompressedImage);
 }
@@ -305,10 +305,10 @@ HWTEST2_P(CompressionLocalXeHPAndLater, givenCompressedImageWhenReadingThenResul
     givenCompressedImageWhenReadingThenResultsAreCorrect<FamilyType>();
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        CompressionLocalXeHPAndLater,
-                        ::testing::Values(aub_stream::ENGINE_RCS,
-                                          aub_stream::ENGINE_CCS));
+INSTANTIATE_TEST_SUITE_P(,
+                         CompressionLocalXeHPAndLater,
+                         ::testing::Values(aub_stream::ENGINE_RCS,
+                                           aub_stream::ENGINE_CCS));
 
 using CompressionSystemXeHPAndLater = CompressionXeHPAndLater<false>;
 HWTEST2_P(CompressionSystemXeHPAndLater, GENERATEONLY_givenCompressedBuffersWhenWritingAndCopyingThenResultsAreCorrect, CompressionSystemAubsSupportedMatcher) {
@@ -321,7 +321,7 @@ HWTEST2_P(CompressionSystemXeHPAndLater, givenCompressedImageWhenReadingThenResu
     givenCompressedImageWhenReadingThenResultsAreCorrect<FamilyType>();
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        CompressionSystemXeHPAndLater,
-                        ::testing::Values(aub_stream::ENGINE_RCS,
-                                          aub_stream::ENGINE_CCS));
+INSTANTIATE_TEST_SUITE_P(,
+                         CompressionSystemXeHPAndLater,
+                         ::testing::Values(aub_stream::ENGINE_RCS,
+                                           aub_stream::ENGINE_CCS));

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,8 +10,8 @@
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/os_interface/linux/engine_info.h"
 
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/zes_os_sysman_imp.h"
 #include "level_zero/sysman/source/sysman_const.h"
 
@@ -40,7 +40,7 @@ static ze_result_t readSchedulerValueFromSysfs(SysfsName schedulerSysfsName,
         }
         result = pSysmanImp->getSysfsAccess().read(path, readValue);
         if (result == ZE_RESULT_SUCCESS) {
-            pSysmanKmdInterface->convertSysfsValueUnit(SysmanKmdInterface::microSecond,
+            pSysmanKmdInterface->convertSysfsValueUnit(SysfsValueUnit::micro,
                                                        pSysmanKmdInterface->getNativeUnit(schedulerSysfsName),
                                                        readValue, readValue);
             readValueVec[i] = readValue;
@@ -79,7 +79,7 @@ static ze_result_t writeSchedulerValueToSysfs(SysfsName schedulerSysfsName,
     auto pSysmanKmdInterface = pSysmanImp->getSysmanKmdInterface();
     auto sysfsName = pSysmanKmdInterface->getSysfsFilePath(schedulerSysfsName, subdeviceId, false);
     pSysmanKmdInterface->convertSysfsValueUnit(pSysmanKmdInterface->getNativeUnit(schedulerSysfsName),
-                                               SysmanKmdInterface::microSecond, writeValue, writeValue);
+                                               SysfsValueUnit::micro, writeValue, writeValue);
     auto engineBasePath = pSysmanKmdInterface->getEngineBasePath(subdeviceId);
     for (const auto &engineName : listOfEngines) {
         auto path = engineBasePath + "/" + engineName + "/" + sysfsName;
@@ -121,36 +121,11 @@ ze_result_t LinuxSchedulerImp::getCurrentMode(zes_sched_mode_t *pMode) {
         if (timeout > 0) {
             *pMode = ZES_SCHED_MODE_TIMEOUT;
         } else {
-            auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
-            if (pSysmanKmdInterface->useDefaultMaximumWatchdogTimeoutForExclusiveMode()) {
-
-                uint64_t defaultHeartbeatInterval = 0;
-                result = readSchedulerValueFromSysfs(SysfsName::sysfsNameSchedulerWatchDogTimeoutMaximum,
-                                                     pLinuxSysmanImp, subdeviceId, true,
-                                                     listOfEngines, engineType, defaultHeartbeatInterval);
-                if (result != ZE_RESULT_SUCCESS) {
-                    NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to get default heartbeat interval and returning error:0x%x \n", __FUNCTION__, result);
-                    return result;
-                }
-
-                // If default maximum value is used, then heartbeat is expected to be
-                // set to the default maximum
-                if (heartbeat == defaultHeartbeatInterval) {
-                    *pMode = ZES_SCHED_MODE_EXCLUSIVE;
-                } else {
-                    *pMode = ZES_SCHED_MODE_FORCE_UINT32;
-                    result = ZE_RESULT_ERROR_UNKNOWN;
-                }
+            if (heartbeat == 0) {
+                *pMode = ZES_SCHED_MODE_EXCLUSIVE;
             } else {
-                if (heartbeat == 0) {
-                    // If we are here, it means heartbeat = 0, timeout = 0, timeslice = 0.
-                    *pMode = ZES_SCHED_MODE_EXCLUSIVE;
-                } else {
-                    // If we are here it means heartbeat > 0, timeout = 0, timeslice = 0.
-                    // And we dont know what that mode is.
-                    *pMode = ZES_SCHED_MODE_FORCE_UINT32;
-                    result = ZE_RESULT_ERROR_UNKNOWN;
-                }
+                *pMode = ZES_SCHED_MODE_FORCE_UINT32;
+                result = ZE_RESULT_ERROR_UNKNOWN;
             }
         }
     }
@@ -169,23 +144,20 @@ ze_result_t LinuxSchedulerImp::setExclusiveModeImp() {
         NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to set timeslice duration and returning error:0x%x \n", __FUNCTION__, result);
         return result;
     }
-
-    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
-    if (pSysmanKmdInterface->useDefaultMaximumWatchdogTimeoutForExclusiveMode()) {
-
-        result = readSchedulerValueFromSysfs(SysfsName::sysfsNameSchedulerWatchDogTimeoutMaximum,
-                                             pLinuxSysmanImp, subdeviceId, true,
-                                             listOfEngines, engineType, heartbeat);
-        if (result != ZE_RESULT_SUCCESS) {
-            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to get default heartbeat interval and returning error:0x%x \n", __FUNCTION__, result);
-            return result;
-        }
-    }
     result = setHeartbeatInterval(heartbeat);
+    if (result != ZE_RESULT_SUCCESS) {
+        return result;
+    }
     return result;
 }
 
 ze_result_t LinuxSchedulerImp::setExclusiveMode(ze_bool_t *pNeedReload) {
+
+    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
+    if (pSysmanKmdInterface->isSettingExclusiveModeSupported() == false) {
+        return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    }
+
     *pNeedReload = false;
 
     zes_sched_mode_t currMode;
@@ -237,6 +209,12 @@ ze_result_t LinuxSchedulerImp::getTimesliceModeProperties(ze_bool_t getDefaults,
 }
 
 ze_result_t LinuxSchedulerImp::setTimeoutMode(zes_sched_timeout_properties_t *pProperties, ze_bool_t *pNeedReload) {
+
+    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
+    if (pSysmanKmdInterface->isSettingTimeoutModeSupported() == false) {
+        return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    }
+
     *pNeedReload = false;
     zes_sched_mode_t currMode;
     ze_result_t result = getCurrentMode(&currMode);
@@ -324,7 +302,7 @@ ze_result_t LinuxSchedulerImp::setTimesliceMode(zes_sched_timeslice_properties_t
 ze_result_t LinuxSchedulerImp::getProperties(zes_sched_properties_t &schedProperties) {
     schedProperties.onSubdevice = onSubdevice;
     schedProperties.subdeviceId = subdeviceId;
-    schedProperties.canControl = canControlScheduler();
+    schedProperties.canControl = true;
     schedProperties.engines = this->engineType;
     schedProperties.supportedModes = (1 << ZES_SCHED_MODE_TIMEOUT) | (1 << ZES_SCHED_MODE_TIMESLICE) | (1 << ZES_SCHED_MODE_EXCLUSIVE);
     return ZE_RESULT_SUCCESS;
@@ -370,10 +348,6 @@ ze_result_t LinuxSchedulerImp::setHeartbeatInterval(uint64_t heartbeat) {
     return writeSchedulerValueToSysfs(SysfsName::sysfsNameSchedulerWatchDogTimeout,
                                       pLinuxSysmanImp, subdeviceId,
                                       listOfEngines, engineType, heartbeat);
-}
-
-ze_bool_t LinuxSchedulerImp::canControlScheduler() {
-    return 1;
 }
 
 ze_result_t LinuxSchedulerImp::setComputeUnitDebugMode(ze_bool_t *pNeedReload) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -34,31 +34,6 @@ GEN12LPTEST_F(ClGfxCoreHelperTestsGen12Lp, givenTglLpThenAuxTranslationIsRequire
 
         EXPECT_EQ(accessedUsingStatelessAddressingMode, clGfxCoreHelper.requiresAuxResolves(kernelInfo));
     }
-}
-
-HWTEST2_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion, IsTGLLP) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 0, 0), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
-}
-
-HWTEST2_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion, IsRKL) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 0, 0), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
-}
-
-HWTEST2_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion, IsADLS) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 0, 0), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
-}
-
-HWTEST2_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion, IsADLP) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 0, 0), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
-}
-
-HWTEST2_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion, IsDG1) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 0, 1), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
 }
 
 GEN12LPTEST_F(ClGfxCoreHelperTestsGen12Lp, WhenGettingSupportedDeviceFeatureCapabilitiesThenReturnCorrectValue) {
@@ -135,7 +110,7 @@ GEN12LPTEST_F(GfxCoreHelperTestGen12Lp, WhenAdjustingDefaultEngineTypeThenRcsIsS
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto &productHelper = getHelper<ProductHelper>();
 
-    gfxCoreHelper.adjustDefaultEngineType(&hardwareInfo, productHelper);
+    gfxCoreHelper.adjustDefaultEngineType(&hardwareInfo, productHelper, nullptr);
     EXPECT_EQ(aub_stream::ENGINE_RCS, hardwareInfo.capabilityTable.defaultEngineType);
 }
 
@@ -198,28 +173,10 @@ GEN12LPTEST_F(GfxCoreHelperTestGen12Lp, givenFtrCcsNodeSetWhenGetGpgpuEnginesThe
     EXPECT_EQ(aub_stream::ENGINE_CCS, engines[3].first);
 }
 
-GEN12LPTEST_F(GfxCoreHelperTestGen12Lp, givenFtrCcsNodeSetFtrGpGpuMidThreadLevelPreemptSetWhenGetGpgpuEnginesThenReturn2RcsAndCcsEngines) {
+GEN12LPTEST_F(GfxCoreHelperTestGen12Lp, givenFtrCcsNodeSetWhenGetGpgpuEnginesThenReturn2RcsAnd2CcsEngines) {
     HardwareInfo hwInfo = *defaultHwInfo;
     hwInfo.featureTable.flags.ftrCCSNode = true;
     hwInfo.featureTable.ftrBcsInfo = 0;
-    hwInfo.featureTable.flags.ftrGpGpuMidThreadLevelPreempt = true;
-    hwInfo.capabilityTable.defaultEngineType = aub_stream::ENGINE_CCS;
-
-    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo, 0));
-    auto &gfxCoreHelper = device->getGfxCoreHelper();
-    EXPECT_EQ(3u, device->allEngines.size());
-    auto &engines = gfxCoreHelper.getGpgpuEngineInstances(device->getRootDeviceEnvironment());
-    EXPECT_EQ(3u, engines.size());
-    EXPECT_EQ(aub_stream::ENGINE_RCS, engines[0].first);
-    EXPECT_EQ(aub_stream::ENGINE_RCS, engines[1].first);
-    EXPECT_EQ(aub_stream::ENGINE_CCS, engines[2].first);
-}
-
-GEN12LPTEST_F(GfxCoreHelperTestGen12Lp, givenFtrCcsNodeSetFtrGpGpuMidThreadLevelPreemptNotSetWhenGetGpgpuEnginesThenReturn2RcsAnd2CcsEngines) {
-    HardwareInfo hwInfo = *defaultHwInfo;
-    hwInfo.featureTable.flags.ftrCCSNode = true;
-    hwInfo.featureTable.ftrBcsInfo = 0;
-    hwInfo.featureTable.flags.ftrGpGpuMidThreadLevelPreempt = false;
     hwInfo.capabilityTable.defaultEngineType = aub_stream::ENGINE_CCS;
 
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo, 0));
@@ -309,7 +266,7 @@ using LriHelperTestsGen12Lp = ::testing::Test;
 
 GEN12LPTEST_F(LriHelperTestsGen12Lp, whenProgrammingLriCommandThenExpectMmioRemapEnable) {
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint32_t address = 0x8888;
@@ -321,7 +278,7 @@ GEN12LPTEST_F(LriHelperTestsGen12Lp, whenProgrammingLriCommandThenExpectMmioRema
     expectedLri.setDataDword(data);
     expectedLri.setMmioRemapEnable(false);
 
-    LriHelper<FamilyType>::program(&stream, address, data, false);
+    LriHelper<FamilyType>::program(&stream, address, data, false, false);
     MI_LOAD_REGISTER_IMM *lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(buffer.get());
     ASSERT_NE(nullptr, lri);
 

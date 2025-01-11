@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -146,13 +146,13 @@ void LinuxGlobalOperationsImp::getBrandName(char (&brandName)[ZES_STRING_PROPERT
     std::string strVal;
     ze_result_t result = pSysfsAccess->read(subsystemVendorFile, strVal);
     if (ZE_RESULT_SUCCESS != result) {
-        std::strncpy(brandName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
         return;
     }
     if (strVal.compare(intelPciId) == 0) {
-        std::strncpy(brandName, vendorIntel.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, vendorIntel.data(), ZES_STRING_PROPERTY_SIZE);
     } else {
-        std::strncpy(brandName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     }
 }
 
@@ -168,15 +168,15 @@ void LinuxGlobalOperationsImp::getVendorName(char (&vendorName)[ZES_STRING_PROPE
     std::stringstream pciId;
     pciId << std::hex << coreDeviceProperties.vendorId;
     if (("0x" + pciId.str()).compare(intelPciId) == 0) {
-        std::strncpy(vendorName, vendorIntel.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(vendorName, vendorIntel.data(), ZES_STRING_PROPERTY_SIZE);
     } else {
-        std::strncpy(vendorName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(vendorName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     }
 }
 
 void LinuxGlobalOperationsImp::getDriverVersion(char (&driverVersion)[ZES_STRING_PROPERTY_SIZE]) {
     std::string strVal;
-    std::strncpy(driverVersion, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+    std::strncpy(driverVersion, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     ze_result_t result = pFsAccess->read(agamaVersionFile, strVal);
     if (ZE_RESULT_SUCCESS != result) {
         if (ZE_RESULT_ERROR_NOT_AVAILABLE != result) {
@@ -231,11 +231,12 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
     std::string flrPath = resetName + functionLevelReset;
     resetName = pFsAccess->getBaseName(resetName);
 
-    // Unbind the device from the kernel driver.
-    result = pSysfsAccess->unbindDevice(resetName);
-    if (ZE_RESULT_SUCCESS != result) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to unbind device:%s and returning error:0x%x \n", __FUNCTION__, resetName.c_str(), result);
-        return result;
+    if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+        result = pSysfsAccess->unbindDevice(resetName);
+        if (ZE_RESULT_SUCCESS != result) {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to unbind device:%s and returning error:0x%x \n", __FUNCTION__, resetName.c_str(), result);
+            return result;
+        }
     }
 
     std::vector<::pid_t> processes;
@@ -264,9 +265,25 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
     for (auto &&pid : deviceUsingPids) {
         while (pProcfsAccess->isAlive(pid)) {
             if (std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() > resetTimeout) {
+
+                if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+                    result = pSysfsAccess->bindDevice(resetName);
+                    if (ZE_RESULT_SUCCESS != result) {
+                        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to bind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
+                        return result;
+                    }
+                }
+
+                result = pLinuxSysmanImp->initDevice();
+                if (ZE_RESULT_SUCCESS != result) {
+                    NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to init the device and returning error:0x%x \n", __FUNCTION__, result);
+                    return result;
+                }
+
                 NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Timeout reached, device still in use and returning error:0x%x \n", __FUNCTION__, ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE);
                 return ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE;
             }
+
             struct ::timespec timeout = {.tv_sec = 0, .tv_nsec = 1000};
             ::nanosleep(&timeout, NULL);
             end = std::chrono::steady_clock::now();
@@ -292,10 +309,12 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
         return result;
     }
 
-    result = pSysfsAccess->bindDevice(resetName);
-    if (ZE_RESULT_SUCCESS != result) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to bind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
-        return result;
+    if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+        result = pSysfsAccess->bindDevice(resetName);
+        if (ZE_RESULT_SUCCESS != result) {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to bind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
+            return result;
+        }
     }
 
     return pLinuxSysmanImp->initDevice();

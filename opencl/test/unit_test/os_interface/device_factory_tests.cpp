@@ -237,66 +237,6 @@ TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenPrepareDevi
     EXPECT_EQ(requiredDeviceCount, executionEnvironment->rootDeviceEnvironments.size());
 }
 
-TEST_F(DeviceFactoryTest, givenDebugFlagSetWhenPrepareDeviceEnvironmentsIsCalledThenOverrideGpuAddressSpace) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.OverrideGpuAddressSpace.set(12);
-
-    bool success = DeviceFactory::prepareDeviceEnvironments(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(maxNBitValue(12), executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->capabilityTable.gpuAddressSpace);
-}
-
-TEST_F(DeviceFactoryTest, givenDebugFlagSetWhenPrepareDeviceEnvironmentsForProductFamilyOverrideIsCalledThenOverrideGpuAddressSpace) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.OverrideGpuAddressSpace.set(12);
-
-    bool success = DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(maxNBitValue(12), executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->capabilityTable.gpuAddressSpace);
-}
-
-TEST_F(DeviceFactoryTest, givenDebugFlagSetWhenPrepareDeviceEnvironmentsIsCalledThenOverrideRevision) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.OverrideRevision.set(3);
-
-    bool success = DeviceFactory::prepareDeviceEnvironments(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(3u, executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->platform.usRevId);
-}
-
-TEST_F(DeviceFactoryTest, givenDebugFlagSetWhenPrepareDeviceEnvironmentsForProductFamilyOverrideIsCalledThenOverrideRevision) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.OverrideRevision.set(3);
-
-    bool success = DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(3u, executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->platform.usRevId);
-}
-
-TEST_F(DeviceFactoryTest, givenDebugFlagWithoutZeroXWhenPrepareDeviceEnvironmentsForProductFamilyOverrideIsCalledThenOverrideDeviceIdToHexValue) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.ForceDeviceId.set("1234");
-
-    bool success = DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(0x1234u, executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->platform.usDeviceID);
-}
-
-TEST_F(DeviceFactoryTest, givenDebugFlagWithZeroXWhenPrepareDeviceEnvironmentsForProductFamilyOverrideIsCalledThenOverrideDeviceIdToHexValue) {
-    DebugManagerStateRestore restore;
-    debugManager.flags.ForceDeviceId.set("0x1234");
-
-    bool success = DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(*executionEnvironment);
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(0x1234u, executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->platform.usDeviceID);
-}
-
 TEST_F(DeviceFactoryTest, whenPrepareDeviceEnvironmentsIsCalledThenAllRootDeviceEnvironmentMembersAreInitialized) {
     DebugManagerStateRestore stateRestore;
     auto requiredDeviceCount = 2u;
@@ -366,18 +306,18 @@ TEST(DeviceFactory, givenCreateMultipleRootDevicesWhenCreateDevicesIsCalledThenV
 
 TEST(DeviceFactory, givenHwModeSelectedWhenIsHwModeSelectedIsCalledThenTrueIsReturned) {
     DebugManagerStateRestore stateRestore;
-    constexpr int32_t hwModes[] = {-1, CommandStreamReceiverType::CSR_HW, CommandStreamReceiverType::CSR_HW_WITH_AUB};
+    constexpr int32_t hwModes[] = {-1, static_cast<int32_t>(CommandStreamReceiverType::hardware), static_cast<int32_t>(CommandStreamReceiverType::hardwareWithAub)};
     for (const auto &hwMode : hwModes) {
-        debugManager.flags.SetCommandStreamReceiver.set(hwMode);
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(hwMode));
         EXPECT_TRUE(DeviceFactory::isHwModeSelected());
     }
 }
 
 TEST(DeviceFactory, givenNonHwModeSelectedWhenIsHwModeSelectedIsCalledThenFalseIsReturned) {
     DebugManagerStateRestore stateRestore;
-    constexpr int32_t nonHwModes[] = {CommandStreamReceiverType::CSR_AUB, CommandStreamReceiverType::CSR_TBX, CommandStreamReceiverType::CSR_TBX_WITH_AUB};
+    constexpr CommandStreamReceiverType nonHwModes[] = {CommandStreamReceiverType::aub, CommandStreamReceiverType::tbx, CommandStreamReceiverType::tbxWithAub, CommandStreamReceiverType::nullAub};
     for (const auto &nonHwMode : nonHwModes) {
-        debugManager.flags.SetCommandStreamReceiver.set(nonHwMode);
+        debugManager.flags.SetCommandStreamReceiver.set(static_cast<int32_t>(nonHwMode));
         EXPECT_FALSE(DeviceFactory::isHwModeSelected());
     }
 }

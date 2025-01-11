@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,7 +17,8 @@
 #include "opencl/source/context/context.h"
 #include "opencl/source/mem_obj/image.h"
 
-#include <drm/drm_fourcc.h>
+#include "drm_fourcc.h"
+
 #include <va/va_drmcommon.h>
 
 namespace NEO {
@@ -207,7 +208,8 @@ Image *VASurface::createSharedVaSurface(Context *context, VASharingFunctions *sh
                                     &sharedSurfaceInfo.imgInfo, AllocationType::sharedImage,
                                     context->getDeviceBitfieldForAllocation(context->getDevice(0)->getRootDeviceIndex()));
 
-    auto alloc = memoryManager->createGraphicsAllocationFromSharedHandle(sharedSurfaceInfo.sharedHandle, properties, false, false, true, nullptr);
+    MemoryManager::OsHandleData osHandleData{sharedSurfaceInfo.sharedHandle};
+    auto alloc = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
 
     memoryManager->closeSharedHandle(alloc);
 

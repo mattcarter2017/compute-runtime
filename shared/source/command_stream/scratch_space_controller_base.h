@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2022 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,9 +16,8 @@ class ScratchSpaceControllerBase : public ScratchSpaceController {
 
     void setRequiredScratchSpace(void *sshBaseAddress,
                                  uint32_t scratchSlot,
-                                 uint32_t requiredPerThreadScratchSize,
-                                 uint32_t requiredPerThreadPrivateScratchSize,
-                                 TaskCountType currentTaskCount,
+                                 uint32_t requiredPerThreadScratchSizeSlot0,
+                                 uint32_t requiredPerThreadScratchSizeSlot1,
                                  OsContext &osContext,
                                  bool &stateBaseAddressDirty,
                                  bool &vfeStateDirty) override;
@@ -29,16 +28,14 @@ class ScratchSpaceControllerBase : public ScratchSpaceController {
     void reserveHeap(IndirectHeap::Type heapType, IndirectHeap *&indirectHeap) override;
     void programHeaps(HeapContainer &heapContainer,
                       uint32_t scratchSlot,
-                      uint32_t requiredPerThreadScratchSize,
-                      uint32_t requiredPerThreadPrivateScratchSize,
-                      TaskCountType currentTaskCount,
+                      uint32_t requiredPerThreadScratchSizeSlot0,
+                      uint32_t requiredPerThreadScratchSizeSlot1,
                       OsContext &osContext,
                       bool &stateBaseAddressDirty,
                       bool &vfeStateDirty) override;
     void programBindlessSurfaceStateForScratch(BindlessHeapsHelper *heapsHelper,
-                                               uint32_t requiredPerThreadScratchSize,
-                                               uint32_t requiredPerThreadPrivateScratchSize,
-                                               TaskCountType currentTaskCount,
+                                               uint32_t requiredPerThreadScratchSizeSlot0,
+                                               uint32_t requiredPerThreadScratchSizeSlot1,
                                                OsContext &osContext,
                                                bool &stateBaseAddressDirty,
                                                bool &vfeStateDirty,

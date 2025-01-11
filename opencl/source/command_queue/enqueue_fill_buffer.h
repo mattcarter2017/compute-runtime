@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -42,20 +42,19 @@ cl_int CommandQueueHw<GfxFamily>::enqueueFillBuffer(
 
     if (patternSize == 1) {
         int patternInt = (uint32_t)((*(uint8_t *)pattern << 24) | (*(uint8_t *)pattern << 16) | (*(uint8_t *)pattern << 8) | *(uint8_t *)pattern);
-        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(int), &patternInt, sizeof(int));
+        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(uint32_t), &patternInt, sizeof(uint32_t));
     } else if (patternSize == 2) {
         int patternInt = (uint32_t)((*(uint16_t *)pattern << 16) | *(uint16_t *)pattern);
-        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(int), &patternInt, sizeof(int));
+        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(uint32_t), &patternInt, sizeof(uint32_t));
     } else {
         memcpy_s(patternAllocation->getUnderlyingBuffer(), patternSize, pattern, patternSize);
     }
 
-    auto eBuiltInOps = EBuiltInOps::fillBuffer;
-    if (forceStateless(buffer->getSize())) {
-        eBuiltInOps = EBuiltInOps::fillBufferStateless;
-    }
+    const bool useStateless = forceStateless(buffer->getSize());
+    const bool useHeapless = this->getHeaplessModeEnabled();
+    auto builtInType = EBuiltInOps::adjustBuiltinType<EBuiltInOps::fillBuffer>(useStateless, useHeapless);
 
-    auto &builder = BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(eBuiltInOps,
+    auto &builder = BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(builtInType,
                                                                             this->getClDevice());
 
     BuiltInOwnershipWrapper builtInLock(builder, this->context);

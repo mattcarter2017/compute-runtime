@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
                 LevelZeroBlackBoxTests::printP2PProperties(deviceP2PProperties, canAccessPeer, i, j);
             }
             if (canAccessPeer == false) {
-                std::cout << "Device " << i << " cannot access " << j << "\n";
+                std::cerr << "Device " << i << " cannot access " << j << "\n";
                 std::terminate();
             }
         }
@@ -70,9 +70,9 @@ int main(int argc, char *argv[]) {
 
         devObjects[i].readBackData = new uint8_t[allocSize]();
 
-        devObjects[i].cmdQueue = LevelZeroBlackBoxTests::createCommandQueue(context, devices[i], nullptr, ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS, ZE_COMMAND_QUEUE_PRIORITY_NORMAL);
+        devObjects[i].cmdQueue = LevelZeroBlackBoxTests::createCommandQueue(context, devices[i], nullptr, ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS, ZE_COMMAND_QUEUE_PRIORITY_NORMAL, false);
 
-        SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, devices[i], devObjects[i].cmdList));
+        SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, devices[i], devObjects[i].cmdList, false));
 
         ze_device_mem_alloc_desc_t deviceDesc = {};
         deviceDesc.stype = ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC;
@@ -129,20 +129,7 @@ int main(int argc, char *argv[]) {
         SUCCESS_OR_TERMINATE(zeMemFree(context, devObjects[i].dstBuffer));
 
         // Validate
-        outputValidationSuccessful = true;
-        for (size_t j = 0; j < allocSize; ++j) {
-            if (value != devObjects[i].readBackData[j]) {
-                outputValidationSuccessful = false;
-            }
-            if ((LevelZeroBlackBoxTests::verbose || (outputValidationSuccessful == false)) && (aubMode == false)) {
-                std::cout << "readBackData[" << j << "] = "
-                          << static_cast<uint32_t>(devObjects[i].readBackData[j])
-                          << ", expected " << static_cast<uint32_t>(value) << "\n";
-                if (outputValidationSuccessful == false) {
-                    break;
-                }
-            }
-        }
+        outputValidationSuccessful = LevelZeroBlackBoxTests::validateToValue<uint8_t>(value, devObjects[i].readBackData, allocSize);
         delete[] devObjects[i].readBackData;
     }
 

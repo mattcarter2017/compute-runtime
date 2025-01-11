@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -39,7 +39,6 @@ using namespace NEO;
 
 using PvcCommandStreamReceiverFlushTaskTests = UltCommandStreamReceiverTest;
 PVCTEST_F(PvcCommandStreamReceiverFlushTaskTests, givenOverrideThreadArbitrationPolicyDebugVariableSetForPvcWhenFlushingThenRequestRequiredMode) {
-    using STATE_COMPUTE_MODE = typename FamilyType::STATE_COMPUTE_MODE;
     DebugManagerStateRestore restore;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
 
@@ -53,7 +52,6 @@ PVCTEST_F(PvcCommandStreamReceiverFlushTaskTests, givenOverrideThreadArbitration
 }
 
 PVCTEST_F(PvcCommandStreamReceiverFlushTaskTests, givenNotExistPolicyWhenFlushingThenDefaultPolicyIsProgrammed) {
-    using STATE_COMPUTE_MODE = typename FamilyType::STATE_COMPUTE_MODE;
     char buff[1024] = {0};
     LinearStream stream(buff, 1024);
 
@@ -136,10 +134,10 @@ PVCTEST_F(PVcBcsTests, givenCompressibleBuffersWhenStatefulCompressionIsEnabledT
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     auto srcAllocation = srcBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex());
-    EXPECT_TRUE(srcAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(srcAllocation->getDefaultGmm()->isCompressionEnabled());
 
     auto dstAllocation = dstBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex());
-    EXPECT_TRUE(dstAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(dstAllocation->getDefaultGmm()->isCompressionEnabled());
 
     auto blitProperties = BlitProperties::constructPropertiesForCopy(srcAllocation, dstAllocation, 0, 0,
                                                                      {BlitterConstants::maxBlitWidth - 1, 1, 1}, 0, 0, 0, 0, &clearColorAlloc);

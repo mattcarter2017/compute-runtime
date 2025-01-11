@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -265,10 +265,10 @@ struct PerformanceHintEnqueueKernelPrintfTest : public PerformanceHintEnqueueTes
 
     void SetUp() override {
         PerformanceHintEnqueueTest::SetUp();
-        createProgramFromBinary(context, context->getDevices(), "printf");
+        createProgramFromBinary(context, context->getDevices(), "simple_kernels");
         retVal = pProgram->build(pProgram->getDevices(), nullptr);
         ASSERT_EQ(CL_SUCCESS, retVal);
-        kernel = static_cast<KernelWhitebox *>(Kernel::create(pProgram, pProgram->getKernelInfoForKernel("test"), *context->getDevice(0), retVal));
+        kernel = static_cast<KernelWhitebox *>(Kernel::create(pProgram, pProgram->getKernelInfoForKernel("test_printf"), *context->getDevice(0), retVal));
         kernel->initializeLocalIdsCache();
 
         globalWorkGroupSize[0] = globalWorkGroupSize[1] = globalWorkGroupSize[2] = 1;

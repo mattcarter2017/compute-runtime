@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,12 +19,10 @@
 #include "level_zero/core/test/unit_tests/fixtures/device_fixture.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_cmdqueue.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_device.h"
-#include "level_zero/include/ze_intel_gpu.h"
+#include "level_zero/ze_intel_gpu.h"
 
 namespace L0 {
 namespace ult {
-
-HWTEST_EXCLUDE_PRODUCT(AppendMemoryCopy, givenCopyOnlyCommandListAndHostPointersWhenMemoryCopyCalledThenPipeControlWithDcFlushAddedIsNotAddedAfterBlitCopy, IGFX_XE_HPC_CORE);
 
 using DeviceTestXeHpc = Test<DeviceFixture>;
 
@@ -96,7 +94,7 @@ HWTEST2_F(DeviceTestXeHpc, givenXeHpcBStepWhenCreatingMultiTileDeviceThenExpectI
 
 HWTEST2_F(DeviceTestXeHpc, GivenTargetXeHPCWhenGettingDpSupportThenReturnsTrue, IsXeHpcCore) {
     ze_device_module_properties_t deviceModProps = {ZE_STRUCTURE_TYPE_DEVICE_MODULE_PROPERTIES};
-    ze_intel_device_module_dp_exp_properties_t moduleDpProps = {ZE_STRUCTURE_INTEL_DEVICE_MODULE_DP_EXP_PROPERTIES};
+    ze_intel_device_module_dp_exp_properties_t moduleDpProps = {ZE_STRUCTURE_INTEL_DEVICE_MODULE_DP_EXP_PROPERTIES}; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
     moduleDpProps.flags = 0u;
     deviceModProps.pNext = &moduleDpProps;
 
@@ -162,7 +160,7 @@ HWTEST2_F(MultiDeviceCommandQueueGroupWithNineCopyEnginesTest,
     EXPECT_EQ(ZE_RESULT_SUCCESS, res);
 
     CommandListImp *computeCommandList = static_cast<CommandListImp *>(CommandList::fromHandle(hComputeCommandList));
-    EXPECT_FALSE(computeCommandList->isCopyOnly());
+    EXPECT_FALSE(computeCommandList->isCopyOnly(false));
 
     ze_command_queue_handle_t hCommandQueue{};
     ze_command_queue_desc_t computeCommandQueueDesc{};
@@ -180,7 +178,7 @@ HWTEST2_F(MultiDeviceCommandQueueGroupWithNineCopyEnginesTest,
     EXPECT_EQ(ZE_RESULT_SUCCESS, res);
 
     CommandListImp *copyCommandList = static_cast<CommandListImp *>(CommandList::fromHandle(hCopyCommandList));
-    EXPECT_TRUE(copyCommandList->isCopyOnly());
+    EXPECT_TRUE(copyCommandList->isCopyOnly(false));
 
     computeCommandQueue->destroy();
     computeCommandList->destroy();
@@ -344,7 +342,7 @@ HWTEST2_F(MultiDeviceCommandQueueGroupWithNineCopyEnginesTest,
     EXPECT_EQ(ZE_RESULT_SUCCESS, res);
 
     CommandListImp *computeCommandList = static_cast<CommandListImp *>(CommandList::fromHandle(hComputeCommandList));
-    EXPECT_FALSE(computeCommandList->isCopyOnly());
+    EXPECT_FALSE(computeCommandList->isCopyOnly(false));
 
     ze_command_list_handle_t hCopyCommandList{};
     ze_command_queue_desc_t copyDesc{};
@@ -353,7 +351,7 @@ HWTEST2_F(MultiDeviceCommandQueueGroupWithNineCopyEnginesTest,
     EXPECT_EQ(ZE_RESULT_SUCCESS, res);
 
     CommandListImp *copyCommandList = static_cast<CommandListImp *>(CommandList::fromHandle(hCopyCommandList));
-    EXPECT_TRUE(copyCommandList->isCopyOnly());
+    EXPECT_TRUE(copyCommandList->isCopyOnly(false));
 
     computeCommandList->destroy();
     copyCommandList->destroy();
@@ -740,7 +738,7 @@ HWTEST2_P(CommandQueueGroupTestXeHpc, givenVaryingBlitterSupportAndCCSThenBCSGro
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     CommandQueueGroupTestXeHpcValues,
     CommandQueueGroupTestXeHpc,
     testing::Values(0, 1, 2, 3));

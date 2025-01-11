@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -50,7 +50,6 @@ const RuntimeCapabilityTable PVC::capabilityTable{
     {0, 0, 0, 0, false, false, false, false},                  // kmdNotifyProperties
     maxNBitValue(57),                                          // gpuAddressSpace
     0,                                                         // sharedSystemMemCapabilities
-    83.333,                                                    // defaultProfilingTimerResolution
     MemoryConstants::pageSize,                                 // requiredPreemptionSurfaceSize
     "",                                                        // deviceName
     nullptr,                                                   // preferredPlatformName
@@ -86,47 +85,25 @@ const RuntimeCapabilityTable PVC::capabilityTable{
     true,                                                      // supportsOnDemandPageFaults
     true,                                                      // supportsIndependentForwardProgress
     false,                                                     // hostPtrTrackingEnabled
-    true,                                                      // levelZeroSupported
     false,                                                     // isIntegratedDevice
     false,                                                     // supportsMediaBlock
     true,                                                      // p2pAccessSupported
     true,                                                      // p2pAtomicAccessSupported
     false,                                                     // fusedEuEnabled
     true,                                                      // l0DebuggerSupported;
-    true                                                       // supportsFloatAtomics
+    true,                                                      // supportsFloatAtomics
+    0                                                          // cxlType
 };
 
-void PVC::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo) {
+void PVC::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper) {
+    setupDefaultFeatureTableAndWorkaroundTable(hwInfo, releaseHelper);
     FeatureTable *featureTable = &hwInfo->featureTable;
-    WorkaroundTable *workaroundTable = &hwInfo->workaroundTable;
 
-    featureTable->flags.ftrL3IACoherency = true;
     featureTable->flags.ftrLocalMemory = true;
-    featureTable->flags.ftrLinearCCS = true;
     featureTable->flags.ftrFlatPhysCCS = true;
-    featureTable->flags.ftrE2ECompression = false;
-    featureTable->flags.ftrCCSNode = true;
-    featureTable->flags.ftrCCSRing = true;
     featureTable->flags.ftrMultiTileArch = true;
 
-    featureTable->flags.ftrPPGTT = true;
-    featureTable->flags.ftrSVM = true;
-    featureTable->flags.ftrL3IACoherency = true;
-    featureTable->flags.ftrIA32eGfxPTEs = true;
-    featureTable->flags.ftrStandardMipTailFormat = true;
-    featureTable->flags.ftrTranslationTable = true;
-    featureTable->flags.ftrUserModeTranslationTable = true;
-    featureTable->flags.ftrTileMappedResource = true;
-    featureTable->flags.ftrFbc = true;
-    featureTable->flags.ftrAstcHdr2D = true;
-    featureTable->flags.ftrAstcLdr2D = true;
-
-    featureTable->flags.ftrGpGpuMidBatchPreempt = true;
-    featureTable->flags.ftrGpGpuThreadGroupLevelPreempt = true;
-
-    featureTable->flags.ftrTileY = false;
     featureTable->ftrBcsInfo = maxNBitValue(9);
-    workaroundTable->flags.wa4kAlignUVOffsetNV12LinearSurface = true;
 }
 
 void PVC::adjustHardwareInfo(HardwareInfo *hwInfo) {
@@ -134,26 +111,13 @@ void PVC::adjustHardwareInfo(HardwareInfo *hwInfo) {
 }
 
 void PVC::setupHardwareInfoBase(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->ThreadCount = gtSysInfo->EUCount * releaseHelper->getNumThreadsPerEu();
-    gtSysInfo->MaxFillRate = 128;
-    gtSysInfo->TotalVsThreads = 336;
-    gtSysInfo->TotalHsThreads = 336;
-    gtSysInfo->TotalDsThreads = 336;
-    gtSysInfo->TotalGsThreads = 336;
-    gtSysInfo->TotalPsThreadsWindowerRange = 64;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->MaxEuPerSubSlice = PVC::maxEuPerSubslice;
-    gtSysInfo->MaxSlicesSupported = PVC::maxSlicesSupported;
-    gtSysInfo->MaxSubSlicesSupported = PVC::maxSubslicesSupported;
-    gtSysInfo->MaxDualSubSlicesSupported = PVC::maxDualSubslicesSupported;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
+    setupDefaultGtSysInfo(hwInfo, releaseHelper);
+    setupHardwareInfoMultiTileBase(hwInfo, true);
 
     PVC::adjustHardwareInfo(hwInfo);
 
     if (setupFeatureTableAndWorkaroundTable) {
-        setupFeatureAndWorkaroundTable(hwInfo);
+        setupFeatureAndWorkaroundTable(hwInfo, *releaseHelper);
     }
 }
 
@@ -167,8 +131,8 @@ void PVC::setupHardwareInfoMultiTileBase(HardwareInfo *hwInfo, bool setupMultiTi
     gtSysInfo->MultiTileArchInfo.TileMask = static_cast<uint8_t>(maxNBitValue(gtSysInfo->MultiTileArchInfo.TileCount));
 }
 
-FeatureTable PVC::featureTable;
-WorkaroundTable PVC::workaroundTable;
+FeatureTable PVC::featureTable{};
+WorkaroundTable PVC::workaroundTable{};
 
 const HardwareInfo PvcHwConfig::hwInfo = {
     &PVC::platform,
@@ -180,39 +144,6 @@ const HardwareInfo PvcHwConfig::hwInfo = {
 GT_SYSTEM_INFO PvcHwConfig::gtSystemInfo = {0};
 void PvcHwConfig::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
     PVC::setupHardwareInfoBase(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
-
-    // non-zero values for unit tests
-    if (gtSysInfo->SliceCount == 0) {
-        setupHardwareInfoMultiTileBase(hwInfo, true);
-        gtSysInfo->SliceCount = 2;
-        gtSysInfo->SubSliceCount = 8;
-        gtSysInfo->DualSubSliceCount = gtSysInfo->SubSliceCount;
-        gtSysInfo->EUCount = 40;
-        gtSysInfo->MaxEuPerSubSlice = gtSysInfo->EUCount / gtSysInfo->SubSliceCount;
-        gtSysInfo->MaxSlicesSupported = gtSysInfo->SliceCount;
-        gtSysInfo->MaxSubSlicesSupported = gtSysInfo->SubSliceCount;
-
-        gtSysInfo->L3CacheSizeInKb = 1;
-        gtSysInfo->L3BankCount = 1;
-
-        gtSysInfo->CCSInfo.IsValid = true;
-        gtSysInfo->CCSInfo.NumberOfCCSEnabled = 1;
-        gtSysInfo->CCSInfo.Instances.CCSEnableMask = 0b1;
-
-        hwInfo->featureTable.ftrBcsInfo = 1;
-        gtSysInfo->IsDynamicallyPopulated = true;
-        for (uint32_t slice = 0; slice < gtSysInfo->SliceCount; slice++) {
-            gtSysInfo->SliceInfo[slice].Enabled = true;
-        }
-    }
-
-    if (setupFeatureTableAndWorkaroundTable) {
-        PVC::setupFeatureAndWorkaroundTable(hwInfo);
-    }
 };
 
 const HardwareInfo PVC::hwInfo = PvcHwConfig::hwInfo;

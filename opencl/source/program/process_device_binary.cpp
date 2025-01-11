@@ -13,6 +13,7 @@
 #include "shared/source/device_binary_format/zebin/zeinfo_decoder.h"
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/helpers/aligned_memory.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/ptr_math.h"
@@ -106,7 +107,12 @@ cl_int Program::linkBinary(Device *pDevice, const void *constantsInitData, size_
         // Exported functions reside in instruction heap of one of kernels
         auto exportedFunctionHeapId = linkerInput->getExportedFunctionsSegmentId();
         buildInfos[rootDeviceIndex].exportedFunctionsSurface = kernelInfoArray[exportedFunctionHeapId]->getGraphicsAllocation();
-        exportedFunctions.gpuAddress = static_cast<uintptr_t>(buildInfos[rootDeviceIndex].exportedFunctionsSurface->getGpuAddressToPatch());
+        auto &compilerProductHelper = pDevice->getCompilerProductHelper();
+        if (compilerProductHelper.isHeaplessModeEnabled()) {
+            exportedFunctions.gpuAddress = static_cast<uintptr_t>(buildInfos[rootDeviceIndex].exportedFunctionsSurface->getGpuAddress());
+        } else {
+            exportedFunctions.gpuAddress = static_cast<uintptr_t>(buildInfos[rootDeviceIndex].exportedFunctionsSurface->getGpuAddressToPatch());
+        }
         exportedFunctions.segmentSize = buildInfos[rootDeviceIndex].exportedFunctionsSurface->getUnderlyingBufferSize();
     }
     Linker::PatchableSegments isaSegmentsForPatching;
@@ -210,29 +216,30 @@ cl_int Program::processGenBinary(const ClDevice &clDevice) {
         buildInfo.globalSurface = nullptr;
     }
 
-    ProgramInfo programInfo;
-    auto blob = ArrayRef<const uint8_t>(reinterpret_cast<const uint8_t *>(buildInfo.unpackedDeviceBinary.get()), buildInfo.unpackedDeviceBinarySize);
-    SingleDeviceBinary binary = {};
-    binary.deviceBinary = blob;
-    binary.targetDevice = NEO::getTargetDevice(clDevice.getRootDeviceEnvironment());
-    std::string decodeErrors;
-    std::string decodeWarnings;
+    if (!decodedSingleDeviceBinary.isSet) {
+        decodedSingleDeviceBinary.programInfo = {};
 
-    DecodeError decodeError;
-    DeviceBinaryFormat singleDeviceBinaryFormat;
-    auto &gfxCoreHelper = clDevice.getGfxCoreHelper();
-    std::tie(decodeError, singleDeviceBinaryFormat) = NEO::decodeSingleDeviceBinary(programInfo, binary, decodeErrors, decodeWarnings, gfxCoreHelper);
+        auto blob = ArrayRef<const uint8_t>(reinterpret_cast<const uint8_t *>(buildInfo.unpackedDeviceBinary.get()), buildInfo.unpackedDeviceBinarySize);
+        SingleDeviceBinary binary = {};
+        binary.deviceBinary = blob;
+        binary.targetDevice = NEO::getTargetDevice(clDevice.getRootDeviceEnvironment());
 
-    if (decodeWarnings.empty() == false) {
-        PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodeWarnings.c_str());
+        auto &gfxCoreHelper = clDevice.getGfxCoreHelper();
+        std::tie(decodedSingleDeviceBinary.decodeError, std::ignore) = NEO::decodeSingleDeviceBinary(decodedSingleDeviceBinary.programInfo, binary, decodedSingleDeviceBinary.decodeErrors, decodedSingleDeviceBinary.decodeWarnings, gfxCoreHelper);
+    } else {
+        decodedSingleDeviceBinary.isSet = false;
     }
 
-    if (DecodeError::success != decodeError) {
-        PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodeErrors.c_str());
+    if (decodedSingleDeviceBinary.decodeWarnings.empty() == false) {
+        PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodedSingleDeviceBinary.decodeWarnings.c_str());
+    }
+
+    if (DecodeError::success != decodedSingleDeviceBinary.decodeError) {
+        PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodedSingleDeviceBinary.decodeErrors.c_str());
         return CL_INVALID_BINARY;
     }
 
-    return this->processProgramInfo(programInfo, clDevice);
+    return this->processProgramInfo(decodedSingleDeviceBinary.programInfo, clDevice);
 }
 
 cl_int Program::processProgramInfo(ProgramInfo &src, const ClDevice &clDevice) {
@@ -259,16 +266,35 @@ cl_int Program::processProgramInfo(ProgramInfo &src, const ClDevice &clDevice) {
     }
 
     kernelInfoArray = std::move(src.kernelInfos);
+
+    bool isBindlessKernelPresent = false;
+    for (auto &kernelInfo : kernelInfoArray) {
+        if (NEO::KernelDescriptor::isBindlessAddressingKernel(kernelInfo->kernelDescriptor)) {
+            isBindlessKernelPresent = true;
+            break;
+        }
+    }
+
     auto svmAllocsManager = context ? context->getSVMAllocsManager() : nullptr;
     auto globalConstDataSize = src.globalConstants.size + src.globalConstants.zeroInitSize;
     if (globalConstDataSize != 0) {
         buildInfos[rootDeviceIndex].constantSurface = allocateGlobalsSurface(svmAllocsManager, clDevice.getDevice(), globalConstDataSize, src.globalConstants.zeroInitSize, true, linkerInput, src.globalConstants.initData);
+        if (isBindlessKernelPresent) {
+            if (!clDevice.getMemoryManager()->allocateBindlessSlot(buildInfos[rootDeviceIndex].constantSurface)) {
+                return CL_OUT_OF_HOST_MEMORY;
+            }
+        }
     }
 
     auto globalVariablesDataSize = src.globalVariables.size + src.globalVariables.zeroInitSize;
     buildInfos[rootDeviceIndex].globalVarTotalSize = globalVariablesDataSize;
     if (globalVariablesDataSize != 0) {
         buildInfos[rootDeviceIndex].globalSurface = allocateGlobalsSurface(svmAllocsManager, clDevice.getDevice(), globalVariablesDataSize, src.globalVariables.zeroInitSize, false, linkerInput, src.globalVariables.initData);
+        if (isBindlessKernelPresent) {
+            if (!clDevice.getMemoryManager()->allocateBindlessSlot(buildInfos[rootDeviceIndex].globalSurface)) {
+                return CL_OUT_OF_HOST_MEMORY;
+            }
+        }
         if (clDevice.areOcl21FeaturesEnabled() == false) {
             buildInfos[rootDeviceIndex].globalVarTotalSize = 0u;
         }
@@ -289,7 +315,6 @@ cl_int Program::processProgramInfo(ProgramInfo &src, const ClDevice &clDevice) {
     }
 
     indirectDetectionVersion = src.indirectDetectionVersion;
-    functionPointerWithIndirectAccessExists = src.functionPointerWithIndirectAccessExists;
 
     return linkBinary(&clDevice.getDevice(), src.globalConstants.initData, src.globalConstants.size, src.globalVariables.initData,
                       src.globalVariables.size, src.globalStrings, src.externalFunctions);
@@ -328,10 +353,12 @@ void Program::processDebugData(uint32_t rootDeviceIndex) {
 Zebin::Debug::Segments Program::getZebinSegments(uint32_t rootDeviceIndex) {
     ArrayRef<const uint8_t> strings = {reinterpret_cast<const uint8_t *>(buildInfos[rootDeviceIndex].constStringSectionData.initData),
                                        buildInfos[rootDeviceIndex].constStringSectionData.size};
-    std::vector<std::pair<std::string_view, NEO::GraphicsAllocation *>> kernels;
-    for (const auto &kernelInfo : buildInfos[rootDeviceIndex].kernelInfoArray)
-        kernels.push_back({kernelInfo->kernelDescriptor.kernelMetadata.kernelName, kernelInfo->getGraphicsAllocation()});
+    std::vector<NEO::Zebin::Debug::Segments::KernelNameIsaTupleT> kernels;
+    for (const auto &kernelInfo : buildInfos[rootDeviceIndex].kernelInfoArray) {
 
+        NEO::Zebin::Debug::Segments::Segment segment = {static_cast<uintptr_t>(kernelInfo->getGraphicsAllocation()->getGpuAddress()), kernelInfo->getGraphicsAllocation()->getUnderlyingBufferSize()};
+        kernels.push_back({kernelInfo->kernelDescriptor.kernelMetadata.kernelName, segment});
+    }
     return Zebin::Debug::Segments(getGlobalSurface(rootDeviceIndex), getConstantSurface(rootDeviceIndex), strings, kernels);
 }
 

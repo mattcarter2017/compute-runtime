@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,7 @@ class CommandEncodeStatesFixture : public DeviceFixture {
   public:
     class MyMockCommandContainer : public CommandContainer {
       public:
+        using CommandContainer::allocationIndirectHeaps;
         using CommandContainer::dirtyHeaps;
         using CommandContainer::indirectHeaps;
 
@@ -37,6 +38,8 @@ class CommandEncodeStatesFixture : public DeviceFixture {
                                                              const void *threadGroupDimensions,
                                                              bool requiresUncachedMocs);
 
+    static EncodeWalkerArgs createDefaultEncodeWalkerArgs(const KernelDescriptor &kernelDescriptor);
+
     template <typename FamilyType>
     EncodeStateBaseAddressArgs<FamilyType> createDefaultEncodeStateBaseAddressArgs(
         CommandContainer *container,
@@ -50,7 +53,6 @@ class CommandEncodeStatesFixture : public DeviceFixture {
             statelessMocs,                            // statelessMocsIndex
             l1CachePolicyData.getL1CacheValue(false), // l1CachePolicy
             l1CachePolicyData.getL1CacheValue(true),  // l1CachePolicyDebuggerActive
-            false,                                    // useGlobalAtomics
             false,                                    // multiOsContextCapable
             false,                                    // isRcs
             container->doubleSbaWaRef(),              // doubleSbaWa
@@ -63,6 +65,14 @@ class CommandEncodeStatesFixture : public DeviceFixture {
     KernelInfo kernelInfo;
     std::unique_ptr<MyMockCommandContainer> cmdContainer;
     NEO::L1CachePolicy l1CachePolicyData;
+};
+
+struct ScratchProgrammingFixture : public NEO::DeviceFixture {
+    void setUp();
+    void tearDown();
+
+    IndirectHeap *ssh = nullptr;
+    void *sshBuffer = nullptr;
 };
 
 } // namespace NEO

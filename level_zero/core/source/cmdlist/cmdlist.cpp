@@ -30,6 +30,9 @@ CommandList::~CommandList() {
     if (cmdQImmediate) {
         cmdQImmediate->destroy();
     }
+    if (cmdQImmediateCopyOffload) {
+        cmdQImmediateCopyOffload->destroy();
+    }
     removeDeallocationContainerData();
     if (!isImmediateType() || !this->isFlushTaskSubmissionEnabled) {
         removeHostPtrAllocations();
@@ -49,11 +52,42 @@ void CommandList::storePrintfKernel(Kernel *kernel) {
 
 void CommandList::removeHostPtrAllocations() {
     auto memoryManager = device ? device->getNEODevice()->getMemoryManager() : nullptr;
+
+    bool restartDirectSubmission = !this->hostPtrMap.empty() && memoryManager && device->getNEODevice()->getRootDeviceEnvironment().getProductHelper().restartDirectSubmissionForHostptrFree();
+    if (restartDirectSubmission) {
+        const auto &engines = memoryManager->getRegisteredEngines(device->getRootDeviceIndex());
+        for (const auto &engine : engines) {
+            auto lock = engine.commandStreamReceiver->obtainUniqueOwnership();
+            engine.commandStreamReceiver->stopDirectSubmission(false);
+        }
+    }
+
     for (auto &allocation : hostPtrMap) {
         UNRECOVERABLE_IF(memoryManager == nullptr);
         memoryManager->freeGraphicsMemory(allocation.second);
     }
+
+    if (restartDirectSubmission) {
+        const auto &engines = memoryManager->getRegisteredEngines(device->getRootDeviceIndex());
+        for (const auto &engine : engines) {
+            if (engine.commandStreamReceiver->isAnyDirectSubmissionEnabled()) {
+                engine.commandStreamReceiver->flushTagUpdate();
+            }
+        }
+    }
+
     hostPtrMap.clear();
+}
+
+void CommandList::forceDcFlushForDcFlushMitigation() {
+    if (this->device && this->device->getProductHelper().isDcFlushMitigated()) {
+        for (const auto &engine : this->device->getNEODevice()->getMemoryManager()->getRegisteredEngines(this->device->getNEODevice()->getRootDeviceIndex())) {
+            if (engine.commandStreamReceiver->isDirectSubmissionEnabled()) {
+                engine.commandStreamReceiver->registerDcFlushForDcMitigation();
+                engine.commandStreamReceiver->flushTagUpdate();
+            }
+        }
+    }
 }
 
 void CommandList::removeMemoryPrefetchAllocations() {
@@ -66,7 +100,14 @@ void CommandList::removeMemoryPrefetchAllocations() {
     }
 }
 
-NEO::GraphicsAllocation *CommandList::getAllocationFromHostPtrMap(const void *buffer, uint64_t bufferSize) {
+void CommandList::registerCsrDcFlushForDcMitigation(NEO::CommandStreamReceiver &csr) {
+    if (this->requiresDcFlushForDcMitigation) {
+        csr.registerDcFlushForDcMitigation();
+        this->requiresDcFlushForDcMitigation = false;
+    }
+}
+
+NEO::GraphicsAllocation *CommandList::getAllocationFromHostPtrMap(const void *buffer, uint64_t bufferSize, bool copyOffload) {
     auto allocation = hostPtrMap.lower_bound(buffer);
     if (allocation != hostPtrMap.end()) {
         if (buffer == allocation->first && ptrOffset(allocation->first, allocation->second->getUnderlyingBufferSize()) >= ptrOffset(buffer, bufferSize)) {
@@ -80,11 +121,12 @@ NEO::GraphicsAllocation *CommandList::getAllocationFromHostPtrMap(const void *bu
         }
     }
     if (this->storeExternalPtrAsTemporary()) {
-        auto allocation = this->csr->getInternalAllocationStorage()->obtainTemporaryAllocationWithPtr(bufferSize, buffer, NEO::AllocationType::externalHostPtr);
+        auto csr = getCsr(copyOffload);
+        auto allocation = csr->getInternalAllocationStorage()->obtainTemporaryAllocationWithPtr(bufferSize, buffer, NEO::AllocationType::externalHostPtr);
         if (allocation != nullptr) {
             auto alloc = allocation.get();
             alloc->hostPtrTaskCountAssignment++;
-            this->csr->getInternalAllocationStorage()->storeAllocationWithTaskCount(std::move(allocation), NEO::AllocationUsage::TEMPORARY_ALLOCATION, this->csr->peekTaskCount());
+            csr->getInternalAllocationStorage()->storeAllocationWithTaskCount(std::move(allocation), NEO::AllocationUsage::TEMPORARY_ALLOCATION, csr->peekTaskCount());
             return alloc;
         }
     }
@@ -99,8 +141,8 @@ bool CommandList::isWaitForEventsFromHostEnabled() {
     return waitForEventsFromHostEnabled;
 }
 
-NEO::GraphicsAllocation *CommandList::getHostPtrAlloc(const void *buffer, uint64_t bufferSize, bool hostCopyAllowed) {
-    NEO::GraphicsAllocation *alloc = getAllocationFromHostPtrMap(buffer, bufferSize);
+NEO::GraphicsAllocation *CommandList::getHostPtrAlloc(const void *buffer, uint64_t bufferSize, bool hostCopyAllowed, bool copyOffload) {
+    NEO::GraphicsAllocation *alloc = getAllocationFromHostPtrMap(buffer, bufferSize, copyOffload);
     if (alloc) {
         return alloc;
     }
@@ -110,7 +152,8 @@ NEO::GraphicsAllocation *CommandList::getHostPtrAlloc(const void *buffer, uint64
     }
     if (this->storeExternalPtrAsTemporary()) {
         alloc->hostPtrTaskCountAssignment++;
-        this->csr->getInternalAllocationStorage()->storeAllocationWithTaskCount(std::unique_ptr<NEO::GraphicsAllocation>(alloc), NEO::AllocationUsage::TEMPORARY_ALLOCATION, this->csr->peekTaskCount());
+        auto csr = getCsr(copyOffload);
+        csr->getInternalAllocationStorage()->storeAllocationWithTaskCount(std::unique_ptr<NEO::GraphicsAllocation>(alloc), NEO::AllocationUsage::TEMPORARY_ALLOCATION, csr->peekTaskCount());
     } else if (alloc->getAllocationType() == NEO::AllocationType::externalHostPtr) {
         hostPtrMap.insert(std::make_pair(buffer, alloc));
     } else {
@@ -195,12 +238,7 @@ void CommandList::synchronizeEventList(uint32_t numWaitEvents, ze_event_handle_t
     }
 }
 
-void CommandList::makeResidentDummyAllocation() {
-    if (isCopyOnly()) {
-        const auto &rootDeviceEnvironment = device->getNEODevice()->getRootDeviceEnvironment();
-        auto dummyAllocation = rootDeviceEnvironment.getDummyAllocation();
-        commandContainer.addToResidencyContainer(dummyAllocation);
-    }
+NEO::CommandStreamReceiver *CommandList::getCsr(bool copyOffload) const {
+    return copyOffload ? static_cast<CommandQueueImp *>(this->cmdQImmediateCopyOffload)->getCsr() : static_cast<CommandQueueImp *>(this->cmdQImmediate)->getCsr();
 }
-
 } // namespace L0

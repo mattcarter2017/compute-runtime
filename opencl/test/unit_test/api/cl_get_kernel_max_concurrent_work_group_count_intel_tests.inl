@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -52,6 +52,10 @@ TEST_F(clGetKernelMaxConcurrentWorkGroupCountTests, GivenInvalidInputWhenCalling
     retVal = clGetKernelMaxConcurrentWorkGroupCountINTEL(pCommandQueue, pMultiDeviceKernel, workDim,
                                                          globalWorkOffset, nullptr, &suggestedWorkGroupCount);
     EXPECT_EQ(CL_INVALID_WORK_GROUP_SIZE, retVal);
+
+    retVal = clGetKernelMaxConcurrentWorkGroupCountINTEL(pCommandQueue, pMultiDeviceKernel, workDim,
+                                                         globalWorkOffset, localWorkSize, &suggestedWorkGroupCount);
+    EXPECT_EQ(CL_INVALID_WORK_GROUP_SIZE, retVal);
 }
 
 TEST_F(clGetKernelMaxConcurrentWorkGroupCountTests, GivenVariousInputWhenGettingMaxConcurrentWorkGroupCountThenCorrectValuesAreReturned) {
@@ -64,7 +68,7 @@ TEST_F(clGetKernelMaxConcurrentWorkGroupCountTests, GivenVariousInputWhenGetting
     retVal = clGetKernelMaxConcurrentWorkGroupCountINTEL(pCommandQueue, pMultiDeviceKernel, workDim, globalWorkOffset, localWorkSize,
                                                          &maxConcurrentWorkGroupCount);
     EXPECT_EQ(CL_SUCCESS, retVal);
-    size_t expectedMaxConcurrentWorkGroupCount = pKernel->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue);
+    size_t expectedMaxConcurrentWorkGroupCount = pKernel->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue, false);
     EXPECT_EQ(expectedMaxConcurrentWorkGroupCount, maxConcurrentWorkGroupCount);
 
     retVal = clGetKernelMaxConcurrentWorkGroupCountINTEL(pCommandQueue, pMultiDeviceKernel, workDim, nullptr, localWorkSize,
@@ -79,8 +83,35 @@ TEST_F(clGetKernelMaxConcurrentWorkGroupCountTests, GivenVariousInputWhenGetting
                                                          globalWorkOffset, localWorkSize,
                                                          &maxConcurrentWorkGroupCount);
     EXPECT_EQ(CL_SUCCESS, retVal);
-    expectedMaxConcurrentWorkGroupCount = pKernelWithExecutionEnvironmentPatch->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue);
+    expectedMaxConcurrentWorkGroupCount = pKernelWithExecutionEnvironmentPatch->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue, false);
     EXPECT_EQ(expectedMaxConcurrentWorkGroupCount, maxConcurrentWorkGroupCount);
+}
+
+TEST_F(clGetKernelMaxConcurrentWorkGroupCountTests, GivenMultiTileWhenGettingMaxConcurrentWorkGroupCountThenCorrectValuesAreReturned) {
+    DebugManagerStateRestore restore;
+    auto &mockDevice = static_cast<MockDevice &>(pDevice->getDevice());
+
+    cl_uint workDim = 3;
+    size_t localWorkSize[] = {8, 8, 8};
+
+    const_cast<KernelInfo &>(pKernel->getKernelInfo()).kernelDescriptor.kernelAttributes.numGrfRequired = GrfConfig::defaultGrfNumber;
+
+    mockDevice.deviceBitfield = 0b1;
+
+    auto baseCount = pKernel->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue, false);
+
+    debugManager.flags.EnableImplicitScaling.set(1);
+    mockDevice.deviceBitfield = 0b11;
+
+    auto countWithSubDevices = pKernel->getMaxWorkGroupCount(workDim, localWorkSize, pCommandQueue, false);
+
+    auto &helper = pDevice->getGfxCoreHelper();
+
+    if (helper.singleTileExecImplicitScalingRequired(true)) {
+        EXPECT_EQ(baseCount, countWithSubDevices);
+    } else {
+        EXPECT_EQ(baseCount * 2, countWithSubDevices);
+    }
 }
 
 } // namespace ULT

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -391,6 +391,20 @@ TEST_F(EnqueueKernelTest, givenKernelWhenAllArgsAreSetThenClEnqueueNDCountKernel
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
+TEST_F(EnqueueKernelTest, givenLocalWorkSizeEqualZeroThenClEnqueueNDCountKernelINTELReturnsError) {
+    size_t workgroupCount[3] = {1, 1, 1};
+    size_t localWorkSize[3] = {0, 1, 1};
+    cl_int retVal = CL_SUCCESS;
+    std::unique_ptr<MultiDeviceKernel> pMultiDeviceKernel(MultiDeviceKernel::create(pProgram, pProgram->getKernelInfosForKernel("CopyBuffer"), retVal));
+
+    retVal = clEnqueueNDCountKernelINTEL(pCmdQ, pMultiDeviceKernel.get(), 1, nullptr, workgroupCount, localWorkSize, 0, nullptr, nullptr);
+    EXPECT_EQ(CL_INVALID_WORK_GROUP_SIZE, retVal);
+
+    pMultiDeviceKernel.get()->setKernelExecutionType(CL_KERNEL_EXEC_INFO_CONCURRENT_TYPE_INTEL);
+    retVal = clEnqueueNDCountKernelINTEL(pCmdQ, pMultiDeviceKernel.get(), 1, nullptr, workgroupCount, localWorkSize, 0, nullptr, nullptr);
+    EXPECT_EQ(CL_INVALID_WORK_GROUP_SIZE, retVal);
+}
+
 TEST_F(EnqueueKernelTest, givenKernelWhenNotAllArgsAreSetButSetKernelArgIsCalledTwiceThenClEnqueueNDCountKernelINTELReturnsError) {
     const size_t n = 512;
     size_t workgroupCount[3] = {2, 1, 1};
@@ -575,7 +589,18 @@ HWTEST_F(EnqueueKernelTest, WhenEnqueingKernelThenIndirectDataIsAdded) {
 
     callOneWorkItemNDRKernel();
     EXPECT_TRUE(UnitTestHelper<FamilyType>::evaluateDshUsage(dshBefore, pDSH->getUsed(), &pKernel->getKernelInfo().kernelDescriptor, rootDeviceIndex));
-    EXPECT_NE(iohBefore, pIOH->getUsed());
+
+    auto crossThreadDatSize = this->pKernel->getCrossThreadDataSize();
+    auto heaplessEnabled = pCmdQ->getHeaplessModeEnabled();
+    auto inlineDataSize = UnitTestHelper<FamilyType>::getInlineDataSize(heaplessEnabled);
+    bool crossThreadDataFitsInInlineData = (crossThreadDatSize <= inlineDataSize);
+
+    if (crossThreadDataFitsInInlineData) {
+        EXPECT_EQ(iohBefore, pIOH->getUsed());
+    } else {
+        EXPECT_NE(iohBefore, pIOH->getUsed());
+    }
+
     if ((pKernel->usesBindfulAddressingForBuffers() || pKernel->getKernelInfo().kernelDescriptor.kernelAttributes.flags.usesImages) && compilerProductHelper.isStatelessToStatefulBufferOffsetSupported()) {
         EXPECT_NE(sshBefore, pSSH->getUsed());
     }
@@ -646,7 +671,7 @@ TEST_F(EnqueueKernelTest, GivenKernelWithBuiltinDispatchInfoBuilderWhenBeingDisp
     EXPECT_EQ(dim, mockNuiltinDispatchBuilder.receivedWorkDim);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueKernelTest, givenSecondEnqueueWithTheSameScratchRequirementWhenPreemptionIsEnabledThenDontProgramMVSAgain) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, EnqueueKernelTest, givenSecondEnqueueWithTheSameScratchRequirementWhenPreemptionIsEnabledThenDontProgramMVSAgain) {
     typedef typename FamilyType::MEDIA_VFE_STATE MEDIA_VFE_STATE;
     pDevice->setPreemptionMode(PreemptionMode::ThreadGroup);
     auto &csr = pDevice->getGpgpuCommandStreamReceiver();
@@ -657,7 +682,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueKernelTest, givenSecondEnqueueWithTheSameScra
     uint32_t scratchSize = 4096u;
 
     MockKernelWithInternals mockKernel(*pClDevice);
-    mockKernel.kernelInfo.setPerThreadScratchSize(scratchSize, 0);
+    mockKernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0] = scratchSize;
 
     auto sizeToProgram = PreambleHelper<FamilyType>::getScratchSizeValueToProgramMediaVfeState(scratchSize);
 
@@ -691,17 +716,22 @@ HWTEST_F(EnqueueKernelTest, whenEnqueueingKernelThatRequirePrivateScratchThenPri
     csr.getMemoryManager()->setForce32BitAllocations(false);
     size_t off[3] = {0, 0, 0};
     size_t gws[3] = {1, 1, 1};
-    uint32_t privateScratchSize = 4096u;
+    uint32_t scratchSizeSlot1 = 4096u;
 
     MockKernelWithInternals mockKernel(*pClDevice);
-    mockKernel.kernelInfo.setPerThreadScratchSize(privateScratchSize, 1);
+    mockKernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[1] = scratchSizeSlot1;
 
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, off, gws, nullptr, 0, nullptr, nullptr);
 
-    EXPECT_EQ(privateScratchSize, csr.requiredPrivateScratchSize);
+    EXPECT_EQ(scratchSizeSlot1, csr.requiredScratchSlot1Size);
 }
 
 HWTEST_F(EnqueueKernelTest, whenEnqueueKernelWithNoStatelessWriteWhenSbaIsBeingProgrammedThenConstPolicyIsChoosen) {
+
+    if (pCmdQ->getHeaplessStateInitEnabled()) {
+        GTEST_SKIP();
+    }
+
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     size_t off[3] = {0, 0, 0};
     size_t gws[3] = {1, 1, 1};
@@ -720,6 +750,11 @@ HWTEST_F(EnqueueKernelTest, whenEnqueueKernelWithNoStatelessWriteWhenSbaIsBeingP
 }
 
 HWTEST_F(EnqueueKernelTest, whenEnqueueKernelWithNoStatelessWriteOnBlockedCodePathWhenSbaIsBeingProgrammedThenConstPolicyIsChoosen) {
+
+    if (pCmdQ->getHeaplessStateInitEnabled()) {
+        GTEST_SKIP();
+    }
+
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     size_t off[3] = {0, 0, 0};
     size_t gws[3] = {1, 1, 1};
@@ -795,7 +830,7 @@ HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeWhenEnqueueK
     size_t clearColorSize = mockCsr->clearColorAllocation ? 1 : 0;
     size_t commandBufferCount = pDevice->getProductHelper().getCommandBuffersPreallocatedPerCommandQueue() > 0 ? 0 : 1;
 
-    EXPECT_EQ(0, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 1u : 0u, mockCsr->flushCalledCount);
     EXPECT_EQ(4u + csrSurfaceCount + timestampPacketSurfacesCount + fenceSurfaceCount + clearColorSize + commandBufferCount, cmdBuffer->surfaces.size());
 }
 
@@ -909,7 +944,7 @@ HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeAndBatchedKe
     EXPECT_EQ(CL_SUCCESS, ret);
 
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsrmockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsrmockCsr->heaplessStateInitialized ? 2u : 1u, mockCsrmockCsr->flushCalledCount);
 }
 
 HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeAndBatchedKernelWhenFlushIsCalledTwiceThenNothingChanges) {
@@ -930,7 +965,7 @@ HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeAndBatchedKe
     EXPECT_EQ(CL_SUCCESS, ret);
 
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsrmockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsrmockCsr->heaplessStateInitialized ? 2u : 1u, mockCsrmockCsr->flushCalledCount);
 }
 
 HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeWhenKernelIsEnqueuedTwiceThenTwoSubmissionsAreRecorded) {
@@ -981,7 +1016,7 @@ HWTEST_F(EnqueueKernelTest, givenCommandStreamReceiverInBatchingModeWhenFlushIsC
     pCmdQ->flush();
 
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, EnqueueKernelTest, givenTwoEnqueueProgrammedWithinSameCommandBufferWhenBatchedThenNoBBSBetweenThem) {
@@ -1005,7 +1040,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, EnqueueKernelTest, givenTwoEnqueueProgrammedWithinS
     hwParse.parseCommands<FamilyType>(*pCmdQ);
     auto bbsCommands = findAll<typename FamilyType::MI_BATCH_BUFFER_START *>(hwParse.cmdList.begin(), hwParse.cmdList.end());
 
-    EXPECT_EQ(bbsCommands.size(), 1u);
+    EXPECT_EQ(pCmdQ->getHeaplessStateInitEnabled() ? 0u : 1u, bbsCommands.size());
 }
 
 HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenFinishIsCalledThenBatchesSubmissionsAreFlushed) {
@@ -1026,7 +1061,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenFinishIsCalledThenBatchesS
     pCmdQ->finish();
 
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 }
 
 HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenThressEnqueueKernelsAreCalledThenBatchesSubmissionsAreFlushed) {
@@ -1048,7 +1083,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenThressEnqueueKernelsAreCal
     pCmdQ->finish();
 
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 }
 
 HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenWaitForEventsIsCalledThenBatchedSubmissionsAreFlushed) {
@@ -1071,7 +1106,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenWaitForEventsIsCalledThenB
 
     EXPECT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 
     status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1094,21 +1129,23 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenCommandIsFlushedThenFlushS
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, &event);
     auto neoEvent = castToObject<Event>(event);
 
-    EXPECT_EQ(0u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(0u, neoEvent->flushStamp->peekStamp());
-    EXPECT_EQ(0u, pCmdQ->flushStamp->peekStamp());
+    auto expectedStamp = mockCsr->heaplessStateInitialized ? 1u : 0u;
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     auto status = clWaitForEvents(1, &event);
 
+    expectedStamp++;
     EXPECT_EQ(CL_SUCCESS, status);
     EXPECT_EQ(1, neoEvent->getRefInternalCount());
-    EXPECT_EQ(1u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(1u, neoEvent->flushStamp->peekStamp());
-    EXPECT_EQ(1u, pCmdQ->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     status = clFinish(pCmdQ);
     EXPECT_EQ(CL_SUCCESS, status);
-    EXPECT_EQ(1u, pCmdQ->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1128,7 +1165,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenNonBlockingMapFollowsNdrCa
 
     pCmdQ->flush();
     auto neoEvent = castToObject<Event>(event);
-    EXPECT_EQ(1u, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, neoEvent->flushStamp->peekStamp());
     clReleaseEvent(event);
 }
 
@@ -1149,21 +1186,23 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenCommandWithEventIsFollowed
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
     auto neoEvent = castToObject<Event>(event);
 
-    EXPECT_EQ(0u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(0u, neoEvent->flushStamp->peekStamp());
-    EXPECT_EQ(0u, pCmdQ->flushStamp->peekStamp());
+    auto expectedStamp = mockCsr->heaplessStateInitialized ? 1u : 0u;
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     auto status = clWaitForEvents(1, &event);
+    expectedStamp++;
 
     EXPECT_EQ(CL_SUCCESS, status);
     EXPECT_EQ(1, neoEvent->getRefInternalCount());
-    EXPECT_EQ(1u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(1u, neoEvent->flushStamp->peekStamp());
-    EXPECT_EQ(1u, pCmdQ->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     status = clFinish(pCmdQ);
     EXPECT_EQ(CL_SUCCESS, status);
-    EXPECT_EQ(1u, pCmdQ->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1180,12 +1219,14 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenClFlushIsCalledThenQueueFl
     size_t gws[3] = {1, 0, 0};
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
 
-    EXPECT_EQ(0u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(0u, pCmdQ->flushStamp->peekStamp());
+    auto expectedStamp = mockCsr->heaplessStateInitialized ? 1u : 0u;
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 
     clFlush(pCmdQ);
-    EXPECT_EQ(1u, mockCsr->flushStamp->peekStamp());
-    EXPECT_EQ(1u, pCmdQ->flushStamp->peekStamp());
+    expectedStamp++;
+    EXPECT_EQ(expectedStamp, mockCsr->flushStamp->peekStamp());
+    EXPECT_EQ(expectedStamp, pCmdQ->flushStamp->peekStamp());
 }
 
 HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenWaitForEventsIsCalledWithUnflushedTaskCountThenBatchedSubmissionsAreFlushed) {
@@ -1206,7 +1247,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenWaitForEventsIsCalledWithU
 
     EXPECT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 
     status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1230,7 +1271,7 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenFinishIsCalledWithUnflushe
 
     EXPECT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(mockedSubmissionsAggregator->peekCmdBufferList().peekIsEmpty());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 
     status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1419,8 +1460,10 @@ HWTEST_F(EnqueueKernelTest, givenCsrInBatchingModeWhenBlockingCallIsMadeThenEven
     cl_event event;
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, &event);
     auto neoEvent = castToObject<Event>(event);
-    EXPECT_EQ(1u, neoEvent->flushStamp->peekStamp());
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    auto expectedCount = mockCsr->heaplessStateInitialized ? 2u : 1u;
+
+    EXPECT_EQ(expectedCount, neoEvent->flushStamp->peekStamp());
+    EXPECT_EQ(expectedCount, mockCsr->flushCalledCount);
 
     auto status = clReleaseEvent(event);
     EXPECT_EQ(CL_SUCCESS, status);
@@ -1434,7 +1477,7 @@ HWTEST_F(EnqueueKernelTest, givenKernelWhenItIsEnqueuedThenAllResourceGraphicsAl
     size_t gws[3] = {1, 0, 0};
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
 
-    EXPECT_EQ(1, mockCsr->flushCalledCount);
+    EXPECT_EQ(mockCsr->heaplessStateInitialized ? 2u : 1u, mockCsr->flushCalledCount);
 
     auto csrTaskCount = mockCsr->peekTaskCount();
     auto &passedAllocationPack = mockCsr->copyOfAllocations;
@@ -1620,30 +1663,6 @@ HWTEST_F(EnqueueKernelTest, givenVMEKernelWhenEnqueueKernelThenDispatchFlagsHave
     EXPECT_TRUE(mockCsr->passedDispatchFlags.pipelineSelectArgs.mediaSamplerRequired);
 }
 
-HWTEST_F(EnqueueKernelTest, givenUseGlobalAtomicsSetWhenEnqueueKernelThenDispatchFlagsUseGlobalAtomicsIsSet) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex(), pDevice->getDeviceBitfield());
-    mockCsr->overrideDispatchPolicy(DispatchMode::batchedDispatch);
-    pDevice->resetCommandStreamReceiver(mockCsr);
-
-    MockKernelWithInternals mockKernel(*pClDevice, context);
-    size_t gws[3] = {1, 0, 0};
-    mockKernel.kernelInfo.kernelDescriptor.kernelAttributes.flags.useGlobalAtomics = true;
-    clEnqueueNDRangeKernel(this->pCmdQ, mockKernel.mockMultiDeviceKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
-    EXPECT_TRUE(mockCsr->passedDispatchFlags.useGlobalAtomics);
-}
-
-HWTEST_F(EnqueueKernelTest, givenUseGlobalAtomicsIsNotSetWhenEnqueueKernelThenDispatchFlagsUseGlobalAtomicsIsNotSet) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex(), pDevice->getDeviceBitfield());
-    mockCsr->overrideDispatchPolicy(DispatchMode::batchedDispatch);
-    pDevice->resetCommandStreamReceiver(mockCsr);
-
-    MockKernelWithInternals mockKernel(*pClDevice, context);
-    size_t gws[3] = {1, 0, 0};
-    mockKernel.kernelInfo.kernelDescriptor.kernelAttributes.flags.useGlobalAtomics = false;
-    clEnqueueNDRangeKernel(this->pCmdQ, mockKernel.mockMultiDeviceKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
-    EXPECT_FALSE(mockCsr->passedDispatchFlags.useGlobalAtomics);
-}
-
 HWTEST_F(EnqueueKernelTest, givenContextWithSeveralDevicesWhenEnqueueKernelThenDispatchFlagsHaveCorrectInfoAboutMultipleSubDevicesInContext) {
     auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex(), pDevice->getDeviceBitfield());
     mockCsr->overrideDispatchPolicy(DispatchMode::batchedDispatch);
@@ -1726,6 +1745,10 @@ struct PauseOnGpuTests : public EnqueueKernelTest {
 
         auto &csr = pDevice->getGpgpuCommandStreamReceiver();
         debugPauseStateAddress = csr.getDebugPauseStateGPUAddress();
+
+        auto &compilerProductHelper = pDevice->getCompilerProductHelper();
+        auto heapless = compilerProductHelper.isHeaplessModeEnabled();
+        heaplessStateInit = compilerProductHelper.isHeaplessStateInitEnabled(heapless);
     }
 
     template <typename FamilyType>
@@ -1843,11 +1866,10 @@ struct PauseOnGpuTests : public EnqueueKernelTest {
     uint32_t pipeControlBeforeWalkerFound = 0;
     uint32_t pipeControlAfterWalkerFound = 0;
     uint32_t loadRegImmsFound = 0;
+    bool heaplessStateInit = false;
 };
 
 HWTEST_F(PauseOnGpuTests, givenPauseOnEnqueueFlagSetWhenDispatchWalkersThenInsertPauseCommandsAroundSpecifiedEnqueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     debugManager.flags.PauseOnEnqueue.set(1);
 
@@ -1871,8 +1893,6 @@ HWTEST_F(PauseOnGpuTests, givenPauseOnEnqueueFlagSetWhenDispatchWalkersThenInser
 }
 
 HWTEST_F(PauseOnGpuTests, givenPauseOnEnqueueFlagSetToMinusTwoWhenDispatchWalkersThenInsertPauseCommandsAroundEachEnqueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     debugManager.flags.PauseOnEnqueue.set(-2);
 
@@ -1895,9 +1915,9 @@ HWTEST_F(PauseOnGpuTests, givenPauseOnEnqueueFlagSetToMinusTwoWhenDispatchWalker
 }
 
 HWTEST_F(PauseOnGpuTests, givenPauseModeSetToBeforeOnlyWhenDispatchingThenInsertPauseOnlyBeforeEnqueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-
+    if (heaplessStateInit) {
+        GTEST_SKIP();
+    }
     debugManager.flags.PauseOnEnqueue.set(0);
     debugManager.flags.PauseOnGpuMode.set(PauseOnGpuProperties::PauseMode::BeforeWorkload);
 
@@ -1919,8 +1939,10 @@ HWTEST_F(PauseOnGpuTests, givenPauseModeSetToBeforeOnlyWhenDispatchingThenInsert
 }
 
 HWTEST_F(PauseOnGpuTests, givenPauseModeSetToAfterOnlyWhenDispatchingThenInsertPauseOnlyAfterEnqueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+
+    if (heaplessStateInit) {
+        GTEST_SKIP();
+    }
 
     debugManager.flags.PauseOnEnqueue.set(0);
     debugManager.flags.PauseOnGpuMode.set(PauseOnGpuProperties::PauseMode::AfterWorkload);
@@ -1943,9 +1965,9 @@ HWTEST_F(PauseOnGpuTests, givenPauseModeSetToAfterOnlyWhenDispatchingThenInsertP
 }
 
 HWTEST_F(PauseOnGpuTests, givenPauseModeSetToBeforeAndAfterWhenDispatchingThenInsertPauseAroundEnqueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-
+    if (heaplessStateInit) {
+        GTEST_SKIP();
+    }
     debugManager.flags.PauseOnEnqueue.set(0);
     debugManager.flags.PauseOnGpuMode.set(PauseOnGpuProperties::PauseMode::BeforeAndAfterWorkload);
 
@@ -1967,9 +1989,6 @@ HWTEST_F(PauseOnGpuTests, givenPauseModeSetToBeforeAndAfterWhenDispatchingThenIn
 }
 
 HWTEST_F(PauseOnGpuTests, givenPauseOnEnqueueFlagSetWhenDispatchWalkersThenDontInsertPauseCommandsWhenUsingSpecialQueue) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-
     debugManager.flags.PauseOnEnqueue.set(0);
 
     pCmdQ->setIsSpecialCommandQueue(true);
@@ -2008,14 +2027,14 @@ HWTEST_F(PauseOnGpuTests, givenGpuScratchWriteEnabledWhenDispatchWalkersThenInse
 
     findLoadRegImms<FamilyType>(hwParser.cmdList);
 
-    EXPECT_EQ(0u, loadRegImmsFound);
+    EXPECT_EQ(pCmdQ->getHeaplessStateInitEnabled() ? 1u : 0u, loadRegImmsFound);
 
     pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, off, gws, nullptr, 0, nullptr, nullptr);
     hwParser.parseCommands<FamilyType>(*pCmdQ);
 
     findLoadRegImms<FamilyType>(hwParser.cmdList);
 
-    EXPECT_EQ(1u, loadRegImmsFound);
+    EXPECT_EQ(pCmdQ->getHeaplessStateInitEnabled() ? 2u : 1u, loadRegImmsFound);
 }
 
 HWTEST_F(PauseOnGpuTests, givenGpuScratchWriteEnabledWhenDispatcMultiplehWalkersThenInsertLoadRegisterImmCommandOnlyOnce) {

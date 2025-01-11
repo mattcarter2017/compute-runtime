@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,6 +35,7 @@ class CommandStreamReceiverSimulatedCommonHw : public CommandStreamReceiverHw<Gf
   public:
     using CommandStreamReceiverHw<GfxFamily>::peekExecutionEnvironment;
     using CommandStreamReceiverHw<GfxFamily>::writeMemory;
+    using CommandStreamReceiverHw<GfxFamily>::pollForCompletion;
 
     CommandStreamReceiverSimulatedCommonHw(ExecutionEnvironment &executionEnvironment,
                                            uint32_t rootDeviceIndex,
@@ -69,7 +70,6 @@ class CommandStreamReceiverSimulatedCommonHw : public CommandStreamReceiverHw<Gf
     virtual bool isTbxWritable(GraphicsAllocation &graphicsAllocation) const = 0;
 
     virtual void dumpAllocation(GraphicsAllocation &gfxAllocation) = 0;
-    virtual void initializeEngine() = 0;
 
     void makeNonResident(GraphicsAllocation &gfxAllocation) override;
 
@@ -77,15 +77,16 @@ class CommandStreamReceiverSimulatedCommonHw : public CommandStreamReceiverHw<Gf
 
     aub_stream::AubManager *aubManager = nullptr;
     std::unique_ptr<HardwareContextController> hardwareContextController;
+    ReleaseHelper *releaseHelper = nullptr;
 
     struct EngineInfo {
         void *pLRCA;
-        uint32_t ggttLRCA;
         void *pGlobalHWStatusPage;
-        uint32_t ggttHWSP;
         void *pRingBuffer;
-        uint32_t ggttRingBuffer;
         size_t sizeRingBuffer;
+        uint32_t ggttLRCA;
+        uint32_t ggttHWSP;
+        uint32_t ggttRingBuffer;
         uint32_t tailRingBuffer;
     } engineInfo = {};
 

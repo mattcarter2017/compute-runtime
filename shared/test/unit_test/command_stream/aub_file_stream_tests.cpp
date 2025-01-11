@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -270,7 +270,7 @@ HWTEST_F(AubFileStreamTests, givenAubCommandStreamReceiverWhenDumpAllocationIsCa
     auto mockAubFileStream = std::make_unique<MockAubFileStream>();
     auto aubExecutionEnvironment = getEnvironment<MockAubCsr<FamilyType>>(true, true, true);
     auto aubCsr = aubExecutionEnvironment->template getCsr<MockAubCsr<FamilyType>>();
-    GraphicsAllocation allocation{0, AllocationType::unknown, nullptr, 0, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount};
+    GraphicsAllocation allocation{0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount};
 
     aubCsr->stream = static_cast<MockAubFileStream *>(mockAubFileStream.get());
 
@@ -949,7 +949,7 @@ HWTEST_F(AddPatchInfoCommentsAubTests, givenAddPatchInfoCommentsCalledWhenTarget
     EXPECT_EQ(2u, mockAubFileStream->addCommentCalled);
 }
 
-HWTEST_F(AubFileStreamTests, givenAubCommandStreamReceiverWhenCreateFullFilePathIsCalledForMultipleDevicesThenFileNameIsExtendedWithSuffixToIndicateMultipleDevices) {
+HWTEST2_F(AubFileStreamTests, givenAubCommandStreamReceiverWhenCreateFullFilePathIsCalledForMultipleDevicesThenFileNameIsExtendedWithSuffixToIndicateMultipleDevices, IsAtMostXeHpcCore) {
     DebugManagerStateRestore stateRestore;
 
     debugManager.flags.CreateMultipleSubDevices.set(1);
@@ -961,16 +961,41 @@ HWTEST_F(AubFileStreamTests, givenAubCommandStreamReceiverWhenCreateFullFilePath
     EXPECT_NE(std::string::npos, fullName.find("2tx"));
 }
 
-HWTEST_F(AubFileStreamTests, givenAubCommandStreamReceiverWhenCreateFullFilePathIsCalledThenFileNameIsExtendedWithRootDeviceIndex) {
+HWTEST_F(AubFileStreamTests, givenDisabledGeneratingPerProcessAubNameAndAubCommandStreamReceiverWhenCreateFullFilePathIsCalledThenFileNameIsExtendedWithRootDeviceIndex) {
+    DebugManagerStateRestore stateRestore;
+    debugManager.flags.GenerateAubFilePerProcessId.set(0);
+
     uint32_t rootDeviceIndex = 123u;
     auto fullName = AUBCommandStreamReceiver::createFullFilePath(*defaultHwInfo, "aubfile", rootDeviceIndex);
     EXPECT_NE(std::string::npos, fullName.find("_123_aubfile.aub"));
 }
 
-HWTEST_F(AubFileStreamTests, givenGenerateAubFilePerProcessIdDebugFlagAndAubCommandStreamReceiverWhenCreateFullFilePathIsCalledThenFileNameIsExtendedRootDeviceIndex) {
+HWTEST_F(AubFileStreamTests, givenEnabledGeneratingAubFilePerProcessIdDebugFlagAndAubCommandStreamReceiverWhenCreateFullFilePathIsCalledThenFileNameIsExtendedRootDeviceIndex) {
     DebugManagerStateRestore stateRestore;
 
     debugManager.flags.GenerateAubFilePerProcessId.set(1);
+    auto fullName = AUBCommandStreamReceiver::createFullFilePath(*defaultHwInfo, "aubfile", 1u);
+    std::stringstream strExtendedFileName;
+    strExtendedFileName << "_1_aubfile_PID_" << SysCalls::getProcessId() << ".aub";
+    EXPECT_NE(std::string::npos, fullName.find(strExtendedFileName.str()));
+}
+
+HWTEST_F(AubFileStreamTests, givenAUBDumpCaptureDirPathAndGeneratingAubFilePerProcessIdWhenCreateFullFilePathIsCalledThenFileNameIsExtendedRootDeviceIndex) {
+    DebugManagerStateRestore stateRestore;
+
+    std::string expectedDirPath = "/tmp/path";
+    debugManager.flags.AUBDumpCaptureDirPath.set(expectedDirPath);
+    debugManager.flags.GenerateAubFilePerProcessId.set(1);
+    auto fullName = AUBCommandStreamReceiver::createFullFilePath(*defaultHwInfo, "aubfile", 1u);
+
+    std::stringstream expectedPerProcessPart;
+    expectedPerProcessPart << "_1_aubfile_PID_" << SysCalls::getProcessId() << ".aub";
+
+    EXPECT_NE(std::string::npos, fullName.find(expectedDirPath));
+    EXPECT_NE(std::string::npos, fullName.find(expectedPerProcessPart.str()));
+}
+
+HWTEST_F(AubFileStreamTests, givenAndAubCommandStreamReceiverWhenCreateFullFilePathIsCalledThenFileNameIsExtendedRootDeviceIndexAndPid) {
     auto fullName = AUBCommandStreamReceiver::createFullFilePath(*defaultHwInfo, "aubfile", 1u);
     std::stringstream strExtendedFileName;
     strExtendedFileName << "_1_aubfile_PID_" << SysCalls::getProcessId() << ".aub";

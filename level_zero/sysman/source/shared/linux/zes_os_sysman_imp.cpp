@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,17 +14,18 @@
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/linux/file_descriptor.h"
 #include "shared/source/os_interface/linux/pci_path.h"
+#include "shared/source/os_interface/linux/pmt_util.h"
 #include "shared/source/os_interface/linux/system_info.h"
 #include "shared/source/os_interface/os_interface.h"
 
+#include "level_zero/core/source/driver/driver.h"
 #include "level_zero/sysman/source/api/pci/linux/sysman_os_pci_imp.h"
 #include "level_zero/sysman/source/api/pci/sysman_pci_utils.h"
 #include "level_zero/sysman/source/shared/firmware_util/sysman_firmware_util.h"
-#include "level_zero/sysman/source/shared/linux/pmt/sysman_pmt.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/pmu/sysman_pmu.h"
 #include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 
 namespace L0 {
 namespace Sysman {
@@ -42,7 +43,20 @@ ze_result_t LinuxSysmanImp::init() {
         return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
     }
 
-    pSysmanKmdInterface = SysmanKmdInterface::create(*getDrm());
+    pSysmanProductHelper = SysmanProductHelper::create(getProductFamily());
+    DEBUG_BREAK_IF(nullptr == pSysmanProductHelper);
+
+    if (sysmanInitFromCore) {
+        if (pSysmanProductHelper->isZesInitSupported()) {
+            sysmanInitFromCore = false;
+        } else {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
+                                  "%s", "Sysman Initialization already happened via zeInit\n");
+            return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+        }
+    }
+
+    pSysmanKmdInterface = SysmanKmdInterface::create(*getDrm(), pSysmanProductHelper.get());
     auto result = pSysmanKmdInterface->initFsAccessInterface(*getDrm());
     if (result != ZE_RESULT_SUCCESS) {
         return result;
@@ -50,8 +64,6 @@ ze_result_t LinuxSysmanImp::init() {
     pFsAccess = pSysmanKmdInterface->getFsAccess();
     pProcfsAccess = pSysmanKmdInterface->getProcFsAccess();
     pSysfsAccess = pSysmanKmdInterface->getSysFsAccess();
-    pSysmanProductHelper = SysmanProductHelper::create(getProductFamily());
-    DEBUG_BREAK_IF(nullptr == pSysmanProductHelper);
 
     auto sysmanHwDeviceId = getSysmanHwDeviceIdInstance();
     int myDeviceFd = sysmanHwDeviceId.getFileDescriptor();
@@ -60,15 +72,23 @@ ze_result_t LinuxSysmanImp::init() {
 
     osInterface.getDriverModel()->as<NEO::Drm>()->cleanup();
     pPmuInterface = PmuInterface::create(this);
-    return createPmtHandles();
+    return result;
+}
+
+ze_result_t LinuxSysmanImp::getResult(int err) {
+    if ((EPERM == err) || (EACCES == err)) {
+        return ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;
+    } else if (ENOENT == err) {
+        return ZE_RESULT_ERROR_NOT_AVAILABLE;
+    } else if (EBUSY == err) {
+        return ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE;
+    } else {
+        return ZE_RESULT_ERROR_UNKNOWN;
+    }
 }
 
 std::string &LinuxSysmanImp::getDeviceName() {
     return deviceName;
-}
-
-std::string &LinuxSysmanImp::getPciRootPath() {
-    return rootPath;
 }
 
 SysmanHwDeviceIdDrm::SingleInstance LinuxSysmanImp::getSysmanHwDeviceIdInstance() {
@@ -79,17 +99,6 @@ SysmanHwDeviceIdDrm::SingleInstance LinuxSysmanImp::getSysmanHwDeviceIdInstance(
 NEO::Drm *LinuxSysmanImp::getDrm() {
     const auto &osInterface = *pParentSysmanDeviceImp->getRootDeviceEnvironment().osInterface;
     return osInterface.getDriverModel()->as<NEO::Drm>();
-}
-
-ze_result_t LinuxSysmanImp::createPmtHandles() {
-    std::string gtDevicePCIPath;
-    auto result = pSysfsAccess->getRealPath("device", gtDevicePCIPath);
-    if (ZE_RESULT_SUCCESS != result) {
-        return result;
-    }
-    auto gpuUpstreamPortPath = getPciCardBusDirectoryPath(gtDevicePCIPath);
-    PlatformMonitoringTech::create(this, gpuUpstreamPortPath, mapOfSubDeviceIdToPmtObject);
-    return result;
 }
 
 static std::string modifyPathOnLevel(std::string realPciPath, uint8_t nLevel) {
@@ -135,24 +144,6 @@ std::string LinuxSysmanImp::getPciCardBusDirectoryPath(std::string realPciPath) 
     // '/sys/devices/pci0000:89/0000:89:02.0/0000:8a:00.0/' will always be the same distance.
     // from 0000:8c:00.0 i.e the 2nd PCI address from the gt tile.
     return modifyPathOnLevel(realPciPath, 2);
-}
-
-PlatformMonitoringTech *LinuxSysmanImp::getPlatformMonitoringTechAccess(uint32_t subDeviceId) {
-    auto subDeviceIdToPmtEntry = mapOfSubDeviceIdToPmtObject.find(subDeviceId);
-    if (subDeviceIdToPmtEntry == mapOfSubDeviceIdToPmtObject.end()) {
-        return nullptr;
-    }
-    return subDeviceIdToPmtEntry->second;
-}
-
-void LinuxSysmanImp::releasePmtObject() {
-    for (auto &subDeviceIdToPmtEntry : mapOfSubDeviceIdToPmtObject) {
-        if (subDeviceIdToPmtEntry.second) {
-            delete subDeviceIdToPmtEntry.second;
-            subDeviceIdToPmtEntry.second = nullptr;
-        }
-    }
-    mapOfSubDeviceIdToPmtObject.clear();
 }
 
 FsAccessInterface &LinuxSysmanImp::getFsAccess() {
@@ -220,7 +211,6 @@ LinuxSysmanImp::~LinuxSysmanImp() {
         pPmuInterface = nullptr;
     }
     releaseFwUtilInterface();
-    releasePmtObject();
 }
 
 void LinuxSysmanImp::getPidFdsForOpenDevice(const ::pid_t pid, std::vector<int> &deviceFds) {
@@ -295,14 +285,12 @@ void LinuxSysmanImp::releaseSysmanDeviceResources() {
         getSysmanDeviceImp()->pDiagnosticsHandleContext->releaseDiagnosticsHandles();
     }
     getSysmanDeviceImp()->pFirmwareHandleContext->releaseFwHandles();
-    releasePmtObject();
     if (!diagnosticsReset) {
         releaseFwUtilInterface();
     }
 }
 
 ze_result_t LinuxSysmanImp::reInitSysmanDeviceResources() {
-    createPmtHandles();
     if (!diagnosticsReset) {
         if (pFwUtilInterface == nullptr) {
             createFwUtilInterface();
@@ -412,8 +400,14 @@ ze_result_t LinuxSysmanImp::osWarmReset() {
         return ZE_RESULT_ERROR_UNKNOWN;
     }
 
-    std::string cardBusPath = getPciCardBusDirectoryPath(gtDevicePath);
-    ze_result_t result = pFsAccess->write(cardBusPath + '/' + "remove", "1");
+    std::string devicePath = {};
+    if (pSysmanProductHelper->isUpstreamPortConnected()) {
+        devicePath = getPciCardBusDirectoryPath(gtDevicePath);
+    } else {
+        devicePath = gtDevicePath;
+    }
+
+    ze_result_t result = pFsAccess->write(devicePath + '/' + "remove", "1");
     if (ZE_RESULT_SUCCESS != result) {
         return result;
     }
@@ -460,12 +454,13 @@ ze_result_t LinuxSysmanImp::osWarmReset() {
             return result;
         }
 
-        result = pFsAccess->write(cardBusPath + '/' + "remove", "1");
+        result = pFsAccess->write(devicePath + '/' + "remove", "1");
         if (ZE_RESULT_SUCCESS != result) {
             NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stdout,
                                   "Card Bus remove after resizing VF bar failed\n");
             return result;
         }
+        NEO::sleep(std::chrono::seconds(10)); // Sleep for 10seconds to make sure that the config spaces of all devices are saved correctly.
 
         result = pFsAccess->write(rootPortPath + '/' + "rescan", "1");
         if (ZE_RESULT_SUCCESS != result) {
@@ -473,6 +468,7 @@ ze_result_t LinuxSysmanImp::osWarmReset() {
                                   "Rescanning root port failed after resizing VF bar failed\n");
             return result;
         }
+        NEO::sleep(std::chrono::seconds(10)); // Sleep for 10seconds, allows the rescan to complete on all devices attached to the root port.
     }
     return result;
 }
@@ -484,11 +480,11 @@ std::string LinuxSysmanImp::getAddressFromPath(std::string &rootPortPath) {
 }
 
 ze_result_t LinuxSysmanImp::osColdReset() {
-    const std::string slotPath("/sys/bus/pci/slots/");         // holds the directories matching to the number of slots in the PC
-    std::string cardBusPath;                                   // will hold the PCIe Root port directory path (the address of the PCIe slot).
-                                                               // will hold the absolute real path (not symlink) to the selected Device
-    cardBusPath = getPciCardBusDirectoryPath(gtDevicePath);    // e.g cardBusPath=/sys/devices/pci0000:89/0000:89:02.0/
-    std::string rootAddress = getAddressFromPath(cardBusPath); // e.g rootAddress = 0000:8a:00.0
+    const std::string slotPath("/sys/bus/pci/slots/");        // holds the directories matching to the number of slots in the PC
+    std::string cardBusPath;                                  // will hold the PCIe upstream port path (the address of the PCIe slot).
+                                                              // will hold the absolute real path (not symlink) to the selected Device
+    cardBusPath = getPciCardBusDirectoryPath(gtDevicePath);   // e.g cardBusPath=/sys/devices/pci0000:89/0000:89:02.0/
+    std::string uspAddress = getAddressFromPath(cardBusPath); // e.g upstreamPortAddress = 0000:8a:00.0
 
     std::vector<std::string> dir;
     ze_result_t result = pFsAccess->listDirectory(slotPath, dir); // get list of slot directories from  /sys/bus/pci/slots/
@@ -501,7 +497,7 @@ ze_result_t LinuxSysmanImp::osColdReset() {
         if (ZE_RESULT_SUCCESS != result) {
             return result;
         }
-        if (slotAddress.compare(rootAddress) == 0) {                      // compare slot address to root port address
+        if (slotAddress.compare(uspAddress) == 0) {                       // compare slot address to upstream port address
             result = pFsAccess->write((slotPath + slot + "/power"), "0"); // turn off power
             if (ZE_RESULT_SUCCESS != result) {
                 return result;
@@ -530,6 +526,44 @@ uint32_t LinuxSysmanImp::getMemoryType() {
         }
     }
     return memType;
+}
+
+bool LinuxSysmanImp::getTelemData(uint32_t subDeviceId, std::string &telemDir, std::string &guid, uint64_t &offset) {
+
+    if (mapOfSubDeviceIdToTelemData.find(subDeviceId) != mapOfSubDeviceIdToTelemData.end()) {
+        auto pTelemData = mapOfSubDeviceIdToTelemData[subDeviceId].get();
+        telemDir = pTelemData->telemDir;
+        guid = pTelemData->guid;
+        offset = pTelemData->offset;
+        return true;
+    }
+
+    if (telemNodesInPciPath.empty()) {
+        NEO::PmtUtil::getTelemNodesInPciPath(std::string_view(rootPath), telemNodesInPciPath);
+    }
+
+    uint32_t deviceCount = getSubDeviceCount() + 1;
+    if (telemNodesInPciPath.size() < deviceCount) {
+        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Number of telemetry nodes:%d is less than device count: %d \n", __FUNCTION__, telemNodesInPciPath.size(), deviceCount);
+        return false;
+    }
+
+    if (telemNodesInPciPath.size() == 1) {
+        if (!PlatformMonitoringTech::getTelemData(telemNodesInPciPath, telemDir, guid, offset)) {
+            return false;
+        }
+    } else {
+        if (!PlatformMonitoringTech::getTelemDataForTileAggregator(telemNodesInPciPath, subDeviceId, telemDir, guid, offset)) {
+            return false;
+        }
+    }
+
+    pTelemData = std::make_unique<PlatformMonitoringTech::TelemData>();
+    pTelemData->telemDir = telemDir;
+    pTelemData->offset = offset;
+    pTelemData->guid = guid;
+    mapOfSubDeviceIdToTelemData[subDeviceId] = std::move(pTelemData);
+    return true;
 }
 
 OsSysman *OsSysman::create(SysmanDeviceImp *pParentSysmanDeviceImp) {

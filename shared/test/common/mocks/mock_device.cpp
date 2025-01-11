@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,6 +14,7 @@
 #include "shared/source/memory_manager/multi_graphics_allocation.h"
 #include "shared/source/os_interface/os_context.h"
 #include "shared/test/common/fixtures/mock_aub_center_fixture.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
 #include "shared/test/common/mocks/mock_ostime.h"
@@ -34,7 +35,7 @@ MockDevice::MockDevice()
     commandStreamReceivers.resize(1);
     commandStreamReceivers[0].reset(commandStreamReceiver);
 
-    EngineDescriptor engineDescriptor = {EngineTypeUsage{aub_stream::ENGINE_CCS, EngineUsage::regular}, this->getDeviceBitfield(), PreemptionMode::Disabled, true, false};
+    EngineDescriptor engineDescriptor = {EngineTypeUsage{aub_stream::ENGINE_CCS, EngineUsage::regular}, this->getDeviceBitfield(), PreemptionMode::Disabled, true};
 
     OsContext *osContext = getMemoryManager()->createAndRegisterOsContext(commandStreamReceiver, engineDescriptor);
     commandStreamReceiver->setupContext(*osContext);
@@ -50,13 +51,19 @@ const char *MockDevice::getProductAbbrev() const {
 MockDevice::MockDevice(ExecutionEnvironment *executionEnvironment, uint32_t rootDeviceIndex)
     : RootDevice(executionEnvironment, rootDeviceIndex) {
     UltDeviceFactory::initializeMemoryManager(*executionEnvironment);
-
+    auto &hwInfo = getHardwareInfo();
     if (!getOSTime()) {
         getRootDeviceEnvironmentRef().osTime = MockOSTime::create();
+        getRootDeviceEnvironmentRef().osTime->setDeviceTimerResolution();
     }
-    auto &hwInfo = getHardwareInfo();
     executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->setHwInfoAndInitHelpers(&hwInfo);
+    UnitTestSetter::setRcsExposure(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+    UnitTestSetter::setCcsExposure(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
     executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->initGmm();
+
+    if (!executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface) {
+        executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
+    }
 
     initializeCaps();
     preemptionMode = PreemptionHelper::getDefaultPreemptionMode(hwInfo);
@@ -92,7 +99,7 @@ void MockDevice::resetCommandStreamReceiver(CommandStreamReceiver *newCsr, uint3
     const_cast<EngineControlContainer &>(memoryManager->getRegisteredEngines(rootDeviceIndex)).emplace_back(registeredEngine);
     osContext->incRefInternal();
     newCsr->setupContext(*osContext);
-    osContext->ensureContextInitialized();
+    osContext->ensureContextInitialized(false);
     commandStreamReceivers[engineIndex].reset(newCsr);
     commandStreamReceivers[engineIndex]->initializeTagAllocation();
     commandStreamReceivers[engineIndex]->createGlobalFenceAllocation();
@@ -109,6 +116,9 @@ ExecutionEnvironment *MockDevice::prepareExecutionEnvironment(const HardwareInfo
     pHwInfo = pHwInfo ? pHwInfo : defaultHwInfo.get();
     for (auto i = 0u; i < executionEnvironment->rootDeviceEnvironments.size(); i++) {
         executionEnvironment->rootDeviceEnvironments[i]->setHwInfoAndInitHelpers(pHwInfo);
+
+        UnitTestSetter::setRcsExposure(*executionEnvironment->rootDeviceEnvironments[i]);
+        UnitTestSetter::setCcsExposure(*executionEnvironment->rootDeviceEnvironments[i]);
         executionEnvironment->rootDeviceEnvironments[i]->initGmm();
     }
     executionEnvironment->setDeviceHierarchy(executionEnvironment->rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
@@ -147,6 +157,9 @@ ExecutionEnvironment *MockDevice::prepareExecutionEnvironment(const HardwareInfo
     auto hwInfo = pHwInfo ? pHwInfo : defaultHwInfo.get();
 
     executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(hwInfo);
+    UnitTestSetter::setRcsExposure(*executionEnvironment->rootDeviceEnvironments[0]);
+    UnitTestSetter::setCcsExposure(*executionEnvironment->rootDeviceEnvironments[0]);
+
     executionEnvironment->setDeviceHierarchy(executionEnvironment->rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
 
     MockAubCenterFixture::setMockAubCenter(*executionEnvironment->rootDeviceEnvironments[0]);
@@ -154,11 +167,25 @@ ExecutionEnvironment *MockDevice::prepareExecutionEnvironment(const HardwareInfo
     return executionEnvironment;
 }
 
-bool MockSubDevice::createEngine(uint32_t deviceCsrIndex, EngineTypeUsage engineTypeUsage) {
+ReleaseHelper *MockDevice::getReleaseHelper() const {
+    if (mockReleaseHelper) {
+        return mockReleaseHelper;
+    }
+    return Device::getReleaseHelper();
+}
+
+AILConfiguration *MockDevice::getAilConfigurationHelper() const {
+    if (mockAilConfigurationHelper) {
+        return mockAilConfigurationHelper;
+    }
+    return Device::getAilConfigurationHelper();
+}
+
+bool MockSubDevice::createEngine(EngineTypeUsage engineTypeUsage) {
     if (failOnCreateEngine) {
         return false;
     }
-    return SubDevice::createEngine(deviceCsrIndex, engineTypeUsage);
+    return SubDevice::createEngine(engineTypeUsage);
 }
 
 MockAlignedMallocManagerDevice::MockAlignedMallocManagerDevice(ExecutionEnvironment *executionEnvironment, uint32_t internalDeviceIndex) : MockDevice(executionEnvironment, internalDeviceIndex) {

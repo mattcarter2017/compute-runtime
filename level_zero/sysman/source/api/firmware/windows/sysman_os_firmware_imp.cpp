@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,13 +27,29 @@ ze_result_t WddmFirmwareImp::getFirmwareVersion(std::string fwType, zes_firmware
 
 void WddmFirmwareImp::osGetFwProperties(zes_firmware_properties_t *pProperties) {
     if (ZE_RESULT_SUCCESS != getFirmwareVersion(osFwType, pProperties)) {
-        strncpy_s(static_cast<char *>(pProperties->version), ZES_STRING_PROPERTY_SIZE, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        strncpy_s(static_cast<char *>(pProperties->version), ZES_STRING_PROPERTY_SIZE, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     }
     pProperties->canControl = true; // Assuming that user has permission to flash the firmware
 }
 
 ze_result_t WddmFirmwareImp::osFirmwareFlash(void *pImage, uint32_t size) {
     return pFwInterface->flashFirmware(osFwType, pImage, size);
+}
+
+ze_result_t WddmFirmwareImp::osGetSecurityVersion(char *pVersion) {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t WddmFirmwareImp::osSetSecurityVersion() {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t WddmFirmwareImp::osGetConsoleLogs(size_t *pSize, char *pFirmwareLog) {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t WddmFirmwareImp::osGetFirmwareFlashProgress(uint32_t *pCompletionPercent) {
+    return pFwInterface->getFlashFirmwareProgress(pCompletionPercent);
 }
 
 WddmFirmwareImp::WddmFirmwareImp(OsSysman *pOsSysman, const std::string &fwType) : osFwType(fwType) {
@@ -46,14 +62,13 @@ std::unique_ptr<OsFirmware> OsFirmware::create(OsSysman *pOsSysman, const std::s
     return pWddmFirmwareImp;
 }
 
-ze_result_t OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman) {
+void OsFirmware::getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman) {
     WddmSysmanImp *pWddmSysmanImp = static_cast<WddmSysmanImp *>(pOsSysman);
     FirmwareUtil *pFwInterface = pWddmSysmanImp->getFwUtilInterface();
+    supportedFwTypes.clear();
     if (pFwInterface != nullptr) {
         supportedFwTypes = deviceSupportedFwTypes;
-        return ZE_RESULT_SUCCESS;
     }
-    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
 
 } // namespace Sysman

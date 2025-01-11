@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,6 +26,7 @@
 #include "level_zero/sysman/source/api/scheduler/sysman_scheduler.h"
 #include "level_zero/sysman/source/api/standby/sysman_standby.h"
 #include "level_zero/sysman/source/api/temperature/sysman_temperature.h"
+#include "level_zero/sysman/source/api/vf_management/sysman_vf_management.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zes_api.h>
 
@@ -33,7 +34,7 @@ namespace L0 {
 namespace Sysman {
 
 struct SysmanDevice : _ze_device_handle_t {
-    static SysmanDevice *fromHandle(zes_device_handle_t handle) { return static_cast<SysmanDevice *>(handle); }
+    static SysmanDevice *fromHandle(zes_device_handle_t handle);
     inline zes_device_handle_t toHandle() { return this; }
     virtual ~SysmanDevice() = default;
     static SysmanDevice *create(NEO::ExecutionEnvironment &executionEnvironment, const uint32_t rootDeviceIndex);
@@ -74,6 +75,10 @@ struct SysmanDevice : _ze_device_handle_t {
 
     static ze_result_t deviceGetProperties(zes_device_handle_t hDevice, zes_device_properties_t *pProperties);
     virtual ze_result_t deviceGetProperties(zes_device_properties_t *pProperties) = 0;
+
+    static ze_result_t deviceGetSubDeviceProperties(zes_device_handle_t hDevice, uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps);
+    virtual ze_result_t deviceGetSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) = 0;
+    virtual ze_bool_t getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) = 0;
 
     static ze_result_t deviceGetState(zes_device_handle_t hDevice, zes_device_state_t *pState);
     virtual ze_result_t deviceGetState(zes_device_state_t *pState) = 0;
@@ -128,6 +133,9 @@ struct SysmanDevice : _ze_device_handle_t {
 
     virtual ze_result_t fabricPortGetMultiPortThroughput(uint32_t numPorts, zes_fabric_port_handle_t *phPort, zes_fabric_port_throughput_t **pThroughput) = 0;
     static ze_result_t fabricPortGetMultiPortThroughput(zes_device_handle_t hDevice, uint32_t numPorts, zes_fabric_port_handle_t *phPort, zes_fabric_port_throughput_t **pThroughput);
+
+    virtual ze_result_t deviceEnumEnabledVF(uint32_t *pCount, zes_vf_handle_t *phVFhandle) = 0;
+    static ze_result_t deviceEnumEnabledVF(zes_device_handle_t hDevice, uint32_t *pCount, zes_vf_handle_t *phVFhandle);
 
     virtual OsSysman *deviceGetOsInterface() = 0;
 };

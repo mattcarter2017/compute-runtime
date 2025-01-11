@@ -46,8 +46,18 @@ struct ImageImp : public Image, NEO::NonCopyableOrMovableClass {
         return sourceImageFormatDesc.has_value();
     }
 
+    bool isMimickedImage() override {
+        return mimickedImagefor3Ch;
+    }
+
+    void setMimickedImage(bool value) {
+        this->mimickedImagefor3Ch = value;
+    }
+
     ze_result_t allocateBindlessSlot() override;
     NEO::SurfaceStateInHeapInfo *getBindlessSlot() override;
+    ze_result_t getDeviceOffset(uint64_t *deviceOffset) override;
+    static size_t getRowPitchFor2dImage(Device *device, const NEO::ImageInfo &imgInfo);
 
   protected:
     Device *device = nullptr;
@@ -55,7 +65,12 @@ struct ImageImp : public Image, NEO::NonCopyableOrMovableClass {
     NEO::GraphicsAllocation *allocation = nullptr;
     NEO::GraphicsAllocation *implicitArgsAllocation = nullptr;
     ze_image_desc_t imageFormatDesc = {};
+    ze_sampler_desc_t samplerDesc = {};
     std::optional<ze_image_desc_t> sourceImageFormatDesc = {};
     std::unique_ptr<NEO::SurfaceStateInHeapInfo> bindlessInfo;
+    bool bindlessImage = false;
+    bool imageFromBuffer = false;
+    bool sampledImage = false;
+    bool mimickedImagefor3Ch = false;
 };
 } // namespace L0

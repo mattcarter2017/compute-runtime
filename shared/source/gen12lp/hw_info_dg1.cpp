@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,11 +37,10 @@ const RuntimeCapabilityTable DG1::capabilityTable{
     {0, 0, 0, 0, false, false, false, false},      // kmdNotifyProperties
     MemoryConstants::max64BitAppAddress,           // gpuAddressSpace
     0,                                             // sharedSystemMemCapabilities
-    83.333,                                        // defaultProfilingTimerResolution
     MemoryConstants::pageSize,                     // requiredPreemptionSurfaceSize
     "",                                            // deviceName
     nullptr,                                       // preferredPlatformName
-    PreemptionMode::MidThread,                     // defaultPreemptionMode
+    PreemptionMode::ThreadGroup,                   // defaultPreemptionMode
     aub_stream::ENGINE_RCS,                        // defaultEngineType
     0,                                             // maxRenderFrequency
     30,                                            // clVersionSupport
@@ -73,14 +72,14 @@ const RuntimeCapabilityTable DG1::capabilityTable{
     false,                                         // supportsOnDemandPageFaults
     false,                                         // supportsIndependentForwardProgress
     false,                                         // hostPtrTrackingEnabled
-    true,                                          // levelZeroSupported
     false,                                         // isIntegratedDevice
     true,                                          // supportsMediaBlock
     true,                                          // p2pAccessSupported
     false,                                         // p2pAtomicAccessSupported
     true,                                          // fusedEuEnabled
     true,                                          // l0DebuggerSupported;
-    true                                           // supportsFloatAtomics
+    true,                                          // supportsFloatAtomics
+    0                                              // cxlType
 };
 
 WorkaroundTable DG1::workaroundTable = {};

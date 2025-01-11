@@ -9,6 +9,7 @@
 
 #include "shared/source/command_stream/thread_arbitration_policy.h"
 #include "shared/source/device_binary_format/device_binary_formats.h"
+#include "shared/source/helpers/definitions/command_encoder_args.h"
 #include "shared/source/kernel/debug_data.h"
 #include "shared/source/kernel/grf_config.h"
 #include "shared/source/kernel/kernel_arg_descriptor.h"
@@ -54,6 +55,11 @@ struct KernelDescriptor {
         uint32_t perHwThreadPrivateMemorySize = 0U;
         uint32_t perThreadSystemThreadSurfaceSize = 0U;
         uint32_t numThreadsRequired = 0u;
+        uint32_t spillFillScratchMemorySize = 0u;
+        uint32_t privateScratchMemorySize = 0u;
+        uint32_t localRegionSize = NEO::localRegionSizeParamNotSet;
+        NEO::RequiredDispatchWalkOrder dispatchWalkOrder = NEO::RequiredDispatchWalkOrder::none;
+        NEO::RequiredPartitionDim partitionDim = NEO::RequiredPartitionDim::none;
         ThreadArbitrationPolicy threadArbitrationPolicy = NotPresent;
         uint16_t requiredWorkgroupSize[3] = {0U, 0U, 0U};
         uint16_t crossThreadDataSize = 0U;
@@ -67,6 +73,7 @@ struct KernelDescriptor {
         bool hasNonKernelArgStore = false;
         bool hasNonKernelArgAtomic = false;
         bool hasIndirectStatelessAccess = false;
+        bool hasIndirectAccessInImplicitArg = false;
 
         AddressingMode bufferAddressingMode = BindfulAndStateless;
         AddressingMode imageAddressingMode = Bindful;
@@ -104,7 +111,7 @@ struct KernelDescriptor {
                 // 1
                 bool usesSamplers : 1;
                 bool usesSyncBuffer : 1;
-                bool useGlobalAtomics : 1;
+                bool deprecatedDoNotUse : 1;
                 bool usesStatelessWrites : 1;
                 bool passInlineData : 1;
                 bool perThreadDataHeaderIsPresent : 1;
@@ -121,7 +128,8 @@ struct KernelDescriptor {
                 bool hasSample : 1;
                 // 3
                 bool usesAssert : 1;
-                bool reserved : 7;
+                bool usesRegionGroupBarrier : 1;
+                bool reserved : 6;
             };
             std::array<bool, 4> packed;
         } flags = {};
@@ -175,12 +183,12 @@ struct KernelDescriptor {
             ArgDescPointer globalVariablesSurfaceAddress;
             ArgDescPointer globalConstantsSurfaceAddress;
             ArgDescPointer privateMemoryAddress;
-            ArgDescPointer deviceSideEnqueueEventPoolSurfaceAddress;
             ArgDescPointer deviceSideEnqueueDefaultQueueSurfaceAddress;
             ArgDescPointer systemThreadSurfaceAddress;
             ArgDescPointer syncBufferAddress;
             ArgDescPointer rtDispatchGlobals;
             ArgDescPointer assertBufferAddress;
+            ArgDescPointer regionGroupBarrierBuffer;
             CrossThreadDataOffset privateMemorySize = undefined<CrossThreadDataOffset>;
             CrossThreadDataOffset maxWorkGroupSize = undefined<CrossThreadDataOffset>;
             CrossThreadDataOffset simdSize = undefined<CrossThreadDataOffset>;
@@ -229,6 +237,9 @@ struct KernelDescriptor {
         bool isNormalized;
         AddrMode addrMode;
         FilterMode filterMode;
+        CrossThreadDataOffset bindless = undefined<CrossThreadDataOffset>;
+        uint8_t size = undefined<uint8_t>;
+
         constexpr uint32_t getSamplerBindfulOffset() const {
             return borderColorStateSize + samplerStateSize * samplerIndex;
         }

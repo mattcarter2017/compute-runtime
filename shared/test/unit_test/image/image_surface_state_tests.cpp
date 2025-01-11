@@ -12,7 +12,7 @@
 
 using namespace NEO;
 
-HWTEST_F(ImageSurfaceStateTests, givenImageInfoWhenSetImageSurfaceStateThenProperFieldsAreSet) {
+HWTEST2_F(ImageSurfaceStateTests, givenImageInfoWhenSetImageSurfaceStateThenProperFieldsAreSet, MatchAny) {
     auto size = sizeof(typename FamilyType::RENDER_SURFACE_STATE);
     auto surfaceState = std::make_unique<char[]>(size);
     auto castSurfaceState = reinterpret_cast<typename FamilyType::RENDER_SURFACE_STATE *>(surfaceState.get());
@@ -48,13 +48,15 @@ HWTEST_F(ImageSurfaceStateTests, givenImageInfoWhenSetImageSurfaceStateThenPrope
 
     EXPECT_EQ(castSurfaceState->getRenderTargetViewExtent(), 1u);
     EXPECT_EQ(castSurfaceState->getMinimumArrayElement(), cubeFaceIndex);
-    EXPECT_EQ(castSurfaceState->getSurfaceQpitch(), imageInfo.qPitch >> RENDER_SURFACE_STATE::tagSURFACEQPITCH::SURFACEQPITCH_BIT_SHIFT);
+    EXPECT_EQ(castSurfaceState->getSurfaceQPitch(), imageInfo.qPitch >> RENDER_SURFACE_STATE::tagSURFACEQPITCH::SURFACEQPITCH_BIT_SHIFT);
     EXPECT_EQ(castSurfaceState->getSurfaceArray(), true);
     EXPECT_EQ(castSurfaceState->getSurfaceHorizontalAlignment(), static_cast<typename RENDER_SURFACE_STATE::SURFACE_HORIZONTAL_ALIGNMENT>(mockGmm->gmmResourceInfo->getHAlignSurfaceState()));
     EXPECT_EQ(castSurfaceState->getSurfaceVerticalAlignment(), static_cast<typename RENDER_SURFACE_STATE::SURFACE_VERTICAL_ALIGNMENT>(mockGmm->gmmResourceInfo->getVAlignSurfaceState()));
     EXPECT_EQ(castSurfaceState->getTileMode(), mockGmm->gmmResourceInfo->getTileModeSurfaceState());
     EXPECT_EQ(castSurfaceState->getMemoryObjectControlState(), gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_IMAGE));
-    EXPECT_EQ(castSurfaceState->getCoherencyType(), RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT);
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(castSurfaceState->getCoherencyType(), RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT);
+    }
     EXPECT_EQ(castSurfaceState->getMultisampledSurfaceStorageFormat(), RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_MSS);
 
     EXPECT_EQ(castSurfaceState->getSurfaceBaseAddress(), gpuAddress + surfaceOffsets.offset);
@@ -85,7 +87,7 @@ HWTEST_F(ImageSurfaceStateTests, givenImageInfoWhenSetImageSurfaceStateThenPrope
 
     EXPECT_EQ(castSurfaceState->getAuxiliarySurfaceMode(), AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
     EXPECT_EQ(castSurfaceState->getAuxiliarySurfacePitch(), 1u);
-    EXPECT_EQ(castSurfaceState->getAuxiliarySurfaceQpitch(), 0u);
+    EXPECT_EQ(castSurfaceState->getAuxiliarySurfaceQPitch(), 0u);
     EXPECT_EQ(castSurfaceState->getAuxiliarySurfaceBaseAddress(), 0u);
 
     surfaceState = std::make_unique<char[]>(size);
@@ -108,7 +110,7 @@ HWTEST_F(ImageSurfaceStateTests, givenGmmWhenSetAuxParamsForCCSThenAuxiliarySurf
     auto castSurfaceState = reinterpret_cast<typename FamilyType::RENDER_SURFACE_STATE *>(surfaceState.get());
     EncodeSurfaceState<FamilyType>::setImageAuxParamsForCCS(castSurfaceState, mockGmm.get());
 
-    mockGmm->isCompressionEnabled = true;
+    mockGmm->setCompressionEnabled(true);
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(castSurfaceState, mockGmm.get()));
 }
 

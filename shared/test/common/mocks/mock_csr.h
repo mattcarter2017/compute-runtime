@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -69,10 +69,17 @@ class MockCsrBase : public UltCommandStreamReceiver<GfxFamily> {
         processEvictionCalled = true;
     }
 
+    WaitStatus waitForTaskCountWithKmdNotifyFallback(TaskCountType taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, QueueThrottle throttle) override {
+        waitForTaskCountWithKmdNotifyFallbackCalled++;
+
+        return BaseUltCsrClass::waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait, useQuickKmdSleep, throttle);
+    }
+
     ResidencyContainer madeResidentGfxAllocations;
     ResidencyContainer madeNonResidentGfxAllocations;
     int32_t *executionStamp;
     int32_t flushTaskStamp;
+    uint32_t waitForTaskCountWithKmdNotifyFallbackCalled = 0;
     bool processEvictionCalled = false;
 };
 
@@ -88,7 +95,7 @@ class MockCsrAub : public MockCsrBase<GfxFamily> {
                const DeviceBitfield deviceBitfield)
         : MockCsrBase<GfxFamily>(execStamp, executionEnvironment, rootDeviceIndex, deviceBitfield) {}
     CommandStreamReceiverType getType() const override {
-        return CommandStreamReceiverType::CSR_AUB;
+        return CommandStreamReceiverType::aub;
     }
 };
 
@@ -128,6 +135,32 @@ class MockCsr : public MockCsrBase<GfxFamily> {
         lastTaskLevelToFlushTask = taskLevel;
 
         return CommandStreamReceiverHw<GfxFamily>::flushTask(
+            commandStream,
+            commandStreamStart,
+            dsh,
+            ioh,
+            ssh,
+            taskLevel,
+            dispatchFlags,
+            device);
+    }
+
+    CompletionStamp flushTaskStateless(
+        LinearStream &commandStream,
+        size_t commandStreamStart,
+        const IndirectHeap *dsh,
+        const IndirectHeap *ioh,
+        const IndirectHeap *ssh,
+        TaskCountType taskLevel,
+        DispatchFlags &dispatchFlags,
+        Device &device) override {
+        this->flushTaskStamp = *this->executionStamp;
+        (*this->executionStamp)++;
+        slmUsedInLastFlushTask = dispatchFlags.useSLM;
+        this->latestSentTaskCount = ++this->taskCount;
+        lastTaskLevelToFlushTask = taskLevel;
+
+        return CommandStreamReceiverHw<GfxFamily>::flushTaskStateless(
             commandStream,
             commandStreamStart,
             dsh,

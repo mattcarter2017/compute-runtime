@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,6 +26,7 @@ HWTEST_F(CommandEncodeSemaphore, WhenProgrammingThenMiSemaphoreWaitIsUsed) {
                                                         false,
                                                         true,
                                                         false,
+                                                        false,
                                                         false);
 
     EXPECT_EQ(MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, miSemaphore1.getCompareOperation());
@@ -41,6 +42,7 @@ HWTEST_F(CommandEncodeSemaphore, WhenProgrammingThenMiSemaphoreWaitIsUsed) {
                                                         false,
                                                         false,
                                                         false,
+                                                        false,
                                                         false);
     EXPECT_EQ(MI_SEMAPHORE_WAIT::WAIT_MODE::WAIT_MODE_SIGNAL_MODE, miSemaphore2.getWaitMode());
 }
@@ -50,14 +52,14 @@ HWTEST_F(CommandEncodeSemaphore, whenAddingMiSemaphoreCommandThenExpectCompareFi
     using COMPARE_OPERATION = typename FamilyType::MI_SEMAPHORE_WAIT::COMPARE_OPERATION;
     using WAIT_MODE = typename FamilyType::MI_SEMAPHORE_WAIT::WAIT_MODE;
 
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
     LinearStream stream(buffer.get(), 128);
     COMPARE_OPERATION compareMode = COMPARE_OPERATION::COMPARE_OPERATION_SAD_GREATER_THAN_OR_EQUAL_SDD;
 
     EncodeSemaphore<FamilyType>::addMiSemaphoreWaitCommand(stream,
                                                            0xFF00FF000u,
                                                            5u,
-                                                           compareMode, false, false, false);
+                                                           compareMode, false, false, false, false, nullptr);
 
     EXPECT_EQ(NEO::EncodeSemaphore<FamilyType>::getSizeMiSemaphoreWait(), stream.getUsed());
 
@@ -75,16 +77,16 @@ HWTEST_F(CommandEncodeSemaphore, whenAddingMiSemaphoreCommandThenExpectCompareFi
 HWTEST2_F(CommandEncodeSemaphore, givenIndirectModeSetWhenProgrammingSemaphoreThenSetIndirectBit, IsAtLeastXeHpCore) {
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using COMPARE_OPERATION = typename FamilyType::MI_SEMAPHORE_WAIT::COMPARE_OPERATION;
-    using WAIT_MODE = typename FamilyType::MI_SEMAPHORE_WAIT::WAIT_MODE;
 
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
     LinearStream stream(buffer.get(), 128);
     COMPARE_OPERATION compareMode = COMPARE_OPERATION::COMPARE_OPERATION_SAD_GREATER_THAN_OR_EQUAL_SDD;
 
+    void *outSemWait = nullptr;
     EncodeSemaphore<FamilyType>::addMiSemaphoreWaitCommand(stream,
                                                            0xFF00FF000u,
                                                            5u,
-                                                           compareMode, false, false, true);
+                                                           compareMode, false, false, true, false, &outSemWait);
 
     EXPECT_EQ(NEO::EncodeSemaphore<FamilyType>::getSizeMiSemaphoreWait(), stream.getUsed());
 
@@ -93,11 +95,14 @@ HWTEST2_F(CommandEncodeSemaphore, givenIndirectModeSetWhenProgrammingSemaphoreTh
     MI_SEMAPHORE_WAIT *miSemaphore = hwParse.getCommand<MI_SEMAPHORE_WAIT>();
     ASSERT_NE(nullptr, miSemaphore);
 
+    auto outSemWaitCmd = genCmdCast<MI_SEMAPHORE_WAIT *>(outSemWait);
+    ASSERT_NE(nullptr, outSemWaitCmd);
+    EXPECT_EQ(miSemaphore, outSemWaitCmd);
+
     EXPECT_TRUE(miSemaphore->getIndirectSemaphoreDataDword());
 }
 
 HWTEST_F(CommandEncodeSemaphore, whenGettingMiSemaphoreCommandSizeThenExpectSingleMiSemaphoreCommandSize) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     size_t expectedSize = NEO::EncodeSemaphore<FamilyType>::getSizeMiSemaphoreWait();
     size_t actualSize = EncodeSemaphore<FamilyType>::getSizeMiSemaphoreWait();
     EXPECT_EQ(expectedSize, actualSize);

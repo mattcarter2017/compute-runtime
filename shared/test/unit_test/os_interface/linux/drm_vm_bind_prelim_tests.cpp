@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,7 +28,7 @@ TEST(DrmVmBindTest, givenBoRequiringImmediateBindWhenBindingThenImmediateFlagIsP
     bo.requireImmediateBinding(true);
 
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     bo.bind(&osContext, 0);
 
     EXPECT_EQ(DrmPrelimHelper::getImmediateVmBindFlag(), drm.context.receivedVmBind->flags);
@@ -46,7 +46,7 @@ TEST(DrmVmBindTest, givenBoRequiringExplicitResidencyWhenBindingThenMakeResident
         bo.requireExplicitResidency(requireResidency);
 
         OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         uint32_t vmHandleId = 0;
         bo.bind(&osContext, vmHandleId);
 
@@ -71,11 +71,11 @@ TEST(DrmVmBindTest,
 
     for (auto requireResidency : {false, true}) {
         MockBufferObject bo(0, &drm, 3, 0, 0, 1);
-        bo.isChunked = true;
+        bo.setChunked(true);
         bo.requireExplicitResidency(requireResidency);
 
         OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         uint32_t vmHandleId = 0;
         bo.bind(&osContext, vmHandleId);
 
@@ -103,7 +103,7 @@ TEST(DrmVmBindTest, givenPerContextVmsAndBoRequiringExplicitResidencyWhenBinding
         bo.requireExplicitResidency(requireResidency);
 
         MockOsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         uint32_t vmHandleId = 0;
         bo.bind(&osContext, vmHandleId);
 
@@ -119,7 +119,7 @@ TEST(DrmVmBindTest, givenPerContextVmsAndBoRequiringExplicitResidencyWhenBinding
     }
 }
 
-TEST(DrmVmBindTest, givenBoNotRequiringExplicitResidencyWhenCallingWaitForBindThenDontWaitOnUserFence) {
+TEST(DrmVmBindTest, whenCallingWaitForBindThenWaitUserFenceIsCalled) {
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     executionEnvironment->rootDeviceEnvironments[0]->initGmm();
     executionEnvironment->initializeMemoryManager();
@@ -127,7 +127,7 @@ TEST(DrmVmBindTest, givenBoNotRequiringExplicitResidencyWhenCallingWaitForBindTh
     struct DrmQueryMockToTestWaitForBind : public DrmQueryMock {
         using DrmQueryMock::DrmQueryMock;
 
-        int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) override {
+        int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) override {
             waitUserFenceCalled = true;
             return 0;
         }
@@ -142,17 +142,13 @@ TEST(DrmVmBindTest, givenBoNotRequiringExplicitResidencyWhenCallingWaitForBindTh
         bo.requireExplicitResidency(requireResidency);
 
         OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         uint32_t vmHandleId = 0;
         bo.bind(&osContext, vmHandleId);
 
         drm.waitForBind(vmHandleId);
 
-        if (requireResidency) {
-            EXPECT_TRUE(drm.waitUserFenceCalled);
-        } else {
-            EXPECT_FALSE(drm.waitUserFenceCalled);
-        }
+        EXPECT_TRUE(drm.waitUserFenceCalled);
     }
 }
 
@@ -168,7 +164,7 @@ TEST(DrmVmBindTest, givenUseKmdMigrationWhenCallingBindBoOnUnifiedSharedMemoryTh
     drm.pageFaultSupported = true;
 
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     uint32_t vmHandleId = 0;
 
     MockBufferObject bo(0u, &drm, 3, 0, 0, 1);
@@ -191,7 +187,7 @@ TEST(DrmVmBindTest, givenDrmWithPageFaultSupportWhenCallingBindBoOnUnifiedShared
     drm.pageFaultSupported = true;
 
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     uint32_t vmHandleId = 0;
 
     MockBufferObject bo(0u, &drm, 3, 0, 0, 1);

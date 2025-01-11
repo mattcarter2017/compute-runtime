@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -77,7 +77,7 @@ using LriHelperTestsXeHpgCore = ::testing::Test;
 
 XE_HPG_CORETEST_F(LriHelperTestsXeHpgCore, whenProgrammingLriCommandThenExpectMmioRemapEnableCorrectlySet) {
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint32_t address = 0x8888;
@@ -89,7 +89,7 @@ XE_HPG_CORETEST_F(LriHelperTestsXeHpgCore, whenProgrammingLriCommandThenExpectMm
     expectedLri.setDataDword(data);
     expectedLri.setMmioRemapEnable(true);
 
-    LriHelper<FamilyType>::program(&stream, address, data, true);
+    LriHelper<FamilyType>::program(&stream, address, data, true, false);
     MI_LOAD_REGISTER_IMM *lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(buffer.get());
     ASSERT_NE(nullptr, lri);
 
@@ -142,14 +142,9 @@ XE_HPG_CORETEST_F(GfxCoreHelperTestXeHpgCore, GivenVariousValuesWhenAlignSlmSize
     EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(65536));
 }
 
-XE_HPG_CORETEST_F(ProductHelperTestXeHpgCore, givenProductHelperWhenCheckDummyBlitWaRequiredThenReturnTrue) {
-    auto &productHelper = getHelper<ProductHelper>();
-    EXPECT_TRUE(productHelper.isDummyBlitWaRequired());
-}
-
-XE_HPG_CORETEST_F(GfxCoreHelperTestXeHpgCore, givenGfxCoreHelperWhenCheckTimestampWaitSupportForQueuesThenReturnFalse) {
+XE_HPG_CORETEST_F(GfxCoreHelperTestXeHpgCore, givenGfxCoreHelperWhenCheckTimestampWaitSupportForQueuesThenReturnTrue) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    EXPECT_FALSE(gfxCoreHelper.isTimestampWaitSupportedForQueues());
+    EXPECT_TRUE(gfxCoreHelper.isTimestampWaitSupportedForQueues());
 }
 
 XE_HPG_CORETEST_F(GfxCoreHelperTestXeHpgCore, givenDisablePipeControlFlagIsEnabledWhenLocalMemoryIsEnabledThenReturnTrueAndProgramPipeControl) {

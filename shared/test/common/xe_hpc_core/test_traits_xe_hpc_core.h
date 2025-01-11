@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,17 +17,16 @@ struct TestTraits<IGFX_XE_HPC_CORE> {
     static constexpr bool systemMemCompressionAubsSupported = false;
     static constexpr bool l3ControlSupported = false;
     static constexpr bool forceNonCoherentSupported = true;
-    static constexpr bool threadPreemptionDisableBitMatcher = true;
     static constexpr bool programOnlyChangedFieldsInComputeStateMode = true;
     static constexpr bool iohInSbaSupported = false;
     static constexpr bool auxTranslationSupported = true;
     static constexpr bool deviceEnqueueSupport = false;
     static constexpr bool fusedEuDispatchSupported = false;
     static constexpr bool numberOfWalkersInCfeStateSupported = true;
-    static constexpr bool isUsingNonDefaultIoctls = true;
     static constexpr bool forceGpuNonCoherent = false;
     static constexpr bool isUnTypedDataPortCacheFlushSupported = true;
     static constexpr bool imagesSupported = false;
     static constexpr bool isPipeControlExtendedPriorToNonPipelinedStateCommandSupported = true;
     static constexpr bool largeGrfModeInStateComputeModeSupported = true;
+    static constexpr bool heaplessAllowed = false;
 };

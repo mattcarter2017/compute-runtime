@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -39,6 +39,25 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
 
     CsrSelectionArgs csrSelectionArgs{cmdType, srcImage, {}, device->getRootDeviceIndex(), region, origin, nullptr};
     CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+    return enqueueReadImageImpl(srcImage, blockingRead, origin, region, inputRowPitch, inputSlicePitch, ptr, mapAllocation, numEventsInWaitList, eventWaitList, event, csr);
+}
+
+template <typename GfxFamily>
+cl_int CommandQueueHw<GfxFamily>::enqueueReadImageImpl(
+    Image *srcImage,
+    cl_bool blockingRead,
+    const size_t *origin,
+    const size_t *region,
+    size_t inputRowPitch,
+    size_t inputSlicePitch,
+    void *ptr,
+    GraphicsAllocation *mapAllocation,
+    cl_uint numEventsInWaitList,
+    const cl_event *eventWaitList,
+    cl_event *event, CommandStreamReceiver &csr) {
+    constexpr cl_command_type cmdType = CL_COMMAND_READ_IMAGE;
+
+    CsrSelectionArgs csrSelectionArgs{cmdType, srcImage, {}, device->getRootDeviceIndex(), region, origin, nullptr};
 
     if (nullptr == mapAllocation) {
         notifyEnqueueReadImage(srcImage, static_cast<bool>(blockingRead), EngineHelpers::isBcs(csr.getOsContext().getEngineType()));
@@ -66,6 +85,16 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
     auto bcsSplit = this->isSplitEnqueueBlitNeeded(csrSelectionArgs.direction, getTotalSizeFromRectRegion(region), csr);
 
     bool tempAllocFallback = false;
+
+    if (!mapAllocation) {
+        InternalMemoryType memoryType = InternalMemoryType::notSpecified;
+        bool isCpuCopyAllowed = false;
+        cl_int retVal = getContext().tryGetExistingHostPtrAllocation(ptr, hostPtrSize, device->getRootDeviceIndex(), mapAllocation, memoryType, isCpuCopyAllowed);
+        if (retVal != CL_SUCCESS) {
+            return retVal;
+        }
+    }
+
     if (mapAllocation) {
         surfaces[1] = &mapSurface;
         mapSurface.setGraphicsAllocation(mapAllocation);

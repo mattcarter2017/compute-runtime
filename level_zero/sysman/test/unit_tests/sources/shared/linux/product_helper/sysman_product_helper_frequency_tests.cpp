@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,20 +23,9 @@ HWTEST2_F(SysmanProductHelperFrequencyTest, GivenFrequencyModuleWhenGettingStepS
     EXPECT_EQ(50.0, stepSize);
 }
 
-HWTEST2_F(SysmanProductHelperFrequencyTest, GivenFrequencyModuleWhenGettingStepSizeThenValidStepSizeIsReturned, IsGen9) {
+HWTEST2_F(SysmanProductHelperFrequencyTest, GivenFrequencyModuleWhenQueryingFrequencySetRangeSupportedThenVerifySetRangeIsSupported, IsXeHpOrXeHpcOrXeHpgCore) {
     auto pSysmanProductHelper = L0::Sysman::SysmanProductHelper::create(defaultHwInfo->platform.eProductFamily);
-    double stepSize = 0;
-    pSysmanProductHelper->getFrequencyStepSize(&stepSize);
-    EXPECT_EQ((50.0 / 3), stepSize);
-}
-
-TEST_F(SysmanProductHelperFrequencyTest, GivenSysmanProductHelperInstanceWhenGettingCurrentVoltageThenVerifyCurrentVoltageIsNegative) {
-    auto pSysmanProductHelper = L0::Sysman::SysmanProductHelper::create(defaultHwInfo->platform.eProductFamily);
-    std::unique_ptr<PublicFsAccess> pFsAccess = std::make_unique<PublicFsAccess>();
-    auto pPmt = std::make_unique<PlatformMonitoringTech>(pFsAccess.get(), 1, 0);
-    double voltage = 0;
-    pSysmanProductHelper->getCurrentVoltage(pPmt.get(), voltage);
-    EXPECT_EQ(voltage, -1.0);
+    EXPECT_EQ(true, pSysmanProductHelper->isFrequencySetRangeSupported());
 }
 
 } // namespace ult

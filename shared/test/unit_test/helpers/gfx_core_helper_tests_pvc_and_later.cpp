@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,41 +44,13 @@ HWTEST2_F(GfxCoreHelperTestPvcAndLater, givenRenderEngineWhenRemapCalledThenUseC
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto &productHelper = getHelper<ProductHelper>();
 
-    gfxCoreHelper.adjustDefaultEngineType(&hardwareInfo, productHelper);
+    gfxCoreHelper.adjustDefaultEngineType(&hardwareInfo, productHelper, nullptr);
     auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
 
     EXPECT_EQ(aub_stream::EngineType::ENGINE_CCCS, EngineHelpers::remapEngineTypeToHwSpecific(aub_stream::EngineType::ENGINE_RCS, rootDeviceEnvironment));
     EXPECT_EQ(aub_stream::EngineType::ENGINE_CCCS, EngineHelpers::remapEngineTypeToHwSpecific(aub_stream::EngineType::ENGINE_CCCS, rootDeviceEnvironment));
     EXPECT_EQ(aub_stream::EngineType::ENGINE_CCS, EngineHelpers::remapEngineTypeToHwSpecific(aub_stream::EngineType::ENGINE_CCS, rootDeviceEnvironment));
     EXPECT_EQ(aub_stream::EngineType::ENGINE_BCS, EngineHelpers::remapEngineTypeToHwSpecific(aub_stream::EngineType::ENGINE_BCS, rootDeviceEnvironment));
-}
-
-HWTEST2_F(GfxCoreHelperTestPvcAndLater, GivenVariousValuesAndPvcAndLaterPlatformsWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned, IsAtLeastXeHpcCore) {
-    std::array<std::pair<uint32_t, uint32_t>, 6> grfTestInputs = {{{64, 16},
-                                                                   {96, 10},
-                                                                   {128, 8},
-                                                                   {160, 6},
-                                                                   {192, 5},
-                                                                   {256, 4}}};
-    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    for (const auto &[grfCount, expectedThreadCountPerEu] : grfTestInputs) {
-        auto expected = expectedThreadCountPerEu * hardwareInfo.gtSystemInfo.EUCount;
-        auto result = gfxCoreHelper.calculateAvailableThreadCount(hardwareInfo, grfCount);
-        EXPECT_EQ(expected, result);
-    }
-}
-
-HWTEST2_F(GfxCoreHelperTestPvcAndLater, GivenModifiedGtSystemInfoAndPvcAndLaterPlatformsWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned, IsAtLeastXeHpcCore) {
-    std::array<std::pair<uint32_t, uint32_t>, 3> testInputs = {{{64, 256},
-                                                                {96, 384},
-                                                                {128, 512}}};
-    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    auto hwInfo = hardwareInfo;
-    for (const auto &[euCount, expectedThreadCount] : testInputs) {
-        hwInfo.gtSystemInfo.EUCount = euCount;
-        auto result = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, 256);
-        EXPECT_EQ(expectedThreadCount, result);
-    }
 }
 
 HWTEST2_F(GfxCoreHelperTestPvcAndLater, givenGfxCoreHelperWhenCheckIsUpdateTaskCountFromWaitSupportedThenReturnsTrue, IsAtLeastXeHpcCore) {

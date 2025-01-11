@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,6 +44,8 @@ extern SipKernelType calledType;
 extern bool called;
 extern bool returned;
 extern bool useMockSip;
+extern bool uninitializedSipRequested;
+extern uint64_t totalWmtpDataSize;
 
 void clearUseFlags();
 std::vector<char> createStateSaveAreaHeader(uint32_t version);

@@ -13,6 +13,7 @@
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_sip.h"
 #include "shared/test/common/os_interface/linux/device_command_stream_fixture.h"
 
 #include <memory>
@@ -46,6 +47,7 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
     void tearDown();
 
   protected:
+    VariableBackup<bool> mockSipBackup{&MockSipData::useMockSip, false};
     ExecutionEnvironment *executionEnvironment = nullptr;
     RootDeviceEnvironment *rootDeviceEnvironment = nullptr;
     DrmMockCustom::IoctlResExt ioctlResExt = {0, 0};
@@ -66,7 +68,7 @@ struct MockedMemoryInfo : public NEO::MemoryInfo {
     using NEO::MemoryInfo::MemoryInfo;
     ~MockedMemoryInfo() override = default;
 
-    size_t getMemoryRegionSize(uint32_t memoryBank) override {
+    size_t getMemoryRegionSize(uint32_t memoryBank) const override {
         return 1024u;
     }
     int createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) override {
@@ -76,7 +78,7 @@ struct MockedMemoryInfo : public NEO::MemoryInfo {
         handle = 1u;
         return 0;
     }
-    int createGemExtWithSingleRegion(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isUSMHostAllocation) override {
+    int createGemExtWithSingleRegion(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isUSMHostAllocation) override {
         if (allocSize == 0) {
             return EINVAL;
         }
@@ -84,15 +86,15 @@ struct MockedMemoryInfo : public NEO::MemoryInfo {
         pairHandlePassed = pairHandle;
         return 0;
     }
-    int createGemExtWithMultipleRegions(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, bool isUSMHostAllocation) override {
+    int createGemExtWithMultipleRegions(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, bool isUSMHostAllocation) override {
         if (allocSize == 0) {
             return EINVAL;
         }
         handle = 1u;
-        banks = memoryBanks;
+        banks = static_cast<uint32_t>(memoryBanks.to_ulong());
         return 0;
     }
-    int createGemExtWithMultipleRegions(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) override {
+    int createGemExtWithMultipleRegions(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) override {
         if (allocSize == 0) {
             return EINVAL;
         }
@@ -100,7 +102,7 @@ struct MockedMemoryInfo : public NEO::MemoryInfo {
             return -1;
         }
         handle = 1u;
-        banks = memoryBanks;
+        banks = static_cast<uint32_t>(memoryBanks.to_ulong());
         isChunkedUsed = isChunked;
         return 0;
     }
@@ -115,7 +117,7 @@ class DrmMemoryManagerFixtureWithoutQuietIoctlExpectation {
   public:
     DrmMemoryManagerFixtureWithoutQuietIoctlExpectation();
     DrmMemoryManagerFixtureWithoutQuietIoctlExpectation(uint32_t numRootDevices, uint32_t rootIndex);
-    std::unique_ptr<TestedDrmMemoryManager> memoryManager;
+    TestedDrmMemoryManager *memoryManager = nullptr;
     DrmMockCustom *mock;
 
     void setUp();
@@ -128,7 +130,7 @@ class DrmMemoryManagerFixtureWithoutQuietIoctlExpectation {
     DrmMockCustom::IoctlResExt ioctlResExt = {0, 0};
     DebugManagerStateRestore restore;
     const uint32_t rootDeviceIndex = 1u;
-    const uint32_t numRootDevices = 2u;
+    const uint32_t numRootDevices = 3u;
 };
 
 class DrmMemoryManagerFixtureWithLocalMemoryAndWithoutQuietIoctlExpectation : public DrmMemoryManagerFixtureWithoutQuietIoctlExpectation {

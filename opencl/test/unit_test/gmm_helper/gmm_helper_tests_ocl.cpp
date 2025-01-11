@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -143,7 +143,7 @@ TEST_F(GmmTests, WhenConvertingPlanesThenCorrectPlaneIsReturned) {
 class GmmImgTest : public GmmTests,
                    public ::testing::WithParamInterface<uint32_t /*cl_mem_object_type*/> {};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     GmmImgTests,
     GmmImgTest,
     testing::ValuesIn(GmmTestConst::imgTypes));
@@ -333,7 +333,7 @@ TEST_F(GmmCompressionTests, givenNV12FormatWhenQueryingThenDisallow) {
     auto compressionFormat = getGmmClientContext()->getSurfaceStateCompressionFormat(resourceFormat);
     EXPECT_GT(compressionFormat, 0u);
 
-    EXPECT_FALSE(queryGmm->isCompressionEnabled);
+    EXPECT_FALSE(queryGmm->isCompressionEnabled());
 }
 
 TEST_F(GmmCompressionTests, givenInvalidCompressionFormatAndFlatCcsFtrSetWhenQueryingThenDisallowOnGmmFlatCcsFormat) {
@@ -349,11 +349,11 @@ TEST_F(GmmCompressionTests, givenInvalidCompressionFormatAndFlatCcsFtrSetWhenQue
     auto resourceFormat = queryGmm->gmmResourceInfo->getResourceFormat();
     auto compressionFormat = getGmmClientContext()->getSurfaceStateCompressionFormat(resourceFormat);
     EXPECT_EQ(compressionFormat, invalidFormat);
-    EXPECT_FALSE(queryGmm->isCompressionEnabled);
+    EXPECT_FALSE(queryGmm->isCompressionEnabled());
 
     mockGmmClient->compressionFormatToReturn = validFormat;
     queryGmm = MockGmm::queryImgParams(getGmmHelper(), imgInfo, true);
-    EXPECT_TRUE(queryGmm->isCompressionEnabled);
+    EXPECT_TRUE(queryGmm->isCompressionEnabled());
 }
 
 TEST_F(GmmCompressionTests, givenInvalidCompressionFormatAndFlatCcsFtrNotSetWhenQueryingThenDisallowOnGmmE2CCompFormat) {
@@ -369,11 +369,11 @@ TEST_F(GmmCompressionTests, givenInvalidCompressionFormatAndFlatCcsFtrNotSetWhen
     auto resourceFormat = queryGmm->gmmResourceInfo->getResourceFormat();
     auto compressionFormat = getGmmClientContext()->getSurfaceStateCompressionFormat(resourceFormat);
     EXPECT_EQ(compressionFormat, invalidFormat);
-    EXPECT_FALSE(queryGmm->isCompressionEnabled);
+    EXPECT_FALSE(queryGmm->isCompressionEnabled());
 
     mockGmmClient->compressionFormatToReturn = validFormat;
     queryGmm = MockGmm::queryImgParams(getGmmHelper(), imgInfo, true);
-    EXPECT_TRUE(queryGmm->isCompressionEnabled);
+    EXPECT_TRUE(queryGmm->isCompressionEnabled());
 }
 
 TEST_F(GmmCompressionTests, givenPackedYuvFormatWhenQueryingThenDisallow) {
@@ -381,7 +381,7 @@ TEST_F(GmmCompressionTests, givenPackedYuvFormatWhenQueryingThenDisallow) {
         imgInfo.surfaceFormat = &surfaceFormat.surfaceFormat;
         auto queryGmm = MockGmm::queryImgParams(getGmmHelper(), imgInfo, true);
 
-        EXPECT_FALSE(queryGmm->isCompressionEnabled);
+        EXPECT_FALSE(queryGmm->isCompressionEnabled());
     }
 }
 
@@ -451,9 +451,10 @@ TEST_F(GmmLocalMemoryTests, givenUseCompressionAndLocalMemoryInImageInfoTrueWhen
     StorageInfo storageInfo = {};
     storageInfo.memoryBanks.set(1);
     storageInfo.systemMemoryPlacement = false;
+    storageInfo.localOnlyRequired = true;
 
     auto gmm = std::make_unique<Gmm>(getGmmHelper(), imgInfo, storageInfo, true);
-    EXPECT_TRUE(gmm->isCompressionEnabled);
+    EXPECT_TRUE(gmm->isCompressionEnabled());
     EXPECT_EQ(0u, gmm->resourceParams.Flags.Info.NonLocalOnly);
     EXPECT_EQ(1u, gmm->resourceParams.Flags.Info.LocalOnly);
     EXPECT_EQ(1u, gmm->resourceParams.Flags.Info.NotLockable);

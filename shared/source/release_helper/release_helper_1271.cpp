@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,12 +19,12 @@ constexpr auto release = ReleaseType::release1271;
 
 template <>
 bool ReleaseHelperHw<release>::isPipeControlPriorToNonPipelinedStateCommandsWARequired() const {
-    return hardwareIpVersion.value == AOT::MTL_P_A0;
+    return hardwareIpVersion.value == AOT::MTL_H_A0;
 }
 
 template <>
 bool ReleaseHelperHw<release>::isProgramAllStateComputeCommandFieldsWARequired() const {
-    return hardwareIpVersion.value == AOT::MTL_P_A0;
+    return hardwareIpVersion.value == AOT::MTL_H_A0;
 }
 
 template <>
@@ -33,20 +33,36 @@ inline bool ReleaseHelperHw<release>::isAuxSurfaceModeOverrideRequired() const {
 }
 
 template <>
-int ReleaseHelperHw<release>::getProductMaxPreferredSlmSize(int preferredEnumValue) const {
-    using PREFERRED_SLM_ALLOCATION_SIZE = typename XeHpgCoreFamily::INTERFACE_DESCRIPTOR_DATA::PREFERRED_SLM_ALLOCATION_SIZE;
-    return std::min(preferredEnumValue, static_cast<int>(PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96K));
+inline bool ReleaseHelperHw<release>::isDotProductAccumulateSystolicSupported() const {
+    return false;
 }
 
 template <>
-bool ReleaseHelperHw<release>::getMediaFrequencyTileIndex(uint32_t &tileIndex) const {
-    tileIndex = 1;
+inline bool ReleaseHelperHw<release>::isBindlessAddressingDisabled() const {
+    return false;
+}
+
+template <>
+inline bool ReleaseHelperHw<release>::isGlobalBindlessAllocatorEnabled() const {
     return true;
 }
 
 template <>
-inline bool ReleaseHelperHw<release>::isDotProductAccumulateSystolicSupported() const {
-    return false;
+const SizeToPreferredSlmValueArray &ReleaseHelperHw<release>::getSizeToPreferredSlmValue(bool isHeapless) const {
+    using PREFERRED_SLM_ALLOCATION_SIZE = typename XeHpgCoreFamily::INTERFACE_DESCRIPTOR_DATA::PREFERRED_SLM_ALLOCATION_SIZE;
+    static const SizeToPreferredSlmValueArray sizeToPreferredSlmValue = {{
+        {0, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0KB},
+        {16 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16KB},
+        {32 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_32KB},
+        {64 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_64KB},
+        {std::numeric_limits<uint32_t>::max(), PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96KB},
+    }};
+    return sizeToPreferredSlmValue;
+}
+
+template <>
+bool ReleaseHelperHw<release>::isDummyBlitWaRequired() const {
+    return true;
 }
 
 } // namespace NEO

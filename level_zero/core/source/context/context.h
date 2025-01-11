@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,10 +10,13 @@
 #include "shared/source/memory_manager/allocation_type.h"
 #include "shared/source/unified_memory/unified_memory.h"
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zet_api.h>
 
 struct _ze_context_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_CONTEXT;
     virtual ~_ze_context_handle_t() = default;
 };
 
@@ -162,9 +165,16 @@ struct Context : _ze_context_handle_t {
     virtual ze_result_t getVirtualAddressSpaceIpcHandle(ze_device_handle_t hDevice,
                                                         ze_ipc_mem_handle_t *pIpcHandle) = 0;
     virtual ze_result_t putVirtualAddressSpaceIpcHandle(ze_ipc_mem_handle_t ipcHandle) = 0;
-
+    virtual ze_result_t lockMemory(ze_device_handle_t hDevice, void *ptr, size_t size) = 0;
     virtual bool isShareableMemory(const void *exportDesc, bool exportableMemory, NEO::Device *neoDevice) = 0;
     virtual void *getMemHandlePtr(ze_device_handle_t hDevice, uint64_t handle, NEO::AllocationType allocationType, ze_ipc_memory_flags_t flags) = 0;
+
+    virtual ze_result_t getPitchFor2dImage(
+        ze_device_handle_t hDevice,
+        size_t imageWidth,
+        size_t imageHeight,
+        unsigned int elementSizeInBytes,
+        size_t *rowPitch) = 0;
 
     static Context *fromHandle(ze_context_handle_t handle) { return static_cast<Context *>(handle); }
     inline ze_context_handle_t toHandle() { return this; }

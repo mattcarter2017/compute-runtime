@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,6 +16,7 @@
 #include "shared/test/common/mocks/linux/mock_drm_allocation.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
 #include "shared/test/common/os_interface/linux/sys_calls_linux_ult.h"
+#include "shared/test/common/test_macros/hw_test.h"
 
 #include "gtest/gtest.h"
 
@@ -299,6 +300,8 @@ TEST(DrmBufferObjectTestPrelim, givenDisableScratchPagesWhenCreateDrmVirtualMemo
 
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
+    drm.configureScratchPagePolicy();
+    drm.configureGpuFaultCheckThreshold();
 
     uint32_t vmId = 0;
     drm.createDrmVirtualMemory(vmId);
@@ -306,13 +309,15 @@ TEST(DrmBufferObjectTestPrelim, givenDisableScratchPagesWhenCreateDrmVirtualMemo
     EXPECT_TRUE(drm.receivedGemVmControl.flags & DrmPrelimHelper::getDisableScratchVmCreateFlag());
 }
 
-TEST(DrmBufferObjectTestPrelim, givenDebuggingEnabledWithoutDisableScratchPagesFlagSetWhenCreateDrmVirtualMemoryThenDisableScratchPagesFlagIsNotSet) {
+TEST(DrmBufferObjectPrelim, givenDebuggingEnabledWithoutDisableScratchPagesFlagSetWhenCreateDrmVirtualMemoryThenDisableScratchPagesFlagIsNotSet) {
     DebugManagerStateRestore restorer;
     debugManager.flags.UseTileMemoryBankInVirtualMemoryCreation.set(0u);
 
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
-    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
+    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
+    drm.configureScratchPagePolicy();
+    drm.configureGpuFaultCheckThreshold();
 
     uint32_t vmId = 0;
     drm.createDrmVirtualMemory(vmId);
@@ -326,8 +331,10 @@ TEST(DrmBufferObjectTestPrelim, givenDisableScratchPagesAndDebuggingEnabledWhenC
     debugManager.flags.UseTileMemoryBankInVirtualMemoryCreation.set(0u);
 
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
-    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
+    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
+    drm.configureScratchPagePolicy();
+    drm.configureGpuFaultCheckThreshold();
 
     uint32_t vmId = 0;
     drm.createDrmVirtualMemory(vmId);
@@ -380,7 +387,7 @@ TEST(DrmBufferObjectTestPrelim, givenBufferObjectSetToColourWithBindWhenBindingT
     bo.setColourChunk(MemoryConstants::pageSize64k);
     bo.addColouringAddress(0xffeeffee);
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     bo.bind(&osContext, 0);
     ASSERT_TRUE(drm.context.receivedVmBind);
@@ -434,7 +441,7 @@ TEST(DrmBufferObjectTestPrelim, givenContextWhenQueryingVmIdThenIoctlIsCalled) {
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     BufferObjectMock bo(0u, &drm, 3, 1, 0, 1);
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     uint32_t vmId = 0;
     drm.storedRetValForVmId = 10;
@@ -451,7 +458,7 @@ TEST(DrmBufferObjectTestPrelim, givenBufferObjectMarkedForCaptureWhenBindingThen
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     BufferObjectMock bo(0, &drm, 3, 1, 0, 1);
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     bo.markForCapture();
 
     bo.bind(&osContext, 0);
@@ -469,7 +476,7 @@ TEST(DrmBufferObjectTestPrelim, givenNoActiveDirectSubmissionAndForceUseImmediat
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     BufferObjectMock bo(0u, &drm, 3, 1, 0, 1);
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     bo.bind(&osContext, 0);
     ASSERT_TRUE(drm.context.receivedVmBind);
@@ -485,7 +492,7 @@ TEST(DrmBufferObjectTestPrelim, whenBindingThenImmediateFlagIsSetAndExtensionLis
     drm.setDirectSubmissionActive(true);
     BufferObjectMock bo(0u, &drm, 3, 1, 0, 1);
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     osContext.setDirectSubmissionActive();
 
     bo.bind(&osContext, 0);
@@ -498,11 +505,11 @@ TEST(DrmBufferObjectTestPrelim, givenProvidedCtxIdWhenCallingWaitUserFenceThenEx
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     uint64_t gpuAddress = 0x1020304000ull;
     uint64_t value = 0x98765ull;
-    drm.waitUserFence(10u, gpuAddress, value, Drm::ValueWidth::u8, -1, 0u);
+    drm.waitUserFence(10u, gpuAddress, value, Drm::ValueWidth::u8, -1, 0u, false, NEO::InterruptId::notUsed, nullptr);
 
     EXPECT_EQ(1u, drm.context.waitUserFenceCalled);
     const auto &waitUserFence = drm.context.receivedWaitUserFence;
@@ -519,11 +526,11 @@ TEST(DrmBufferObjectTestPrelim, givenProvidedNoCtxIdWhenCallingWaitUserFenceThen
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     OsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     uint64_t gpuAddress = 0x1020304000ull;
     uint64_t value = 0x98765ull;
-    drm.waitUserFence(0u, gpuAddress, value, Drm::ValueWidth::u16, 2, 3u);
+    drm.waitUserFence(0u, gpuAddress, value, Drm::ValueWidth::u16, 2, 3u, false, NEO::InterruptId::notUsed, nullptr);
 
     EXPECT_EQ(1u, drm.context.waitUserFenceCalled);
     const auto &waitUserFence = drm.context.receivedWaitUserFence;
@@ -540,12 +547,12 @@ TEST(DrmTestPrelim, givenHungContextWhenCallingWaitUserFenceThenSmallTimeoutIsPa
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
     OsContextLinux osContext(drm, 0, 10u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     osContext.setHangDetected();
 
     uint64_t memory = 0;
     uint64_t value = 20;
-    drm.waitOnUserFences(osContext, reinterpret_cast<uint64_t>(&memory), value, 1, 0);
+    drm.waitOnUserFences(osContext, reinterpret_cast<uint64_t>(&memory), value, 1, -1, 0, false, NEO::InterruptId::notUsed, nullptr);
 
     EXPECT_EQ(osContext.getDrmContextIds().size(), drm.context.waitUserFenceCalled);
     const auto &waitUserFence = drm.context.receivedWaitUserFence;

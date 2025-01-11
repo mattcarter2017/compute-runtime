@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 #include "shared/source/command_stream/submission_status.h"
 #include "shared/source/command_stream/task_count_helper.h"
 #include "shared/source/command_stream/wait_status.h"
+#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/helpers/completion_stamp.h"
 #include "shared/source/utilities/stackvec.h"
 
@@ -76,11 +77,14 @@ struct CommandQueueImp : public CommandQueue {
 
     ze_result_t synchronize(uint64_t timeout) override;
 
-    ze_result_t initialize(bool copyOnly, bool isInternal, bool immediateCmdListQueue);
+    MOCKABLE_VIRTUAL ze_result_t initialize(bool copyOnly, bool isInternal, bool immediateCmdListQueue);
+
+    ze_result_t getOrdinal(uint32_t *pOrdinal) override;
+    ze_result_t getIndex(uint32_t *pIndex) override;
 
     Device *getDevice() { return device; }
 
-    NEO::CommandStreamReceiver *getCsr() { return csr; }
+    NEO::CommandStreamReceiver *getCsr() const { return csr; }
 
     MOCKABLE_VIRTUAL NEO::WaitStatus reserveLinearStreamSize(size_t size);
 
@@ -89,7 +93,11 @@ struct CommandQueueImp : public CommandQueue {
     }
 
     bool isSynchronousMode() const {
-        return getCommandQueueMode() == ZE_COMMAND_QUEUE_MODE_SYNCHRONOUS;
+        bool syncMode = getCommandQueueMode() == ZE_COMMAND_QUEUE_MODE_SYNCHRONOUS;
+        if (NEO::debugManager.flags.MakeEachEnqueueBlocking.get()) {
+            syncMode |= true;
+        }
+        return syncMode;
     }
 
     virtual bool getPreemptionCmdProgramming() = 0;
@@ -99,12 +107,15 @@ struct CommandQueueImp : public CommandQueue {
     void checkAssert();
     void unregisterCsrClient() override;
     void registerCsrClient() override;
+    void clearHeapContainer() {
+        heapContainer.clear();
+    }
 
   protected:
     MOCKABLE_VIRTUAL NEO::SubmissionStatus submitBatchBuffer(size_t offset, NEO::ResidencyContainer &residencyContainer, void *endingCmdPtr,
                                                              bool isCooperative);
 
-    ze_result_t synchronizeByPollingForTaskCount(uint64_t timeout);
+    ze_result_t synchronizeByPollingForTaskCount(uint64_t timeoutNanoseconds);
 
     void postSyncOperations(bool hangDetected);
 

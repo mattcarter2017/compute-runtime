@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -61,9 +61,7 @@ static void progressFunc(uint32_t done, uint32_t total, void *ctx) {
     PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stdout, "Progess: %d/%d:%d/%\n", done, total, percent);
 }
 
-FirmwareUtilImp::OsLibraryLoadPtr FirmwareUtilImp::osLibraryLoadFunction(NEO::OsLibrary::load);
-
-ze_result_t FirmwareUtilImp::getFirstDevice(igsc_device_info *info) {
+ze_result_t FirmwareUtilImp::getFirstDevice(IgscDeviceInfo *info) {
     igsc_device_iterator *iter;
     int ret = deviceIteratorCreate(&iter);
     if (ret != IGSC_SUCCESS) {
@@ -92,7 +90,7 @@ ze_result_t FirmwareUtilImp::getFirstDevice(igsc_device_info *info) {
 
 ze_result_t FirmwareUtilImp::fwDeviceInit() {
     int ret;
-    igsc_device_info info;
+    IgscDeviceInfo info;
     ze_result_t result = getFirstDevice(&info);
     if (result != ZE_RESULT_SUCCESS) {
         return result;
@@ -194,7 +192,9 @@ FirmwareUtilImp::~FirmwareUtilImp() {
 FirmwareUtil *FirmwareUtil::create(uint16_t domain, uint8_t bus, uint8_t device, uint8_t function) {
     FirmwareUtilImp *pFwUtilImp = new FirmwareUtilImp(domain, bus, device, function);
     UNRECOVERABLE_IF(nullptr == pFwUtilImp);
-    pFwUtilImp->libraryHandle = FirmwareUtilImp::osLibraryLoadFunction(FirmwareUtilImp::fwUtilLibraryName);
+    NEO::OsLibraryCreateProperties properties(FirmwareUtilImp::fwUtilLibraryName);
+    properties.customLoadFlags = &FirmwareUtilImp::fwUtilLoadFlags;
+    pFwUtilImp->libraryHandle = NEO::OsLibrary::loadFunc(properties);
     if (pFwUtilImp->libraryHandle == nullptr || pFwUtilImp->loadEntryPoints() == false || pFwUtilImp->fwDeviceInit() != ZE_RESULT_SUCCESS) {
         if (nullptr != pFwUtilImp->libraryHandle) {
             delete pFwUtilImp->libraryHandle;

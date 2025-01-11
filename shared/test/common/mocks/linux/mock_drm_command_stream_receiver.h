@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,7 +22,6 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
     using BaseClass::exec;
     using BaseClass::execObjectsStorage;
     using BaseClass::residency;
-    using BaseClass::useContextForUserFenceWait;
     using BaseClass::useUserFenceWait;
     using CommandStreamReceiver::activePartitions;
     using CommandStreamReceiver::clearColorAllocation;
@@ -33,6 +32,7 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
     using CommandStreamReceiver::getTagAddress;
     using CommandStreamReceiver::getTagAllocation;
     using CommandStreamReceiver::globalFenceAllocation;
+    using CommandStreamReceiver::heaplessStateInitialized;
     using CommandStreamReceiver::immWritePostSyncWriteOffset;
     using CommandStreamReceiver::latestSentTaskCount;
     using CommandStreamReceiver::makeResident;
@@ -78,7 +78,7 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
         return this->submissionAggregator.get();
     }
 
-    ADDMETHOD(processResidency, SubmissionStatus, true, SubmissionStatus::success, (const ResidencyContainer &allocationsForResidency, uint32_t handleId), (allocationsForResidency, handleId));
+    ADDMETHOD(processResidency, SubmissionStatus, true, SubmissionStatus::success, (ResidencyContainer & allocationsForResidency, uint32_t handleId), (allocationsForResidency, handleId));
 
     ADDMETHOD(exec, int, true, 0, (const BatchBuffer &batchBuffer, uint32_t vmHandleId, uint32_t drmContextId, uint32_t index), (batchBuffer, vmHandleId, drmContextId, index));
 
@@ -107,18 +107,18 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
 
     WaitUserFenceResult waitUserFenceResult;
 
-    bool waitUserFence(TaskCountType waitValue, uint64_t hostAddress, int64_t timeout) override {
+    bool waitUserFence(TaskCountType waitValue, uint64_t hostAddress, int64_t timeout, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) override {
         waitUserFenceResult.called++;
         waitUserFenceResult.waitValue = waitValue;
 
         if (waitUserFenceResult.callParent) {
-            return BaseClass::waitUserFence(waitValue, hostAddress, timeout);
+            return BaseClass::waitUserFence(waitValue, hostAddress, timeout, userInterrupt, externalInterruptId, allocForInterruptWait);
         } else {
             return (waitUserFenceResult.returnValue == 0);
         }
     }
 
-    ADDMETHOD(flushInternal, SubmissionStatus, true, SubmissionStatus::success, (const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency), (batchBuffer, allocationsForResidency));
+    ADDMETHOD(flushInternal, SubmissionStatus, true, SubmissionStatus::success, (const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency), (batchBuffer, allocationsForResidency));
 
     void readBackAllocation(void *source) override {
         latestReadBackAddress = source;

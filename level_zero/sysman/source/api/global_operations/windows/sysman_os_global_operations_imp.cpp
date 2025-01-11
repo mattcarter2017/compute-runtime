@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/os_interface/os_interface.h"
+#include "shared/source/os_interface/os_time.h"
 
 namespace L0 {
 namespace Sysman {
@@ -33,10 +34,13 @@ void WddmGlobalOperationsImp::getVendorName(char (&vendorName)[ZES_STRING_PROPER
 void WddmGlobalOperationsImp::getDriverVersion(char (&driverVersion)[ZES_STRING_PROPERTY_SIZE]) {
 }
 
-void WddmGlobalOperationsImp::getWedgedStatus(zes_device_state_t *pState) {
-}
 void WddmGlobalOperationsImp::getRepairStatus(zes_device_state_t *pState) {
 }
+
+void WddmGlobalOperationsImp::getTimerResolution(double *pTimerResolution) {
+    *pTimerResolution = pWddmSysmanImp->getSysmanDeviceImp()->getTimerResolution();
+}
+
 bool WddmGlobalOperationsImp::getUuid(std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
     if (pWddmSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().osInterface != nullptr) {
         auto driverModel = pWddmSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().osInterface->getDriverModel();
@@ -52,6 +56,7 @@ bool WddmGlobalOperationsImp::getUuid(std::array<uint8_t, NEO::ProductHelper::uu
 
     return this->uuid.isValid;
 }
+
 bool WddmGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
     if (pciBusInfo.pciDomain != NEO::PhysicalDevicePciBusInfo::invalidValue) {
         uuid.fill(0);
@@ -101,6 +106,24 @@ bool WddmGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDevi
 
     return false;
 }
+
+ze_bool_t WddmGlobalOperationsImp::getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) {
+    std::array<uint8_t, NEO::ProductHelper::uuidSize> deviceUuid;
+    bool uuidValid = getUuid(deviceUuid);
+    if (uuidValid) {
+        if (0 == std::memcmp(uuid.id, deviceUuid.data(), ZE_MAX_DEVICE_UUID_SIZE)) {
+            *onSubdevice = false;
+            *subdeviceId = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+ze_result_t WddmGlobalOperationsImp::getSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) {
+    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
 ze_result_t WddmGlobalOperationsImp::reset(ze_bool_t force) {
     uint32_t value = 0;
     KmdSysman::RequestProperty request;

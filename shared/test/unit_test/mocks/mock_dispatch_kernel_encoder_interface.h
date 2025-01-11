@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -30,6 +30,9 @@ struct MockDispatchKernelEncoder : public DispatchKernelEncoderI {
     NEO::ImplicitArgs *getImplicitArgs() const override { return nullptr; }
 
     void patchBindlessOffsetsInCrossThreadData(uint64_t bindlessSurfaceStateBaseOffset) const override { return; };
+    void patchSamplerBindlessOffsetsInCrossThreadData(uint64_t samplerStateOffset) const override {
+        samplerStateOffsetPassed = samplerStateOffset;
+    }
 
     MockGraphicsAllocation mockAllocation{};
     static constexpr uint32_t crossThreadSize = 0x40;
@@ -39,6 +42,8 @@ struct MockDispatchKernelEncoder : public DispatchKernelEncoderI {
     uint32_t groupSizes[3]{32, 1, 1};
     uint32_t requiredWalkGroupOrder = 0x0u;
     KernelDescriptor kernelDescriptor{};
+
+    mutable uint64_t samplerStateOffsetPassed = 0u;
 
     ADDMETHOD_CONST_NOBASE(getKernelDescriptor, const KernelDescriptor &, kernelDescriptor, ());
     ADDMETHOD_CONST_NOBASE(getGroupSize, const uint32_t *, groupSizes, ());

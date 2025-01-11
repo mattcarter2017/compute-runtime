@@ -83,7 +83,7 @@ TEST_F(Wddm20Tests, givenNullPageTableManagerAndCompressedResourceWhenMappingGpu
     void *fakePtr = reinterpret_cast<void *>(0x100);
     auto gmmHelper = getGmmHelper();
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(fakePtr)));
-    WddmAllocation allocation(0, AllocationType::unknown, fakePtr, canonizedAddress, 0x2100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, fakePtr, canonizedAddress, 0x2100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     allocation.setDefaultGmm(gmm.get());
     allocation.getHandleToModify(0u) = ALLOCATION_HANDLE;
 
@@ -207,7 +207,7 @@ TEST_F(Wddm20Tests, WhenCreatingAllocationAndDestroyingAllocationThenCorrectResu
     auto gmmHelper = getGmmHelper();
     auto ptr = mm.allocateSystemMemory(100, 0);
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(ptr)));
-    WddmAllocation allocation(0, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     Gmm *gmm = GmmHelperFunctions::getGmm(allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), getGmmHelper());
 
     allocation.setDefaultGmm(gmm);
@@ -233,7 +233,7 @@ TEST_F(Wddm20WithMockGdiDllTests, givenAllocationSmallerUnderlyingThanAlignedSiz
 
     auto gmmHelper = getGmmHelper();
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(ptr)));
-    WddmAllocation allocation(0, AllocationType::unknown, ptr, canonizedAddress, 0x2100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, ptr, canonizedAddress, 0x2100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     Gmm *gmm = GmmHelperFunctions::getGmm(allocation.getAlignedCpuPtr(), allocation.getAlignedSize(), getGmmHelper());
 
     allocation.setDefaultGmm(gmm);
@@ -316,7 +316,7 @@ TEST_F(Wddm20WithMockGdiDllTests, givenWddmAllocationWhenMappingGpuVaThenUseGmmS
     void *fakePtr = reinterpret_cast<void *>(0x123);
     auto gmmHelper = getGmmHelper();
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(fakePtr)));
-    WddmAllocation allocation(0, AllocationType::unknown, fakePtr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, fakePtr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     std::unique_ptr<Gmm> gmm(GmmHelperFunctions::getGmm(allocation.getAlignedCpuPtr(), allocation.getAlignedSize(), getGmmHelper()));
 
     allocation.setDefaultGmm(gmm.get());
@@ -344,6 +344,14 @@ TEST_F(Wddm20WithMockGdiDllTests, GivenCpuValueDifferentThanGpuHangIndicationWhe
 
     *osContext->getResidencyController().getMonitoredFence().cpuAddress = cpuValue;
     EXPECT_FALSE(wddm->isGpuHangDetected(*osContext));
+}
+
+TEST_F(Wddm20WithMockGdiDllTests, whencreateMonitoredFenceForDirectSubmissionThenCreateFence) {
+    MonitoredFence fence{};
+    wddm->getWddmInterface()->createMonitoredFenceForDirectSubmission(fence, *osContext);
+    EXPECT_EQ(wddmMockInterface->createMonitoredFenceCalled, 1u);
+    EXPECT_NE(osContext->getHwQueue().progressFenceHandle, fence.fenceHandle);
+    wddm->getWddmInterface()->destroyMonitorFence(fence);
 }
 
 TEST_F(Wddm20WithMockGdiDllTests, GivenGpuHangIndicationWhenCheckingForGpuHangThenTrueIsReturned) {
@@ -386,12 +394,36 @@ TEST_F(Wddm20WithMockGdiDllTests, GivenThreeOsHandlesWhenAskedForDestroyAllocati
     EXPECT_EQ(1u, ptrToDestroyAlloc2->Flags.AssumeNotInUse);
 }
 
+TEST_F(Wddm20WithMockGdiDllTests, GivenSetAssumeNotInUseSetToFalseWhenDestroyAllocationsThenAssumeNotInUseNotSet) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.SetAssumeNotInUse.set(false);
+
+    OsHandleStorage storage;
+    OsHandleWin osHandle1;
+
+    osHandle1.handle = ALLOCATION_HANDLE;
+
+    storage.fragmentStorageData[0].osHandleStorage = &osHandle1;
+    storage.fragmentStorageData[0].freeTheFragment = true;
+
+    D3DKMT_HANDLE handles[1] = {ALLOCATION_HANDLE};
+    bool retVal = wddm->destroyAllocations(handles, 1, 0);
+    EXPECT_TRUE(retVal);
+
+    auto destroyWithResourceHandleCalled = 0u;
+    D3DKMT_DESTROYALLOCATION2 *ptrToDestroyAlloc2 = nullptr;
+
+    getSizesFcn(destroyWithResourceHandleCalled, ptrToDestroyAlloc2);
+
+    EXPECT_EQ(0u, ptrToDestroyAlloc2->Flags.AssumeNotInUse);
+}
+
 TEST_F(Wddm20Tests, WhenMappingAndFreeingGpuVaThenReturnIsCorrect) {
     OsAgnosticMemoryManager mm(*executionEnvironment);
     auto gmmHelper = getGmmHelper();
     auto ptr = mm.allocateSystemMemory(100, 0);
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(ptr)));
-    WddmAllocation allocation(0, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     Gmm *gmm = GmmHelperFunctions::getGmm(allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), getGmmHelper());
 
     allocation.setDefaultGmm(gmm);
@@ -415,7 +447,7 @@ TEST_F(Wddm20Tests, WhenMappingAndFreeingGpuVaThenReturnIsCorrect) {
 }
 
 TEST_F(Wddm20Tests, givenNullAllocationWhenCreateThenAllocateAndMap) {
-    WddmAllocation allocation(0, AllocationType::unknown, nullptr, 0, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), getGmmHelper()));
 
     allocation.setDefaultGmm(gmm.get());
@@ -434,7 +466,7 @@ TEST_F(Wddm20Tests, givenNullAllocationWhenCreateThenAllocateAndMap) {
 
 TEST_F(WddmTestWithMockGdiDll, givenShareableAllocationWhenCreateThenCreateResourceFlagIsEnabled) {
     init();
-    WddmAllocation allocation(0, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
     auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(nullptr, MemoryConstants::pageSize, getGmmHelper()));
     allocation.setDefaultGmm(gmm.get());
     auto status = wddm->createAllocation(&allocation);
@@ -445,6 +477,48 @@ TEST_F(WddmTestWithMockGdiDll, givenShareableAllocationWhenCreateThenCreateResou
     wddm->destroyAllocation(&allocation, nullptr);
 }
 
+TEST_F(WddmTestWithMockGdiDll, givenCompressedResourceWhenItIsCreatedThenItMayContainNonZeroContent) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.AllowNotZeroForCompressedOnWddm.set(1);
+    init();
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(nullptr, MemoryConstants::pageSize, getGmmHelper()));
+    gmm->setCompressionEnabled(true);
+    allocation.setDefaultGmm(gmm.get());
+    auto status = wddm->createAllocation(&allocation);
+    EXPECT_EQ(STATUS_SUCCESS, status);
+    auto passedCreateAllocation = getMockAllocationFcn();
+    EXPECT_EQ(1u, passedCreateAllocation->Flags.AllowNotZeroed);
+    wddm->destroyAllocation(&allocation, nullptr);
+}
+
+TEST_F(WddmTestWithMockGdiDll, givenNonCompressedResourceWhenItIsCreatedThenItCannotContainNonZeroContent) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.AllowNotZeroForCompressedOnWddm.set(1);
+    init();
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(nullptr, MemoryConstants::pageSize, getGmmHelper()));
+    allocation.setDefaultGmm(gmm.get());
+    auto status = wddm->createAllocation(&allocation);
+    EXPECT_EQ(STATUS_SUCCESS, status);
+    auto passedCreateAllocation = getMockAllocationFcn();
+    EXPECT_EQ(0u, passedCreateAllocation->Flags.AllowNotZeroed);
+    wddm->destroyAllocation(&allocation, nullptr);
+}
+
+TEST_F(WddmTestWithMockGdiDll, givenCompressedResourceWhenItIsCreatedThenItCannotContainNonZeroContent) {
+    init();
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(nullptr, MemoryConstants::pageSize, getGmmHelper()));
+    gmm->setCompressionEnabled(true);
+    allocation.setDefaultGmm(gmm.get());
+    auto status = wddm->createAllocation(&allocation);
+    EXPECT_EQ(STATUS_SUCCESS, status);
+    auto passedCreateAllocation = getMockAllocationFcn();
+    EXPECT_EQ(0u, passedCreateAllocation->Flags.AllowNotZeroed);
+    wddm->destroyAllocation(&allocation, nullptr);
+}
+
 TEST_F(WddmTestWithMockGdiDll, givenShareableAllocationWhenCreateThenSharedHandleAndResourceHandleAreSet) {
     init();
     struct MockWddmMemoryManager : public WddmMemoryManager {
@@ -452,7 +526,7 @@ TEST_F(WddmTestWithMockGdiDll, givenShareableAllocationWhenCreateThenSharedHandl
         using WddmMemoryManager::WddmMemoryManager;
     };
     MemoryManagerCreate<MockWddmMemoryManager> memoryManager(false, false, *executionEnvironment);
-    WddmAllocation allocation(0, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
     auto gmm = std::unique_ptr<Gmm>(GmmHelperFunctions::getGmm(nullptr, MemoryConstants::pageSize, getGmmHelper()));
     allocation.setDefaultGmm(gmm.get());
     auto status = memoryManager.createGpuAllocationsWithRetry(&allocation);
@@ -467,7 +541,7 @@ TEST_F(Wddm20Tests, WhenMakingResidentAndEvictingThenReturnIsCorrect) {
     auto gmmHelper = getGmmHelper();
     auto ptr = mm.allocateSystemMemory(100, 0);
     auto canonizedAddress = gmmHelper->canonize(castToUint64(const_cast<void *>(ptr)));
-    WddmAllocation allocation(0, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, ptr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     Gmm *gmm = GmmHelperFunctions::getGmm(allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), getGmmHelper());
 
     allocation.setDefaultGmm(gmm);
@@ -487,11 +561,6 @@ TEST_F(Wddm20Tests, WhenMakingResidentAndEvictingThenReturnIsCorrect) {
     error = wddm->evict(&allocation.getHandles()[0], allocation.getNumGmms(), sizeToTrim, true);
     EXPECT_TRUE(error);
 
-    auto monitoredFence = osContext->getResidencyController().getMonitoredFence();
-    UINT64 fenceValue = 100;
-    monitoredFence.cpuAddress = &fenceValue;
-    monitoredFence.currentFenceValue = 101;
-
     error = wddm->destroyAllocation(&allocation, osContext.get());
 
     EXPECT_TRUE(error);
@@ -499,44 +568,55 @@ TEST_F(Wddm20Tests, WhenMakingResidentAndEvictingThenReturnIsCorrect) {
     mm.freeSystemMemory(allocation.getUnderlyingBuffer());
 }
 
-TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandleWhenCreateGraphicsAllocationFromSharedHandleIsCalledThenGraphicsAllocationWithSharedPropertiesIsCreated) {
+TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandlesWhenCreateGraphicsAllocationFromSharedHandleIsCalledThenGraphicsAllocationsWithSharedPropertiesAreCreated) {
     void *pSysMem = (void *)0x1000;
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     std::unique_ptr<Gmm> gmm(new Gmm(getGmmHelper(), pSysMem, 4096u, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    auto status = setSizesFcn(gmm->gmmResourceInfo.get(), 1u, 1024u, 1u);
+    std::unique_ptr<Gmm> gmm2(new Gmm(getGmmHelper(), pSysMem, 4096u, 0, GMM_RESOURCE_USAGE_OCL_IMAGE, {}, gmmRequirements));
+    void *gmmPtrArray[]{gmm->gmmResourceInfo.get(), gmm2->gmmResourceInfo.get()};
+    auto status = setSizesFcn(gmmPtrArray, 2u, 1024u, 1u);
     EXPECT_EQ(0u, static_cast<uint32_t>(status));
 
     MemoryManagerCreate<WddmMemoryManager> mm(false, false, *executionEnvironment);
-    AllocationProperties properties(0, false, 4096u, AllocationType::sharedBuffer, false, {});
+    AllocationProperties properties(0, false, 4096u, AllocationType::sharedImage, false, {});
 
-    auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(ALLOCATION_HANDLE, properties, false, false, true, nullptr);
-    auto wddmAllocation = (WddmAllocation *)graphicsAllocation;
-    ASSERT_NE(nullptr, wddmAllocation);
+    for (uint32_t i = 0; i < 3; i++) {
+        WddmMemoryManager::OsHandleData osHandleData{ALLOCATION_HANDLE, i};
 
-    EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->peekSharedHandle());
-    EXPECT_EQ(RESOURCE_HANDLE, wddmAllocation->resourceHandle);
-    EXPECT_NE(0u, wddmAllocation->getDefaultHandle());
-    EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->getDefaultHandle());
-    EXPECT_NE(0u, wddmAllocation->getGpuAddress());
-    EXPECT_EQ(4096u, wddmAllocation->getUnderlyingBufferSize());
-    EXPECT_EQ(nullptr, wddmAllocation->getAlignedCpuPtr());
-    EXPECT_NE(nullptr, wddmAllocation->getDefaultGmm());
+        auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
+        auto wddmAllocation = (WddmAllocation *)graphicsAllocation;
+        ASSERT_NE(nullptr, wddmAllocation);
 
-    EXPECT_EQ(4096u, wddmAllocation->getDefaultGmm()->gmmResourceInfo->getSizeAllocation());
+        EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->peekSharedHandle());
+        EXPECT_EQ(RESOURCE_HANDLE, wddmAllocation->getResourceHandle());
+        EXPECT_NE(0u, wddmAllocation->getDefaultHandle());
+        EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->getDefaultHandle());
+        EXPECT_NE(0u, wddmAllocation->getGpuAddress());
+        EXPECT_EQ(4096u, wddmAllocation->getUnderlyingBufferSize());
+        EXPECT_EQ(nullptr, wddmAllocation->getAlignedCpuPtr());
+        EXPECT_NE(nullptr, wddmAllocation->getDefaultGmm());
 
-    mm.freeGraphicsMemory(graphicsAllocation);
-    auto destroyWithResourceHandleCalled = 0u;
-    D3DKMT_DESTROYALLOCATION2 *ptrToDestroyAlloc2 = nullptr;
+        EXPECT_EQ(4096u, wddmAllocation->getDefaultGmm()->gmmResourceInfo->getSizeAllocation());
 
-    status = getSizesFcn(destroyWithResourceHandleCalled, ptrToDestroyAlloc2);
+        if (i % 2)
+            EXPECT_EQ(GMM_RESOURCE_USAGE_OCL_IMAGE, reinterpret_cast<MockGmmResourceInfo *>(wddmAllocation->getDefaultGmm()->gmmResourceInfo.get())->getResourceUsage());
+        else
+            EXPECT_EQ(GMM_RESOURCE_USAGE_OCL_BUFFER, reinterpret_cast<MockGmmResourceInfo *>(wddmAllocation->getDefaultGmm()->gmmResourceInfo.get())->getResourceUsage());
 
-    EXPECT_EQ(0u, ptrToDestroyAlloc2->Flags.SynchronousDestroy);
-    EXPECT_EQ(1u, ptrToDestroyAlloc2->Flags.AssumeNotInUse);
+        mm.freeGraphicsMemory(graphicsAllocation);
+        auto destroyWithResourceHandleCalled = 0u;
+        D3DKMT_DESTROYALLOCATION2 *ptrToDestroyAlloc2 = nullptr;
 
-    EXPECT_EQ(0u, static_cast<uint32_t>(status));
-    EXPECT_EQ(1u, destroyWithResourceHandleCalled);
+        status = getSizesFcn(destroyWithResourceHandleCalled, ptrToDestroyAlloc2);
+
+        EXPECT_EQ(0u, ptrToDestroyAlloc2->Flags.SynchronousDestroy);
+        EXPECT_EQ(1u, ptrToDestroyAlloc2->Flags.AssumeNotInUse);
+
+        EXPECT_EQ(0u, static_cast<uint32_t>(status));
+        EXPECT_EQ(1u, destroyWithResourceHandleCalled);
+    }
 }
 
 TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandleWhenCreateGraphicsAllocationFromSharedHandleIsCalledWithMapPointerThenGraphicsAllocationWithSharedPropertiesIsCreated) {
@@ -549,18 +629,20 @@ TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandleWhenCreateGraphicsAllocationF
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     std::unique_ptr<Gmm> gmm(new Gmm(getGmmHelper(), pSysMem, sizeAlignedTo64Kb, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    auto status = setSizesFcn(gmm->gmmResourceInfo.get(), 1u, 1024u, 1u);
+    void *gmmPtrArray[]{gmm->gmmResourceInfo.get()};
+    auto status = setSizesFcn(gmmPtrArray, 1u, 1024u, 1u);
     EXPECT_EQ(0u, static_cast<uint32_t>(status));
 
     MemoryManagerCreate<WddmMemoryManager> mm(false, false, *executionEnvironment);
     AllocationProperties properties(0, false, sizeAlignedTo64Kb, AllocationType::sharedBuffer, false, {});
+    WddmMemoryManager::OsHandleData osHandleData{ALLOCATION_HANDLE};
 
-    auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(ALLOCATION_HANDLE, properties, false, false, true, reservedAddress);
+    auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, reservedAddress);
     auto wddmAllocation = (WddmAllocation *)graphicsAllocation;
     ASSERT_NE(nullptr, wddmAllocation);
 
     EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->peekSharedHandle());
-    EXPECT_EQ(RESOURCE_HANDLE, wddmAllocation->resourceHandle);
+    EXPECT_EQ(RESOURCE_HANDLE, wddmAllocation->getResourceHandle());
     EXPECT_NE(0u, wddmAllocation->getDefaultHandle());
     EXPECT_EQ(ALLOCATION_HANDLE, wddmAllocation->getDefaultHandle());
     EXPECT_EQ(reservedAddress, reinterpret_cast<void *>(wddmAllocation->getGpuAddress()));
@@ -589,7 +671,8 @@ TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandleWhenCreateGraphicsAllocationF
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     std::unique_ptr<Gmm> gmm(new Gmm(getGmmHelper(), pSysMem, 4096u, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    auto status = setSizesFcn(gmm->gmmResourceInfo.get(), 1u, 1024u, 1u);
+    void *gmmPtrArray[]{gmm->gmmResourceInfo.get()};
+    auto status = setSizesFcn(gmmPtrArray, 1u, 1024u, 1u);
     EXPECT_EQ(0u, static_cast<uint32_t>(status));
 
     MemoryManagerCreate<WddmMemoryManager> mm(false, false, *executionEnvironment);
@@ -606,13 +689,15 @@ TEST_F(Wddm20WithMockGdiDllTests, givenSharedHandleWhenCreateGraphicsAllocationF
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     std::unique_ptr<Gmm> gmm(new Gmm(getGmmHelper(), pSysMem, 4096u, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    auto status = setSizesFcn(gmm->gmmResourceInfo.get(), 1u, 1024u, 1u);
+    void *gmmPtrArray[]{gmm->gmmResourceInfo.get()};
+    auto status = setSizesFcn(gmmPtrArray, 1u, 1024u, 1u);
     EXPECT_EQ(0u, static_cast<uint32_t>(status));
 
     MemoryManagerCreate<WddmMemoryManager> mm(false, false, *executionEnvironment);
     AllocationProperties properties(0, false, 4096, AllocationType::sharedBuffer, false, {});
+    WddmMemoryManager::OsHandleData osHandleData{ALLOCATION_HANDLE};
 
-    auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(ALLOCATION_HANDLE, properties, false, false, true, nullptr);
+    auto graphicsAllocation = mm.createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
     auto wddmAllocation = (WddmAllocation *)graphicsAllocation;
     ASSERT_NE(nullptr, wddmAllocation);
 
@@ -690,7 +775,7 @@ struct WddmContextSchedulingPriorityTests : public Wddm20WithMockGdiDllTestsWith
         auto engineDescriptor = EngineDescriptorHelper::getDefaultDescriptor(engine, preemptionMode);
         engineDescriptor.engineTypeUsage.second = lowPriority ? EngineUsage::lowPriority : EngineUsage::regular;
         osContext = std::make_unique<OsContextWin>(*osInterface->getDriverModel()->as<Wddm>(), 0, 0u, engineDescriptor);
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
     }
 };
 
@@ -700,7 +785,7 @@ TEST_F(WddmContextSchedulingPriorityTests, givenLowPriorityContextWhenInitializi
     auto createContextParams = this->getSetContextSchedulingPriorityDataCallFcn();
 
     EXPECT_EQ(osContext->getWddmContextHandle(), createContextParams->hContext);
-    EXPECT_EQ(1, createContextParams->Priority);
+    EXPECT_EQ(-7, createContextParams->Priority);
 }
 
 TEST_F(WddmContextSchedulingPriorityTests, givenLowPriorityContextWhenFailingDuringSetSchedulingPriorityThenThrow) {
@@ -946,11 +1031,20 @@ NTSTATUS APIENTRY queryResourceInfoMock(D3DKMT_QUERYRESOURCEINFO *pData) {
 }
 
 TEST_F(Wddm20Tests, givenOpenSharedHandleWhenZeroAllocationsThenReturnNull) {
-    D3DKMT_HANDLE handle = 0;
+    MockMemoryManager::OsHandleData osHandleData{static_cast<uint64_t>(0ull)};
     WddmAllocation *alloc = nullptr;
 
     gdi->queryResourceInfo = reinterpret_cast<PFND3DKMT_QUERYRESOURCEINFO>(queryResourceInfoMock);
-    auto ret = wddm->openSharedHandle(handle, alloc);
+    auto ret = wddm->openSharedHandle(osHandleData, alloc);
+
+    EXPECT_EQ(false, ret);
+}
+
+TEST_F(Wddm20Tests, givenOpenNTHandleWhenZeroAllocationsThenReturnNull) {
+    MockMemoryManager::OsHandleData osHandleData{static_cast<uint64_t>(0ull)};
+    WddmAllocation *alloc = nullptr;
+
+    auto ret = wddm->openNTHandle(osHandleData, alloc);
 
     EXPECT_EQ(false, ret);
 }
@@ -970,7 +1064,7 @@ TEST_F(Wddm20Tests, whenCreateAllocation64kFailsThenReturnFalse) {
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     auto gmm = std::make_unique<Gmm>(rootDeviceEnvironment->getGmmHelper(), fakePtr, 100, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, StorageInfo{}, gmmRequirements);
-    WddmAllocation allocation(0, AllocationType::unknown, fakePtr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, fakePtr, canonizedAddress, 100, nullptr, MemoryPool::memoryNull, 0u, 1u);
     allocation.setDefaultGmm(gmm.get());
 
     EXPECT_FALSE(wddm->createAllocation64k(&allocation));
@@ -1096,6 +1190,7 @@ TEST_F(WddmLockWithMakeResidentTests, whenApplyBlockingMakeResidentAndMakeReside
     EXPECT_EQ(0u, mockTemporaryResources->resourceHandles.size());
     EXPECT_EQ(1u, mockWddm.evictResult.called);
     EXPECT_EQ(allocation.handle, mockWddm.makeResidentResult.handlePack[0]);
+    EXPECT_TRUE(mockWddm.makeResidentResult.cantTrimFurther);
     EXPECT_EQ(3u, mockWddm.makeResidentResult.called);
 }
 
@@ -1230,13 +1325,13 @@ TEST_F(WddmLockWithMakeResidentTests, whenEvictingTemporaryResourceThenOtherReso
 TEST_F(WddmLockWithMakeResidentTests, whenAlllocationNeedsBlockingMakeResidentBeforeLockThenLockWithBlockingMakeResident) {
     WddmMemoryManager memoryManager(*executionEnvironment);
     MockWddmAllocation allocation(rootDeviceEnvironment->getGmmHelper());
-    allocation.needsMakeResidentBeforeLock = false;
+    allocation.setMakeResidentBeforeLockRequired(false);
     memoryManager.lockResource(&allocation);
     EXPECT_EQ(1u, wddm->lockResult.called);
-    EXPECT_EQ(0u, wddm->lockResult.uint64ParamPassed);
+    EXPECT_EQ(rootDeviceEnvironment->getHelper<GfxCoreHelper>().makeResidentBeforeLockNeeded(false), wddm->lockResult.uint64ParamPassed);
     memoryManager.unlockResource(&allocation);
 
-    allocation.needsMakeResidentBeforeLock = true;
+    allocation.setMakeResidentBeforeLockRequired(true);
     memoryManager.lockResource(&allocation);
     EXPECT_EQ(2u, wddm->lockResult.called);
     EXPECT_EQ(1u, wddm->lockResult.uint64ParamPassed);

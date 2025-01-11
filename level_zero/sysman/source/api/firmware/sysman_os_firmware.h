@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,8 +20,12 @@ class OsFirmware {
   public:
     virtual void osGetFwProperties(zes_firmware_properties_t *pProperties) = 0;
     virtual ze_result_t osFirmwareFlash(void *pImage, uint32_t size) = 0;
+    virtual ze_result_t osGetFirmwareFlashProgress(uint32_t *pCompletionPercent) = 0;
+    virtual ze_result_t osGetSecurityVersion(char *pVersion) = 0;
+    virtual ze_result_t osSetSecurityVersion() = 0;
+    virtual ze_result_t osGetConsoleLogs(size_t *pSize, char *pFirmwareLog) = 0;
     static std::unique_ptr<OsFirmware> create(OsSysman *pOsSysman, const std::string &fwType);
-    static ze_result_t getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman);
+    static void getSupportedFwTypes(std::vector<std::string> &supportedFwTypes, OsSysman *pOsSysman);
     virtual ~OsFirmware() {}
 };
 } // namespace Sysman

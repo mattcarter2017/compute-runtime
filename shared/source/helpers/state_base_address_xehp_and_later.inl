@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,7 +28,6 @@ template <typename GfxFamily>
 void StateBaseAddressHelper<GfxFamily>::appendStateBaseAddressParameters(
     StateBaseAddressHelperArgs<GfxFamily> &args) {
     using RENDER_SURFACE_STATE = typename GfxFamily::RENDER_SURFACE_STATE;
-    using STATE_BASE_ADDRESS = typename GfxFamily::STATE_BASE_ADDRESS;
 
     if (args.sbaProperties) {
         if (args.sbaProperties->indirectObjectBaseAddress.value != StreamProperty64::initValue) {
@@ -39,8 +38,10 @@ void StateBaseAddressHelper<GfxFamily>::appendStateBaseAddressParameters(
             args.stateBaseAddressCmd->setGeneralStateBufferSize(0xfffff);
         }
 
-        if (args.sbaProperties->globalAtomics.value != StreamProperty::initValue) {
-            args.useGlobalAtomics = !!args.sbaProperties->globalAtomics.value;
+        if (args.sbaProperties->dynamicStateBaseAddress.value != StreamProperty64::initValue) {
+            args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddress(args.sbaProperties->dynamicStateBaseAddress.value);
+            args.stateBaseAddressCmd->setBindlessSamplerStateBufferSize(static_cast<uint32_t>(args.sbaProperties->dynamicStateSize.value));
+            args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddressModifyEnable(true);
         }
     }
     if (args.setGeneralStateBaseAddress && is64bit) {
@@ -59,9 +60,17 @@ void StateBaseAddressHelper<GfxFamily>::appendStateBaseAddressParameters(
             const auto surfaceStateCount = args.ssh->getMaxAvailableSpace() / sizeof(RENDER_SURFACE_STATE);
             args.stateBaseAddressCmd->setBindlessSurfaceStateSize(static_cast<uint32_t>(surfaceStateCount - 1));
         }
-    }
 
-    args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddressModifyEnable(true);
+        if (args.dsh) {
+            args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddress(args.dsh->getHeapGpuBase());
+            args.stateBaseAddressCmd->setBindlessSamplerStateBufferSize(args.dsh->getHeapSizeInPages());
+            args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddressModifyEnable(true);
+        }
+    } else {
+        args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddressModifyEnable(true);
+        args.stateBaseAddressCmd->setBindlessSamplerStateBaseAddress(args.globalHeapsBaseAddress);
+        args.stateBaseAddressCmd->setBindlessSamplerStateBufferSize(MemoryConstants::sizeOf4GBinPageEntities);
+    }
 
     auto &productHelper = args.gmmHelper->getRootDeviceEnvironment().template getHelper<ProductHelper>();
 
@@ -73,22 +82,6 @@ void StateBaseAddressHelper<GfxFamily>::appendStateBaseAddressParameters(
     args.stateBaseAddressCmd->setGeneralStateMemoryObjectControlState(heapMocsValue);
     args.stateBaseAddressCmd->setBindlessSurfaceStateMemoryObjectControlState(heapMocsValue);
     args.stateBaseAddressCmd->setBindlessSamplerStateMemoryObjectControlState(heapMocsValue);
-
-    bool enableMultiGpuAtomics = args.isMultiOsContextCapable;
-    if (debugManager.flags.EnableMultiGpuAtomicsOptimization.get()) {
-        enableMultiGpuAtomics = args.useGlobalAtomics && (args.isMultiOsContextCapable || args.areMultipleSubDevicesInContext);
-    }
-    args.stateBaseAddressCmd->setDisableSupportForMultiGpuAtomicsForStatelessAccesses(!enableMultiGpuAtomics);
-
-    args.stateBaseAddressCmd->setDisableSupportForMultiGpuPartialWritesForStatelessMessages(!args.isMultiOsContextCapable);
-
-    if (debugManager.flags.ForceMultiGpuAtomics.get() != -1) {
-        args.stateBaseAddressCmd->setDisableSupportForMultiGpuAtomicsForStatelessAccesses(!!debugManager.flags.ForceMultiGpuAtomics.get());
-    }
-
-    if (debugManager.flags.ForceMultiGpuPartialWrites.get() != -1) {
-        args.stateBaseAddressCmd->setDisableSupportForMultiGpuPartialWritesForStatelessMessages(!!debugManager.flags.ForceMultiGpuPartialWrites.get());
-    }
 
     if (args.memoryCompressionState != MemoryCompressionState::notApplicable) {
         setSbaStatelessCompressionParams<GfxFamily>(args.stateBaseAddressCmd, args.memoryCompressionState);
@@ -131,11 +124,11 @@ uint32_t StateBaseAddressHelper<GfxFamily>::getMaxBindlessSurfaceStates() {
 template <typename GfxFamily>
 void StateBaseAddressHelper<GfxFamily>::appendExtraCacheSettings(StateBaseAddressHelperArgs<GfxFamily> &args) {
     auto cachePolicy = args.isDebuggerActive ? args.l1CachePolicyDebuggerActive : args.l1CachePolicy;
-    args.stateBaseAddressCmd->setL1CachePolicyL1CacheControl(static_cast<typename STATE_BASE_ADDRESS::L1_CACHE_POLICY>(cachePolicy));
+    args.stateBaseAddressCmd->setL1CacheControlCachePolicy(static_cast<typename STATE_BASE_ADDRESS::L1_CACHE_CONTROL>(cachePolicy));
 
     if (debugManager.flags.ForceStatelessL1CachingPolicy.get() != -1 &&
         debugManager.flags.ForceAllResourcesUncached.get() == false) {
-        args.stateBaseAddressCmd->setL1CachePolicyL1CacheControl(static_cast<typename STATE_BASE_ADDRESS::L1_CACHE_POLICY>(debugManager.flags.ForceStatelessL1CachingPolicy.get()));
+        args.stateBaseAddressCmd->setL1CacheControlCachePolicy(static_cast<typename STATE_BASE_ADDRESS::L1_CACHE_CONTROL>(debugManager.flags.ForceStatelessL1CachingPolicy.get()));
     }
 }
 

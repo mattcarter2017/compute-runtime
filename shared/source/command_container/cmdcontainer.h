@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -140,6 +140,9 @@ class CommandContainer : public NonCopyableOrMovableClass {
     void setImmediateCmdListCsr(CommandStreamReceiver *newValue) {
         this->immediateCmdListCsr = newValue;
     }
+    CommandStreamReceiver *getImmediateCmdListCsr() {
+        return this->immediateCmdListCsr;
+    }
     void enableHeapSharing() { heapSharingEnabled = true; }
     bool immediateCmdListSharedHeap(HeapType heapType) {
         return (heapSharingEnabled && (heapType == HeapType::dynamicState || heapType == HeapType::surfaceState));
@@ -149,7 +152,6 @@ class CommandContainer : public NonCopyableOrMovableClass {
 
     GraphicsAllocation *reuseExistingCmdBuffer();
     GraphicsAllocation *reuseExistingCmdBuffer(bool forceHostMemory);
-    GraphicsAllocation *allocateCommandBuffer();
     MOCKABLE_VIRTUAL GraphicsAllocation *allocateCommandBuffer(bool forceHostMemory);
     void setCmdBuffer(GraphicsAllocation *cmdBuffer);
     void addCurrentCommandBufferToReusableAllocationList();
@@ -202,9 +204,8 @@ class CommandContainer : public NonCopyableOrMovableClass {
         return this->alignedPrimarySize;
     }
     void endAlignedPrimaryBuffer();
-    void setHandleFenceCompletionRequired() {
-        this->isHandleFenceCompletionRequired = true;
-    }
+
+    void *findCpuBaseForCmdBufferAddress(void *cmdBufferAddress);
 
   protected:
     size_t getAlignedCmdBufferSize() const;
@@ -214,7 +215,7 @@ class CommandContainer : public NonCopyableOrMovableClass {
     IndirectHeap *getHeapWithRequiredSize(HeapType heapType, size_t sizeRequired, size_t alignment, bool allowGrow);
     void createAndAssignNewHeap(HeapType heapType, size_t size);
     IndirectHeap *initIndirectHeapReservation(ReservedIndirectHeap *indirectHeapReservation, size_t size, size_t alignment, HeapType heapType);
-    inline bool skipHeapAllocationCreation(HeapType heapType);
+    bool skipHeapAllocationCreation(HeapType heapType);
     size_t getHeapSize(HeapType heapType);
     void alignPrimaryEnding(void *endPtr, size_t exactUsedSize);
 
@@ -265,7 +266,6 @@ class CommandContainer : public NonCopyableOrMovableClass {
     bool indirectHeapInLocalMemory = false;
     bool stateBaseAddressTracking = false;
     bool lastPipelineSelectModeRequired = false;
-    bool lastSentUseGlobalAtomics = false;
     bool systolicModeSupport = false;
     bool doubleSbaWa = false;
     bool usingPrimaryBuffer = false;

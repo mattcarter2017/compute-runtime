@@ -8,6 +8,7 @@
 #pragma once
 #include "shared/source/compiler_interface/compiler_interface.h"
 #include "shared/source/compiler_interface/linker.h"
+#include "shared/source/device_binary_format/device_binary_formats.h"
 #include "shared/source/helpers/non_copyable_or_moveable.h"
 #include "shared/source/program/program_info.h"
 
@@ -247,7 +248,6 @@ class Program : public BaseObject<_cl_program> {
     MOCKABLE_VIRTUAL std::string getInternalOptions() const;
     uint32_t getMaxRootDeviceIndex() const { return maxRootDeviceIndex; }
     uint32_t getIndirectDetectionVersion() const { return indirectDetectionVersion; }
-    bool getFunctionPointerWithIndirectAccessExists() const { return functionPointerWithIndirectAccessExists; }
     void retainForKernel() {
         std::unique_lock<std::mutex> lock{lockMutex};
         exposedKernels++;
@@ -373,7 +373,6 @@ class Program : public BaseObject<_cl_program> {
     ClDeviceVector clDevicesInProgram;
 
     uint32_t indirectDetectionVersion = 0u;
-    bool functionPointerWithIndirectAccessExists = false;
     bool isBuiltIn = false;
     bool isGeneratedByIgc = true;
 
@@ -388,6 +387,14 @@ class Program : public BaseObject<_cl_program> {
         std::once_flag generateDefaultMetadataOnce;
     };
     std::unique_ptr<MetadataGenerationFlags> metadataGenerationFlags;
+
+    struct DecodedSingleDeviceBinary {
+        bool isSet = false;
+        ProgramInfo programInfo;
+        DecodeError decodeError;
+        std::string decodeErrors;
+        std::string decodeWarnings;
+    } decodedSingleDeviceBinary;
 };
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,8 +16,9 @@
 #include "level_zero/core/source/driver/driver_handle_imp.h"
 
 namespace NEO {
-void PageFaultManager::transferToCpu(void *ptr, size_t size, void *device) {
+void CpuPageFaultManager::transferToCpu(void *ptr, size_t size, void *device) {
     L0::DeviceImp *deviceImp = static_cast<L0::DeviceImp *>(device);
+    deviceImp->getNEODevice()->stopDirectSubmissionForCopyEngine();
 
     NEO::SvmAllocationData *allocData = deviceImp->getDriverHandle()->getSvmAllocsManager()->getSVMAlloc(ptr);
     UNRECOVERABLE_IF(allocData == nullptr);
@@ -28,8 +29,9 @@ void PageFaultManager::transferToCpu(void *ptr, size_t size, void *device) {
                                                              allocData->size, true);
     UNRECOVERABLE_IF(ret);
 }
-void PageFaultManager::transferToGpu(void *ptr, void *device) {
+void CpuPageFaultManager::transferToGpu(void *ptr, void *device) {
     L0::DeviceImp *deviceImp = static_cast<L0::DeviceImp *>(device);
+    deviceImp->getNEODevice()->stopDirectSubmissionForCopyEngine();
 
     NEO::SvmAllocationData *allocData = deviceImp->getDriverHandle()->getSvmAllocsManager()->getSVMAlloc(ptr);
     UNRECOVERABLE_IF(allocData == nullptr);
@@ -42,7 +44,7 @@ void PageFaultManager::transferToGpu(void *ptr, void *device) {
 
     this->evictMemoryAfterImplCopy(allocData->cpuAllocation, deviceImp->getNEODevice());
 }
-void PageFaultManager::allowCPUMemoryEviction(void *ptr, PageFaultData &pageFaultData) {
+void CpuPageFaultManager::allowCPUMemoryEviction(bool evict, void *ptr, PageFaultData &pageFaultData) {
     L0::DeviceImp *deviceImp = static_cast<L0::DeviceImp *>(pageFaultData.cmdQ);
 
     CommandStreamReceiver *csr = nullptr;
@@ -54,14 +56,14 @@ void PageFaultManager::allowCPUMemoryEviction(void *ptr, PageFaultData &pageFaul
     UNRECOVERABLE_IF(csr == nullptr);
     auto osInterface = deviceImp->getNEODevice()->getRootDeviceEnvironment().osInterface.get();
 
-    allowCPUMemoryEvictionImpl(ptr, *csr, osInterface);
+    allowCPUMemoryEvictionImpl(evict, ptr, *csr, osInterface);
 }
 } // namespace NEO
 
 namespace L0 {
-void transferAndUnprotectMemoryWithHints(NEO::PageFaultManager *pageFaultHandler, void *allocPtr, NEO::PageFaultManager::PageFaultData &pageFaultData) {
+void transferAndUnprotectMemoryWithHints(NEO::CpuPageFaultManager *pageFaultHandler, void *allocPtr, NEO::CpuPageFaultManager::PageFaultData &pageFaultData) {
     bool migration = true;
-    if (pageFaultData.domain == NEO::PageFaultManager::AllocationDomain::gpu) {
+    if (pageFaultData.domain == NEO::CpuPageFaultManager::AllocationDomain::gpu) {
         L0::DeviceImp *deviceImp = static_cast<L0::DeviceImp *>(pageFaultData.cmdQ);
         NEO::SvmAllocationData *allocData = deviceImp->getDriverHandle()->getSvmAllocsManager()->getSVMAlloc(allocPtr);
 
@@ -81,13 +83,11 @@ void transferAndUnprotectMemoryWithHints(NEO::PageFaultManager *pageFaultHandler
             long long elapsedTime = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
             pageFaultData.unifiedMemoryManager->nonGpuDomainAllocs.push_back(allocPtr);
 
-            if (NEO::debugManager.flags.PrintUmdSharedMigration.get()) {
-                printf("UMD transferred shared allocation 0x%llx (%zu B) from GPU to CPU (%f us)\n", reinterpret_cast<unsigned long long int>(allocPtr), pageFaultData.size, elapsedTime / 1e3);
-            }
+            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintUmdSharedMigration.get(), stdout, "UMD transferred shared allocation 0x%llx (%zu B) from GPU to CPU (%f us)\n", reinterpret_cast<unsigned long long int>(allocPtr), pageFaultData.size, elapsedTime / 1e3);
         }
     }
     if (migration) {
-        pageFaultData.domain = NEO::PageFaultManager::AllocationDomain::cpu;
+        pageFaultData.domain = NEO::CpuPageFaultManager::AllocationDomain::cpu;
     }
     pageFaultHandler->allowCPUMemoryAccess(allocPtr, pageFaultData.size);
 }

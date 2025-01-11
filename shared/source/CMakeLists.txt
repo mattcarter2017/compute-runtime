@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019-2023 Intel Corporation
+# Copyright (C) 2019-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -18,12 +18,13 @@ function(generate_shared_lib LIB_NAME MOCKABLE)
               ${CORE_SOURCES}
   )
   if(${MOCKABLE})
-    target_compile_definitions(${LIB_NAME} PUBLIC MOCKABLE_VIRTUAL=virtual DEFAULT_TEST_PLATFORM=${DEFAULT_TESTED_PLATFORM} DEFAULT_TEST_FAMILY_NAME=${DEFAULT_TESTED_FAMILY_NAME} ${TESTED_CORE_FLAGS_DEFINITONS})
+    target_compile_definitions(${LIB_NAME} PUBLIC MOCKABLE_VIRTUAL=virtual MOCKABLE= DEFAULT_TEST_PLATFORM=${DEFAULT_TESTED_PLATFORM} DEFAULT_TEST_FAMILY_NAME=${DEFAULT_TESTED_FAMILY_NAME} ${TESTED_CORE_FLAGS_DEFINITONS})
   else()
     target_compile_definitions(${LIB_NAME} PUBLIC MOCKABLE_VIRTUAL=)
   endif()
 
   list(APPEND LIB_FLAGS_DEFINITIONS ${SUPPORTED_CORE_FLAGS_DEFINITONS})
+  list(APPEND LIB_FLAGS_DEFINITIONS ${AOT_DEFINITIONS})
 
   set_property(TARGET ${LIB_NAME} APPEND_STRING PROPERTY COMPILE_FLAGS ${ASAN_FLAGS} ${TSAN_FLAGS})
   set_target_properties(${LIB_NAME} PROPERTIES FOLDER "${SHARED_SOURCE_PROJECTS_FOLDER}")
@@ -71,10 +72,6 @@ function(generate_shared_lib LIB_NAME MOCKABLE)
     if(COMPILER_SUPPORTS_SSE42)
       set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/helpers/local_id_gen_sse4.cpp PROPERTIES COMPILE_FLAGS -msse4.2)
     endif()
-  endif()
-
-  if(DEFINED AUB_STREAM_PROJECT_NAME)
-    target_link_libraries(${LIB_NAME} ${AUB_STREAM_PROJECT_NAME})
   endif()
 
 endfunction()
@@ -132,16 +129,19 @@ append_sources_from_properties(CORE_SOURCES
                                NEO_CORE_OS_INTERFACE
                                NEO_CORE_PAGE_FAULT_MANAGER
                                NEO_CORE_PROGRAM
+                               NEO_CORE_SEMAPHORE
                                NEO_CORE_SKU_INFO_BASE
                                NEO_CORE_SRCS_BUILT_INS
                                NEO_CORE_SRCS_BUILT_INS_OPS
                                NEO_CORE_SRCS_BUILT_IN_KERNELS
                                NEO_CORE_TBX
                                NEO_CORE_UTILITIES
+                               NEO_CORE_ZEINFO_EXTRA
                                NEO_DEVICE_BINARY_FORMAT
                                NEO_UNIFIED_MEMORY
                                NEO_CORE_RELEASE_HELPER
                                NEO_GTPIN
+
 )
 
 if(WIN32)

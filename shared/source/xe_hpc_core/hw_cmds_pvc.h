@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,11 +17,6 @@ struct PVC : public XeHpcCoreFamily {
     static const HardwareInfo hwInfo;
     static FeatureTable featureTable;
     static WorkaroundTable workaroundTable;
-    // Initial non-zero values for unit tests
-    static const uint32_t maxEuPerSubslice = 8;
-    static const uint32_t maxSlicesSupported = 8;
-    static const uint32_t maxSubslicesSupported = 64;
-    static const uint32_t maxDualSubslicesSupported = 64;
     static const RuntimeCapabilityTable capabilityTable;
     static constexpr uint32_t numberOfpartsInTileForConcurrentKernels = 8u;
 
@@ -44,7 +39,7 @@ struct PVC : public XeHpcCoreFamily {
     };
 
     static void (*setupHardwareInfo)(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, uint64_t hwInfoConfig, const ReleaseHelper *releaseHelper);
-    static void setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo);
+    static void setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper);
     static void setupHardwareInfoBase(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper);
     static void setupHardwareInfoMultiTileBase(HardwareInfo *hwInfo, bool setupMultiTile);
     static void adjustHardwareInfo(HardwareInfo *hwInfo);
@@ -67,6 +62,8 @@ struct PVC : public XeHpcCoreFamily {
         return (revId <= 0x3);
     }
     static constexpr uint32_t pvcSteppingBits = 0b111;
+
+    static constexpr bool isDcFlushAllowed = false;
 };
 
 class PvcHwConfig : public PVC {

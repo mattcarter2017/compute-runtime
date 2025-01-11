@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -85,7 +85,7 @@ HWTEST_P(VerifyMemoryImageHw, givenDifferentImagesWhenValidatingMemoryThenSucces
     auto sizeMemory = image->getSize();
     EXPECT_GT(sizeMemory, 0u);
 
-    std::unique_ptr<uint8_t> srcMemory(new uint8_t[elementSize]);
+    std::unique_ptr<uint8_t[]> srcMemory(new uint8_t[elementSize]);
     memset(srcMemory.get(), 0xAB, elementSize);
     memset(image->getCpuAddress(), 0xAB, sizeMemory);
 
@@ -142,6 +142,6 @@ HWTEST_P(VerifyMemoryImageHw, givenDifferentImagesWhenValidatingMemoryThenSucces
     }
 }
 
-INSTANTIATE_TEST_CASE_P(VerifyMemoryImage,
-                        VerifyMemoryImageHw,
-                        ::testing::ValuesIn(testInput));
+INSTANTIATE_TEST_SUITE_P(VerifyMemoryImage,
+                         VerifyMemoryImageHw,
+                         ::testing::ValuesIn(testInput));

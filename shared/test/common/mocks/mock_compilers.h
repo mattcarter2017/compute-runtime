@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,11 @@
 
 namespace NEO {
 
+struct PopIgcDllNameGuard {
+    ~PopIgcDllNameGuard();
+};
+[[nodiscard]] std::unique_ptr<PopIgcDllNameGuard> pushIgcDllName(const char *name);
+
 struct MockCompilerDebugVars {
     enum class SipAddressingType {
         unknown,
@@ -37,6 +42,8 @@ struct MockCompilerDebugVars {
     size_t debugDataToReturnSize = 0;
     void *binaryToReturn = nullptr;
     size_t binaryToReturnSize = 0;
+    void *stateSaveAreaHeaderToReturn = nullptr;
+    size_t stateSaveAreaHeaderToReturnSize = 0;
     bool failCreatePlatformInterface = false;
     bool failCreateGtSystemInfoInterface = false;
     bool failCreateIgcFeWaInterface = false;
@@ -59,9 +66,9 @@ struct MockCompilerEnableGuard {
     void Disable(); // NOLINT(readability-identifier-naming)
 
     const char *oldFclDllName;
-    const char *oldIgcDllName;
 
     bool enabled = false;
+    std::unique_ptr<PopIgcDllNameGuard> igcNameGuard;
 };
 
 void setFclDebugVars(MockCompilerDebugVars &dbgv);

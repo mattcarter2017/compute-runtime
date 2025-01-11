@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,17 +13,40 @@
 #include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/helpers/gfx_core_helper.h"
-
-#include <algorithm>
+#include "shared/source/helpers/hw_info.h"
+#include "shared/source/program/sync_buffer_handler.h"
 
 namespace NEO {
 
-uint32_t KernelHelper::getMaxWorkGroupCount(uint32_t simd, uint32_t availableThreadCount, uint32_t dssCount, uint32_t availableSlmSize,
-                                            uint32_t usedSlmSize, uint32_t maxBarrierCount, uint32_t numberOfBarriers, uint32_t workDim,
-                                            const size_t *localWorkSize) {
+uint32_t KernelHelper::getMaxWorkGroupCount(Device &device, uint16_t numGrfRequired, uint8_t simdSize, uint8_t barrierCount, uint32_t alignedSlmSize, uint32_t workDim, const size_t *localWorkSize,
+                                            EngineGroupType engineGroupType, bool implicitScalingEnabled, bool forceSingleTileQuery) {
+    uint32_t numSubDevicesForExecution = 1;
+
+    auto deviceBitfield = device.getDeviceBitfield();
+    if (!forceSingleTileQuery && implicitScalingEnabled) {
+        numSubDevicesForExecution = static_cast<uint32_t>(deviceBitfield.count());
+    }
+
+    return KernelHelper::getMaxWorkGroupCount(device.getRootDeviceEnvironment(), numGrfRequired, simdSize, barrierCount, numSubDevicesForExecution, alignedSlmSize, workDim, localWorkSize, engineGroupType);
+}
+
+uint32_t KernelHelper::getMaxWorkGroupCount(const RootDeviceEnvironment &rootDeviceEnvironment, uint16_t numGrfRequired, uint8_t simdSize, uint8_t barrierCount,
+                                            uint32_t numSubDevices, uint32_t usedSlmSize, uint32_t workDim, const size_t *localWorkSize, EngineGroupType engineGroupType) {
     if (debugManager.flags.OverrideMaxWorkGroupCount.get() != -1) {
         return static_cast<uint32_t>(debugManager.flags.OverrideMaxWorkGroupCount.get());
     }
+
+    auto &helper = rootDeviceEnvironment.getHelper<NEO::GfxCoreHelper>();
+    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
+
+    auto dssCount = hwInfo.gtSystemInfo.DualSubSliceCount;
+    if (dssCount == 0) {
+        dssCount = hwInfo.gtSystemInfo.SubSliceCount;
+    }
+
+    auto availableThreadCount = helper.calculateAvailableThreadCount(hwInfo, numGrfRequired);
+    auto availableSlmSize = static_cast<uint32_t>(dssCount * MemoryConstants::kiloByte * hwInfo.capabilityTable.slmSize);
+    auto maxBarrierCount = static_cast<uint32_t>(helper.getMaxBarrierRegisterPerSlice());
 
     UNRECOVERABLE_IF((workDim == 0) || (workDim > 3));
     UNRECOVERABLE_IF(localWorkSize == nullptr);
@@ -32,18 +55,25 @@ uint32_t KernelHelper::getMaxWorkGroupCount(uint32_t simd, uint32_t availableThr
     for (uint32_t i = 1; i < workDim; i++) {
         workGroupSize *= localWorkSize[i];
     }
-
-    auto numThreadsPerThreadGroup = static_cast<uint32_t>(Math::divideAndRoundUp(workGroupSize, simd));
+    UNRECOVERABLE_IF(workGroupSize == 0);
+    auto numThreadsPerThreadGroup = static_cast<uint32_t>(Math::divideAndRoundUp(workGroupSize, simdSize));
     auto maxWorkGroupsCount = availableThreadCount / numThreadsPerThreadGroup;
-
-    if (numberOfBarriers > 0) {
-        auto maxWorkGroupsCountDueToBarrierUsage = dssCount * (maxBarrierCount / numberOfBarriers);
-        maxWorkGroupsCount = std::min(maxWorkGroupsCount, maxWorkGroupsCountDueToBarrierUsage);
+    if (barrierCount > 0 || usedSlmSize > 0) {
+        helper.alignThreadGroupCountToDssSize(maxWorkGroupsCount, dssCount, availableThreadCount / dssCount, numThreadsPerThreadGroup);
+        if (barrierCount > 0) {
+            auto maxWorkGroupsCountDueToBarrierUsage = dssCount * (maxBarrierCount / barrierCount);
+            maxWorkGroupsCount = std::min(maxWorkGroupsCount, maxWorkGroupsCountDueToBarrierUsage);
+        }
+        if (usedSlmSize > 0) {
+            auto maxWorkGroupsCountDueToSlm = availableSlmSize / usedSlmSize;
+            maxWorkGroupsCount = std::min(maxWorkGroupsCount, maxWorkGroupsCountDueToSlm);
+        }
     }
 
-    if (usedSlmSize > 0) {
-        auto maxWorkGroupsCountDueToSlm = availableSlmSize / usedSlmSize;
-        maxWorkGroupsCount = std::min(maxWorkGroupsCount, maxWorkGroupsCountDueToSlm);
+    maxWorkGroupsCount = helper.adjustMaxWorkGroupCount(maxWorkGroupsCount, engineGroupType, rootDeviceEnvironment);
+
+    if (!helper.singleTileExecImplicitScalingRequired(true)) {
+        maxWorkGroupsCount *= numSubDevices;
     }
 
     return maxWorkGroupsCount;
@@ -51,7 +81,8 @@ uint32_t KernelHelper::getMaxWorkGroupCount(uint32_t simd, uint32_t availableThr
 
 KernelHelper::ErrorCode KernelHelper::checkIfThereIsSpaceForScratchOrPrivate(KernelDescriptor::KernelAttributes attributes, Device *device) {
     auto &gfxCoreHelper = device->getRootDeviceEnvironment().getHelper<NEO::GfxCoreHelper>();
-    uint32_t maxScratchSize = gfxCoreHelper.getMaxScratchSize();
+    auto &productHelper = device->getRootDeviceEnvironment().getHelper<NEO::ProductHelper>();
+    uint32_t maxScratchSize = gfxCoreHelper.getMaxScratchSize(productHelper);
     if ((attributes.perThreadScratchSize[0] > maxScratchSize) || (attributes.perThreadScratchSize[1] > maxScratchSize)) {
         return KernelHelper::ErrorCode::invalidKernel;
     }
@@ -96,6 +127,22 @@ bool KernelHelper::isAnyArgumentPtrByValue(const KernelDescriptor &kernelDescrip
         }
     }
     return false;
+}
+
+std::pair<GraphicsAllocation *, size_t> KernelHelper::getRegionGroupBarrierAllocationOffset(Device &device, const size_t threadGroupCount, const size_t localRegionSize) {
+    device.allocateSyncBufferHandler();
+
+    size_t size = KernelHelper::getRegionGroupBarrierSize(threadGroupCount, localRegionSize);
+
+    return device.syncBufferHandler->obtainAllocationAndOffset(size);
+}
+
+std::pair<GraphicsAllocation *, size_t> KernelHelper::getSyncBufferAllocationOffset(Device &device, const size_t requestedNumberOfWorkgroups) {
+    device.allocateSyncBufferHandler();
+
+    size_t requiredSize = KernelHelper::getSyncBufferSize(requestedNumberOfWorkgroups);
+
+    return device.syncBufferHandler->obtainAllocationAndOffset(requiredSize);
 }
 
 } // namespace NEO

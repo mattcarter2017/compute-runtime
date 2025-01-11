@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,12 +27,6 @@ bool sysmanOnlyInit = false;
 
 void SysmanDriverImp::initialize(ze_result_t *result) {
     *result = ZE_RESULT_ERROR_UNINITIALIZED;
-
-    if (sysmanInitFromCore) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
-                              "%s", "Sysman Initialization already happened via zeInit\n");
-        return;
-    }
 
     auto executionEnvironment = new NEO::ExecutionEnvironment();
     UNRECOVERABLE_IF(nullptr == executionEnvironment);
@@ -72,7 +66,7 @@ void SysmanDriverImp::initialize(ze_result_t *result) {
 
 ze_result_t SysmanDriverImp::initStatus(ZE_RESULT_ERROR_UNINITIALIZED);
 
-ze_result_t SysmanDriverImp::driverInit(zes_init_flags_t flags) {
+ze_result_t SysmanDriverImp::driverInit() {
     std::call_once(initDriverOnce, [this]() {
         ze_result_t result;
         this->initialize(&result);
@@ -116,7 +110,7 @@ ze_result_t init(zes_init_flags_t flags) {
     if (flags && !(flags & ZE_INIT_FLAG_GPU_ONLY)) {
         return ZE_RESULT_ERROR_UNINITIALIZED;
     } else {
-        return SysmanDriver::get()->driverInit(flags);
+        return SysmanDriver::get()->driverInit();
     }
 }
 

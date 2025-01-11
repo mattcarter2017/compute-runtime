@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -52,6 +52,7 @@ struct DebugSessionImp : DebugSession {
     DebugSession *attachTileDebugSession(Device *device) override;
     void detachTileDebugSession(DebugSession *tileSession) override;
     bool areAllTileDebugSessionDetached() override;
+    bool isInterruptSent() { return interruptSent; }
 
     void setAttachMode(bool isRootAttach) override {
         if (isRootAttach) {
@@ -64,9 +65,12 @@ struct DebugSessionImp : DebugSession {
     virtual void detachTile() = 0;
     virtual void cleanRootSessionAfterDetach(uint32_t deviceIndex) = 0;
 
-    static const SIP::regset_desc *getSbaRegsetDesc();
+    static bool isHeaplessMode(const SIP::intelgt_state_save_area_V3 &ssa);
+    static const SIP::regset_desc *getSbaRegsetDesc(const NEO::StateSaveAreaHeader &ssah);
+    static const SIP::regset_desc *getModeFlagsRegsetDesc();
+    static const SIP::regset_desc *getDebugScratchRegsetDesc();
+    static const SIP::regset_desc *getThreadScratchRegsetDesc();
     static uint32_t typeToRegsetFlags(uint32_t type);
-    constexpr static int64_t interruptTimeout = 2000;
 
     using ApiEventQueue = std::queue<zet_debug_event_t>;
 
@@ -92,10 +96,15 @@ struct DebugSessionImp : DebugSession {
     ze_result_t validateThreadAndDescForMemoryAccess(ze_device_thread_t thread, const zet_debug_memory_space_desc_t *desc);
 
     virtual void enqueueApiEvent(zet_debug_event_t &debugEvent) = 0;
+    size_t calculateSrMagicOffset(const NEO::StateSaveAreaHeader *header, EuThread *thread);
     MOCKABLE_VIRTUAL bool readSystemRoutineIdent(EuThread *thread, uint64_t vmHandle, SIP::sr_ident &srMagic);
     MOCKABLE_VIRTUAL bool readSystemRoutineIdentFromMemory(EuThread *thread, const void *stateSaveArea, SIP::sr_ident &srIdent);
 
     ze_result_t readSbaRegisters(EuThread::ThreadId thread, uint32_t start, uint32_t count, void *pRegisterValues);
+    ze_result_t readModeFlags(uint32_t start, uint32_t count, void *pRegisterValues);
+    ze_result_t readDebugScratchRegisters(uint32_t start, uint32_t count, void *pRegisterValues);
+    MOCKABLE_VIRTUAL ze_result_t readThreadScratchRegisters(EuThread::ThreadId thread, uint32_t start, uint32_t count, void *pRegisterValues);
+
     MOCKABLE_VIRTUAL bool isForceExceptionOrForceExternalHaltOnlyExceptionReason(uint32_t *cr0);
     MOCKABLE_VIRTUAL bool isAIPequalToThreadStartIP(uint32_t *cr0, uint32_t *dbg0);
 
@@ -107,9 +116,11 @@ struct DebugSessionImp : DebugSession {
     MOCKABLE_VIRTUAL void generateEventsForStoppedThreads(const std::vector<EuThread::ThreadId> &threadIds);
     MOCKABLE_VIRTUAL void generateEventsForPendingInterrupts();
 
-    const SIP::StateSaveAreaHeader *getStateSaveAreaHeader();
+    const NEO::StateSaveAreaHeader *getStateSaveAreaHeader();
     void validateAndSetStateSaveAreaHeader(uint64_t vmHandle, uint64_t gpuVa);
     virtual void readStateSaveAreaHeader(){};
+    MOCKABLE_VIRTUAL ze_result_t readFifo(uint64_t vmHandle, std::vector<EuThread::ThreadId> &threadsWithAttention);
+    MOCKABLE_VIRTUAL ze_result_t isValidNode(uint64_t vmHandle, uint64_t gpuVa, SIP::fifo_node &node);
 
     virtual uint64_t getContextStateSaveAreaGpuVa(uint64_t memoryHandle) = 0;
     virtual size_t getContextStateSaveAreaSize(uint64_t memoryHandle) = 0;
@@ -127,7 +138,7 @@ struct DebugSessionImp : DebugSession {
     size_t calculateThreadSlotOffset(EuThread::ThreadId threadId);
     size_t calculateRegisterOffsetInThreadSlot(const SIP::regset_desc *const regdesc, uint32_t start);
 
-    void newAttentionRaised(uint32_t deviceIndex) {
+    void newAttentionRaised() {
         if (expectedAttentionEvents > 0) {
             expectedAttentionEvents--;
         }
@@ -154,6 +165,21 @@ struct DebugSessionImp : DebugSession {
             stateSaveAreaMemory.resize(size);
         }
     }
+
+    struct AttentionEventFields {
+        uint64_t clientHandle;
+        uint64_t contextHandle;
+        uint64_t lrcHandle;
+        uint32_t bitmaskSize;
+        uint8_t *bitmask;
+    };
+    void handleStoppedThreads();
+    void pollFifo();
+    int32_t fifoPollInterval = 150;
+    int64_t interruptTimeout = 2000;
+    std::unordered_map<uint64_t, AttentionEventFields> attentionEventContext{};
+    std::chrono::milliseconds lastFifoReadTime = std::chrono::milliseconds(0);
+    virtual void updateStoppedThreadsAndCheckTriggerEvents(const AttentionEventFields &attention, uint32_t tileIndex, std::vector<EuThread::ThreadId> &threadsWithAttention) = 0;
 
     std::chrono::high_resolution_clock::time_point interruptTime;
     std::atomic<bool> interruptSent = false;

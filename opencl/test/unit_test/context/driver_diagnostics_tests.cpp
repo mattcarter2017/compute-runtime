@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -681,7 +681,7 @@ TEST_F(PerformanceHintTest, givenPrintDriverDiagnosticsDebugModeDisabledWhenCall
     delete gfxAllocation.getDefaultGmm();
 }
 
-HWTEST2_F(PerformanceHintTest, given64bitCompressedBufferWhenItsCreatedThenProperPerformanceHintIsProvided, IsAtLeastGen12lp) {
+HWTEST2_F(PerformanceHintTest, given64bitCompressedBufferWhenItsCreatedThenProperPerformanceHintIsProvided, MatchAny) {
     cl_int retVal;
     HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
     hwInfo.capabilityTable.ftrRenderCompressedBuffers = true;
@@ -694,7 +694,7 @@ HWTEST2_F(PerformanceHintTest, given64bitCompressedBufferWhenItsCreatedThenPrope
     auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, ClDeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
     auto buffer = std::unique_ptr<Buffer>(
         Buffer::create(context.get(), ClMemoryPropertiesHelper::createMemoryProperties(0, 0, 0, &context->getDevice(0)->getDevice()),
-                       0, 0, size, static_cast<void *>(NULL), retVal));
+                       0, CL_MEM_COMPRESSED_HINT_INTEL, size, static_cast<void *>(NULL), retVal));
     snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[BUFFER_IS_COMPRESSED], buffer.get());
 
     auto &gfxCoreHelper = device->getGfxCoreHelper();
@@ -773,7 +773,7 @@ HWTEST_F(PerformanceHintTest, givenCompressedImageWhenItsCreatedThenProperPerfor
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = true;
     auto gmm = new Gmm(device->getGmmHelper(), static_cast<const void *>(nullptr), t, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, info, gmmRequirements);
-    gmm->isCompressionEnabled = true;
+    gmm->setCompressionEnabled(true);
 
     auto graphicsAllocation = mockBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
 
@@ -846,7 +846,7 @@ TEST_F(PerformanceHintTest, givenUncompressedImageWhenItsCreatedThenProperPerfor
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = true;
     auto gmm = new Gmm(device->getGmmHelper(), (const void *)nullptr, t, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, info, gmmRequirements);
-    gmm->isCompressionEnabled = false;
+    gmm->setCompressionEnabled(false);
 
     mockBuffer->getGraphicsAllocation(device->getRootDeviceIndex())->setDefaultGmm(gmm);
     cl_mem mem = mockBuffer.get();
@@ -888,9 +888,10 @@ TEST_F(PerformanceHintTest, givenUncompressedImageWhenItsCreatedThenProperPerfor
 
 TEST_P(PerformanceHintKernelTest, GivenSpillFillWhenKernelIsInitializedThenContextProvidesProperHint) {
 
-    auto scratchSize = zeroSized ? 0 : 1024;
+    auto spillSize = zeroSized ? 0 : 1024;
     MockKernelWithInternals mockKernel(context->getDevices(), context);
-    mockKernel.kernelInfo.setPerThreadScratchSize(scratchSize, 0);
+
+    mockKernel.kernelInfo.kernelDescriptor.kernelAttributes.spillFillScratchMemorySize = spillSize;
 
     uint32_t computeUnitsForScratch[] = {0x10, 0x20};
     auto pClDevice = &mockKernel.mockKernel->getDevice();
@@ -899,7 +900,7 @@ TEST_P(PerformanceHintKernelTest, GivenSpillFillWhenKernelIsInitializedThenConte
 
     mockKernel.mockKernel->initialize();
 
-    auto expectedSize = scratchSize * pClDevice->getSharedDeviceInfo().computeUnitsUsedForScratch * mockKernel.mockKernel->getKernelInfo().getMaxSimdSize();
+    auto expectedSize = spillSize * pClDevice->getSharedDeviceInfo().computeUnitsUsedForScratch * mockKernel.mockKernel->getKernelInfo().getMaxSimdSize();
     snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[REGISTER_PRESSURE_TOO_HIGH],
              mockKernel.mockKernel->getKernelInfo().kernelDescriptor.kernelMetadata.kernelName.c_str(), expectedSize);
     EXPECT_EQ(!zeroSized, containsHint(expectedHint, userData));
@@ -927,12 +928,12 @@ TEST_P(PerformanceHintKernelTest, GivenPrivateSurfaceWhenKernelIsInitializedThen
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DriverDiagnosticsTests,
     VerboseLevelTest,
     testing::ValuesIn(diagnosticsVerboseLevels));
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DriverDiagnosticsTests,
     PerformanceHintBufferTest,
     testing::Combine(
@@ -940,14 +941,14 @@ INSTANTIATE_TEST_CASE_P(
         ::testing::Bool(),
         ::testing::Bool()));
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DriverDiagnosticsTests,
     PerformanceHintCommandQueueTest,
     testing::Combine(
         ::testing::Bool(),
         ::testing::Bool()));
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DriverDiagnosticsTests,
     PerformanceHintKernelTest,
     testing::Bool());

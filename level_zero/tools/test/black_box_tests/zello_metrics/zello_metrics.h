@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,15 +16,17 @@
 #include <map>
 #include <vector>
 
-#define VALIDATECALL(myZeCall)                  \
-    do {                                        \
-        if ((myZeCall) != ZE_RESULT_SUCCESS) {  \
-            std::cout << "Validate Error at "   \
-                      << #myZeCall << ": "      \
-                      << __FILE__ << ": "       \
-                      << __LINE__ << std::endl; \
-            std::terminate();                   \
-        }                                       \
+#define VALIDATECALL(myZeCall)                           \
+    do {                                                 \
+        if ((myZeCall) != ZE_RESULT_SUCCESS) {           \
+            std::cout << "Validate Error: "              \
+                      << static_cast<uint32_t>(myZeCall) \
+                      << " at "                          \
+                      << #myZeCall << ": "               \
+                      << __FILE__ << ": "                \
+                      << __LINE__ << std::endl;          \
+            std::terminate();                            \
+        }                                                \
     } while (0);
 
 #define EXPECT(cond)                                                           \
@@ -40,12 +42,9 @@
 
 class ZelloMetricsTestList {
   public:
-    static bool add(std::string testName, std::function<bool()> testFunction);
+    bool add(std::string testName, std::function<bool()> testFunction);
     static ZelloMetricsTestList &get();
-    static std::map<std::string, std::function<bool()>> &getTests();
-
-  protected:
-    static std::map<std::string, std::function<bool()>> tests;
+    std::map<std::string, std::function<bool()>> &getTests();
 };
 
 class SystemParameter {
@@ -118,6 +117,7 @@ class SingleDeviceSingleQueueExecutionCtxt : public ExecutionContext {
     SingleDeviceSingleQueueExecutionCtxt(uint32_t deviceIndex, int32_t subDeviceIndex = -1) { initialize(deviceIndex, subDeviceIndex); }
     ~SingleDeviceSingleQueueExecutionCtxt() override { finalize(); }
     bool run() override;
+    void reset();
 
     ze_driver_handle_t getDriverHandle(uint32_t index) override { return driverHandle; }
     ze_context_handle_t getContextHandle(uint32_t index) override { return contextHandle; }
@@ -173,7 +173,7 @@ class AppendMemoryCopyFromHeapToDeviceAndBackToHost : public Workload {
     void finalize();
 
   private:
-    static constexpr size_t allocSize = 4096 + 7; // +7 to break alignment and make it harder
+    static constexpr size_t allocSize = 4096;
     char *heapBuffer1 = nullptr;
     char *heapBuffer2 = nullptr;
     void *zeBuffer = nullptr;
@@ -181,20 +181,27 @@ class AppendMemoryCopyFromHeapToDeviceAndBackToHost : public Workload {
 
 class CopyBufferToBuffer : public Workload {
   public:
-    CopyBufferToBuffer(ExecutionContext *execCtxt) : Workload(execCtxt) { initialize(); }
+    CopyBufferToBuffer(ExecutionContext *execCtxt) : Workload(execCtxt) { initialize(nullptr, nullptr, 0); }
+    CopyBufferToBuffer(ExecutionContext *execCtxt, void *srcAddress, void *dstAddress, uint32_t size) : Workload(execCtxt) { initialize(srcAddress, dstAddress, size); }
     ~CopyBufferToBuffer() override { finalize(); };
     bool appendCommands() override;
     bool validate() override;
+    void setValidationStatus(bool status) {
+        isValidationEnabled = status;
+    }
 
   private:
-    void initialize();
+    void initialize(void *src, void *dst, uint32_t size);
     void finalize();
-    const uint32_t allocationSize = 4096;
+    uint32_t allocationSize = 4096;
     void *sourceBuffer = nullptr;
     void *destinationBuffer = nullptr;
     ze_module_handle_t module = nullptr;
     ze_kernel_handle_t kernel = nullptr;
     bool executeFromSpirv = false;
+    bool isSourceBufferAllocated = false;
+    bool isDestinationBufferAllocated = false;
+    bool isValidationEnabled = true;
 };
 
 class SingleMetricCollector : public Collector {
@@ -205,6 +212,9 @@ class SingleMetricCollector : public Collector {
   protected:
     SingleMetricCollector(ExecutionContext *executionCtxt,
                           const char *metricGroupName,
+                          const zet_metric_group_sampling_type_flag_t samplingType);
+    SingleMetricCollector(ExecutionContext *executionCtxt,
+                          zet_metric_group_handle_t metricGroup,
                           const zet_metric_group_sampling_type_flag_t samplingType);
     ~SingleMetricCollector() override = default;
 
@@ -224,6 +234,8 @@ class SingleMetricStreamerCollector : public SingleMetricCollector {
   public:
     SingleMetricStreamerCollector(ExecutionContext *executionCtxt,
                                   const char *metricGroupName);
+    SingleMetricStreamerCollector(ExecutionContext *executionCtxt,
+                                  zet_metric_group_handle_t metricGroup);
 
     ~SingleMetricStreamerCollector() override = default;
 
@@ -244,8 +256,8 @@ class SingleMetricStreamerCollector : public SingleMetricCollector {
     zet_metric_streamer_handle_t metricStreamer = {};
     ze_event_pool_handle_t eventPool = {};
     ze_event_handle_t notificationEvent = {};
-    uint32_t notifyReportCount = 1;
-    uint32_t samplingPeriod = 10000;
+    uint32_t notifyReportCount = 20000;
+    uint32_t samplingPeriod = 10000000;
     uint32_t maxRequestRawReportCount = 5;
 };
 
@@ -254,6 +266,8 @@ class SingleMetricQueryCollector : public SingleMetricCollector {
   public:
     SingleMetricQueryCollector(ExecutionContext *executionCtxt,
                                const char *metricGroupName);
+    SingleMetricQueryCollector(ExecutionContext *executionCtxt,
+                               zet_metric_group_handle_t metricGroup);
 
     ~SingleMetricQueryCollector() override = default;
 

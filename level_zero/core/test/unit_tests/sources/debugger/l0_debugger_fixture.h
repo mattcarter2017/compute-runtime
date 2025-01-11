@@ -31,7 +31,7 @@ struct L0DebuggerFixture {
         auto executionEnvironment = new NEO::ExecutionEnvironment();
         auto mockBuiltIns = new NEO::MockBuiltins();
         executionEnvironment->prepareRootDeviceEnvironments(1);
-        executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+        MockRootDeviceEnvironment::resetBuiltins(executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
         memoryOperationsHandler = new NEO::MockMemoryOperations();
         executionEnvironment->rootDeviceEnvironments[0]->memoryOperationsInterface.reset(memoryOperationsHandler);
         executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
@@ -111,6 +111,19 @@ struct L0DebuggerPerContextAddressSpaceFixture : public L0DebuggerHwFixture {
     DebugManagerStateRestore restorer;
 };
 
+struct L0DebuggerPerContextAddressSpaceGlobalBindlessFixture : public L0DebuggerHwFixture {
+    void setUp() {
+        NEO::debugManager.flags.DebuggerForceSbaTrackingMode.set(0);
+        NEO::debugManager.flags.UseBindlessMode.set(1);
+        NEO::debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
+        L0DebuggerHwFixture::setUp();
+    }
+    void tearDown() {
+        L0DebuggerHwFixture::tearDown();
+    }
+    DebugManagerStateRestore restorer;
+};
+
 struct L0DebuggerSingleAddressSpaceFixture : public L0DebuggerHwFixture {
     void setUp() {
         NEO::debugManager.flags.DebuggerForceSbaTrackingMode.set(1);
@@ -130,6 +143,15 @@ struct L0DebuggerHwParameterizedFixture : ::testing::TestWithParam<int>, public 
     void TearDown() override {
         L0DebuggerHwFixture::tearDown();
     }
+    DebugManagerStateRestore restorer;
+};
+
+struct L0DebuggerHwGlobalStatelessFixture : public L0DebuggerHwFixture {
+    void setUp() {
+        NEO::debugManager.flags.SelectCmdListHeapAddressModel.set(1);
+        L0DebuggerHwFixture::setUp();
+    }
+
     DebugManagerStateRestore restorer;
 };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -39,6 +39,7 @@ struct SysmanDeviceImp : SysmanDevice, NEO::NonCopyableOrMovableClass {
     PRODUCT_FAMILY getProductFamily() const { return getHardwareInfo().platform.eProductFamily; }
     NEO::ExecutionEnvironment *getExecutionEnvironment() const { return executionEnvironment; }
     uint32_t getRootDeviceIndex() const { return rootDeviceIndex; }
+    double getTimerResolution();
 
     GlobalOperations *pGlobalOperations = nullptr;
     PowerHandleContext *pPowerHandleContext = nullptr;
@@ -57,6 +58,7 @@ struct SysmanDeviceImp : SysmanDevice, NEO::NonCopyableOrMovableClass {
     Pci *pPci = nullptr;
     FanHandleContext *pFanHandleContext = nullptr;
     Events *pEvents = nullptr;
+    VfManagementHandleContext *pVfManagementHandleContext = nullptr;
 
     ze_result_t powerGet(uint32_t *pCount, zes_pwr_handle_t *phPower) override;
     ze_result_t powerGetCardDomain(zes_pwr_handle_t *phPower) override;
@@ -69,6 +71,8 @@ struct SysmanDeviceImp : SysmanDevice, NEO::NonCopyableOrMovableClass {
     ze_result_t rasGet(uint32_t *pCount, zes_ras_handle_t *phRas) override;
     ze_result_t diagnosticsGet(uint32_t *pCount, zes_diag_handle_t *phFirmware) override;
     ze_result_t deviceGetProperties(zes_device_properties_t *pProperties) override;
+    ze_result_t deviceGetSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) override;
+    ze_bool_t getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) override;
     ze_result_t processesGetState(uint32_t *pCount, zes_process_state_t *pProcesses) override;
     ze_result_t deviceReset(ze_bool_t force) override;
     ze_result_t deviceGetState(zes_device_state_t *pState) override;
@@ -88,6 +92,7 @@ struct SysmanDeviceImp : SysmanDevice, NEO::NonCopyableOrMovableClass {
     ze_result_t deviceResetExt(zes_reset_properties_t *pProperties) override;
     bool deviceEventListen(zes_event_type_flags_t &pEvent, uint64_t timeout) override;
     ze_result_t fabricPortGetMultiPortThroughput(uint32_t numPorts, zes_fabric_port_handle_t *phPort, zes_fabric_port_throughput_t **pThroughput) override;
+    ze_result_t deviceEnumEnabledVF(uint32_t *pCount, zes_vf_handle_t *phVFhandle) override;
 
     OsSysman *deviceGetOsInterface() override;
 

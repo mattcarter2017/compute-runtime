@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,7 +44,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterImageTests, WhenAppendingSurfaceStatePa
 
     EXPECT_EQ(0, memcmp(&surfaceStateBefore, &surfaceStateAfter, sizeof(RENDER_SURFACE_STATE)));
 
-    imageHw->appendSurfaceStateParams(&surfaceStateAfter, context.getDevice(0)->getRootDeviceIndex(), true);
+    imageHw->appendSurfaceStateParams(&surfaceStateAfter, context.getDevice(0)->getRootDeviceIndex());
 
     EXPECT_EQ(0, memcmp(&surfaceStateBefore, &surfaceStateAfter, sizeof(RENDER_SURFACE_STATE)));
 }
@@ -59,15 +59,15 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterImageTests, givenCompressionEnabledWhen
     mockGmmClient->capturedFormat = GMM_FORMAT_INVALID;
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
     surfaceState.setAuxiliarySurfaceMode(RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
-    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex(), false);
+    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex());
     EXPECT_EQ(0u, surfaceState.getCompressionFormat());
     EXPECT_EQ(GMM_FORMAT_INVALID, mockGmmClient->capturedFormat);
 
     auto gmm = image->getMultiGraphicsAllocation().getDefaultGraphicsAllocation()->getDefaultGmm();
-    gmm->isCompressionEnabled = true;
+    gmm->setCompressionEnabled(true);
 
     surfaceState = FamilyType::cmdInitRenderSurfaceState;
-    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex(), false);
+    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex());
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(&surfaceState, gmm));
 
     EXPECT_NE(0u, surfaceState.getCompressionFormat());
@@ -75,7 +75,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterImageTests, givenCompressionEnabledWhen
 }
 
 HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingImageFromBufferThenTwoIsSetAsCompressionFormat, IsXeHpcCore) {
-    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
     MockContext context;
 
     uint32_t compressionFormat = context.getDevice(0)->getGmmHelper()->getClientContext()->getSurfaceStateCompressionFormat(GMM_RESOURCE_FORMAT::GMM_FORMAT_GENERIC_8BIT);
@@ -96,7 +95,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingImageFromBufferTh
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     auto gmm = new Gmm(context.getDevice(0)->getGmmHelper(), nullptr, 1, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements);
-    gmm->isCompressionEnabled = true;
+    gmm->setCompressionEnabled(true);
 
     auto buffer = castToObject<Buffer>(imageDesc.mem_object);
     buffer->getGraphicsAllocation(0)->setGmm(gmm, 0);
@@ -108,7 +107,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingImageFromBufferTh
         CL_MEM_READ_WRITE, 0, surfaceFormat, &imageDesc, NULL, retVal));
     auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
-    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex(), false);
+    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex());
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(&surfaceState, gmm));
 
     EXPECT_EQ(compressionFormat, surfaceState.getCompressionFormat());
@@ -116,7 +115,6 @@ HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingImageFromBufferTh
 }
 
 HWTEST2_F(XeHPAndLaterImageTests, givenImageFromBufferWhenSettingSurfaceStateThenPickCompressionFormatFromDebugVariable, IsXeHpcCore) {
-    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
     DebugManagerStateRestore restorer;
 
     uint32_t bufferCompressionFormat = 3;
@@ -139,7 +137,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenImageFromBufferWhenSettingSurfaceStateThe
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     auto gmm = new Gmm(context.getDevice(0)->getGmmHelper(), nullptr, 1, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements);
-    gmm->isCompressionEnabled = true;
+    gmm->setCompressionEnabled(true);
 
     auto buffer = castToObject<Buffer>(imageDesc.mem_object);
     buffer->getGraphicsAllocation(0)->setGmm(gmm, 0);
@@ -150,7 +148,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenImageFromBufferWhenSettingSurfaceStateThe
     auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
 
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
-    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex(), false);
+    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex());
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(&surfaceState, gmm));
 
     EXPECT_EQ(bufferCompressionFormat, surfaceState.getCompressionFormat());
@@ -170,7 +168,6 @@ struct CompressionParamsSupportedMatcher {
 HWTEST2_F(XeHPAndLaterImageTests, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapabilityAndMCSThenProgramAuxFieldsForCcs, CompressionParamsSupportedMatcher) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
 
     MockContext context;
     McsSurfaceInfo msi = {10, 20, 3};
@@ -286,7 +283,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenMediaCompressionWhenAppendingNewAllocatio
     EncodeSurfaceState<FamilyType>::setImageAuxParamsForCCS(&surfaceState,
                                                             imageHw->getGraphicsAllocation(context.getDevice(0)->getRootDeviceIndex())->getDefaultGmm());
 
-    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex(), false);
+    imageHw->setImageArg(&surfaceState, false, 0, context.getDevice(0)->getRootDeviceIndex());
 
     if (hwInfo->featureTable.flags.ftrFlatPhysCCS) {
         EXPECT_NE(surfaceState.getCompressionFormat(), GMM_FLATCCS_FORMAT::GMM_FLATCCS_FORMAT_INVALID);
@@ -312,10 +309,10 @@ HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingNewAllocationThen
     auto gmm = imageHw->getGraphicsAllocation(rootDeviceIndex)->getDefaultGmm();
 
     gmm->gmmResourceInfo->getResourceFlags()->Info.RenderCompressed = true;
-    gmm->isCompressionEnabled = true;
+    gmm->setCompressionEnabled(true);
 
     auto mcsGmm = new MockGmm(context.getDevice(0)->getGmmHelper());
-    mcsGmm->isCompressionEnabled = true;
+    mcsGmm->setCompressionEnabled(true);
     mcsGmm->gmmResourceInfo->getResourceFlags()->Info.RenderCompressed = true;
     mcsGmm->gmmResourceInfo->getResourceFlags()->Gpu.UnifiedAuxSurface = true;
     mcsGmm->gmmResourceInfo->getResourceFlags()->Gpu.CCS = true;
@@ -324,7 +321,7 @@ HWTEST2_F(XeHPAndLaterImageTests, givenCompressionWhenAppendingNewAllocationThen
     mcsAlloc->setDefaultGmm(mcsGmm);
     imageHw->setMcsAllocation(mcsAlloc);
 
-    imageHw->setImageArg(&surfaceState, false, 0, rootDeviceIndex, false);
+    imageHw->setImageArg(&surfaceState, false, 0, rootDeviceIndex);
 
     if (hwInfo->featureTable.flags.ftrFlatPhysCCS) {
         EXPECT_NE(surfaceState.getCompressionFormat(), GMM_FLATCCS_FORMAT::GMM_FLATCCS_FORMAT_INVALID);
@@ -345,8 +342,8 @@ HWTEST2_F(XeHPAndLaterImageTests, givenNoCompressionWhenProgramingImageSurfaceSt
     surfaceState.setMemoryCompressionEnable(true);
     surfaceState.setAuxiliarySurfaceMode(RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_CCS_E);
     auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
-    imageHw->getGraphicsAllocation(context.getDevice(0)->getRootDeviceIndex())->getDefaultGmm()->isCompressionEnabled = false;
-    imageHw->setImageArg(&surfaceState, false, 0, 0, false);
+    imageHw->getGraphicsAllocation(context.getDevice(0)->getRootDeviceIndex())->getDefaultGmm()->setCompressionEnabled(false);
+    imageHw->setImageArg(&surfaceState, false, 0, 0);
 
     EXPECT_FALSE(surfaceState.getMemoryCompressionEnable());
     EXPECT_EQ(surfaceState.getAuxiliarySurfaceMode(), RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);

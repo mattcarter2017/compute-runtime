@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,11 +7,10 @@
 
 #include "shared/source/command_stream/preemption.h"
 #include "shared/source/command_stream/stream_properties.h"
+#include "shared/source/gen_common/reg_configs_common.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/test/common/fixtures/preamble_fixture.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
-
-#include "reg_configs_common.h"
 
 using namespace NEO;
 
@@ -20,11 +19,10 @@ using TglLpSlm = PreambleFixture;
 HWTEST2_F(TglLpSlm, givenTglLpWhenPreambleIsBeingProgrammedThenThreadArbitrationPolicyIsIgnored, IsTGLLP) {
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(PreemptionMode::Disabled));
-    typedef Gen12LpFamily::MI_LOAD_REGISTER_IMM MI_LOAD_REGISTER_IMM;
     LinearStream &cs = linearStream;
     uint32_t l3Config = PreambleHelper<Gen12LpFamily>::getL3Config(pDevice->getHardwareInfo(), true);
     MockDevice mockDevice;
-    PreambleHelper<Gen12LpFamily>::programPreamble(&linearStream, mockDevice, l3Config, nullptr);
+    PreambleHelper<Gen12LpFamily>::programPreamble(&linearStream, mockDevice, l3Config, nullptr, false);
 
     parseCommands<Gen12LpFamily>(cs);
 
@@ -36,7 +34,7 @@ HWTEST2_F(TglLpSlm, WhenPreambleIsCreatedThenSlmIsDisabled, IsTGLLP) {
     typedef Gen12LpFamily::MI_LOAD_REGISTER_IMM MI_LOAD_REGISTER_IMM;
     LinearStream &cs = linearStream;
     uint32_t l3Config = PreambleHelper<FamilyType>::getL3Config(pDevice->getHardwareInfo(), true);
-    PreambleHelper<FamilyType>::programL3(&cs, l3Config);
+    PreambleHelper<FamilyType>::programL3(&cs, l3Config, false);
 
     parseCommands<Gen12LpFamily>(cs);
 

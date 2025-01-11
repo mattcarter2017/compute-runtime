@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,8 +10,8 @@
 
 namespace L0 {
 
-DeviceImp::CmdListCreateFunPtrT DeviceImp::getCmdListCreateFunc(const ze_command_list_desc_t *desc) {
-    return &CommandList::create;
+DeviceImp::CmdListCreateFunPtrT DeviceImp::getCmdListCreateFunc(const ze_base_desc_t *desc) {
+    return nullptr;
 }
 
 uint32_t DeviceImp::getAdditionalEngines(uint32_t numAdditionalEnginesRequested,
@@ -20,5 +20,9 @@ uint32_t DeviceImp::getAdditionalEngines(uint32_t numAdditionalEnginesRequested,
 }
 
 void DeviceImp::getExtendedDeviceModuleProperties(ze_base_desc_t *pExtendedProperties) {}
+
+void DeviceImp::getAdditionalExtProperties(ze_base_properties_t *extendedProperties) {}
+
+void DeviceImp::getAdditionalMemoryExtProperties(ze_base_properties_t *extProperties, const NEO::HardwareInfo &hwInfo) {}
 
 } // namespace L0

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,6 +25,7 @@ struct MockFwUtilInterface : public L0::Sysman::FirmwareUtil {
 
     ADDMETHOD_NOBASE(fwDeviceInit, ze_result_t, ZE_RESULT_SUCCESS, ());
     ADDMETHOD_NOBASE(getFwVersion, ze_result_t, ZE_RESULT_SUCCESS, (std::string fwType, std::string &firmwareVersion));
+    ADDMETHOD_NOBASE(getFlashFirmwareProgress, ze_result_t, ZE_RESULT_SUCCESS, (uint32_t * pCompletionPercent));
     ADDMETHOD_NOBASE(flashFirmware, ze_result_t, ZE_RESULT_SUCCESS, (std::string fwType, void *pImage, uint32_t size));
     ADDMETHOD_NOBASE(fwIfrApplied, ze_result_t, ZE_RESULT_SUCCESS, (bool &ifrStatus));
     ADDMETHOD_NOBASE(fwSupportedDiagTests, ze_result_t, ZE_RESULT_SUCCESS, (std::vector<std::string> & supportedDiagTests));
@@ -42,8 +43,6 @@ struct MockFwUtilInterface : public L0::Sysman::FirmwareUtil {
 struct MockFwUtilOsLibrary : public OsLibrary {
   public:
     static bool mockLoad;
-    MockFwUtilOsLibrary(const std::string &name, std::string *errorValue) {
-    }
     MockFwUtilOsLibrary() {}
     ~MockFwUtilOsLibrary() override = default;
     void *getProcAddress(const std::string &procName) override {
@@ -60,7 +59,7 @@ struct MockFwUtilOsLibrary : public OsLibrary {
     std::string getFullPath() override {
         return std::string();
     }
-    static OsLibrary *load(const std::string &name) {
+    static OsLibrary *load(const OsLibraryCreateProperties &properties) {
         if (mockLoad == true) {
             auto ptr = new (std::nothrow) MockFwUtilOsLibrary();
             return ptr;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,7 +8,10 @@
 #include "shared/source/utilities/logger.h"
 
 #include "shared/source/debug_settings/debug_settings_manager.h"
+#include "shared/source/execution_environment/execution_environment.h"
+#include "shared/source/helpers/file_io.h"
 #include "shared/source/helpers/timestamp_packet.h"
+#include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/utilities/io_functions.h"
 
 #include <fstream>
@@ -89,40 +92,6 @@ void FileLogger<debugLevel>::logApiCall(const char *function, bool enter, int32_
 
         auto str = ss.str();
         writeToFile(logFileName, str.c_str(), str.size(), std::ios::app);
-    }
-}
-
-template <DebugFunctionalityLevel debugLevel>
-void FileLogger<debugLevel>::logAllocation(GraphicsAllocation const *graphicsAllocation) {
-    if (logAllocationType) {
-        printDebugString(true, stdout, "Created Graphics Allocation of type %s\n", getAllocationTypeString(graphicsAllocation));
-    }
-
-    if (false == enabled() && !logAllocationStdout) {
-        return;
-    }
-
-    if (logAllocationMemoryPool || logAllocationType) {
-        std::stringstream ss;
-        std::thread::id thisThread = std::this_thread::get_id();
-
-        ss << " ThreadID: " << thisThread;
-        ss << " AllocationType: " << getAllocationTypeString(graphicsAllocation);
-        ss << " MemoryPool: " << getMemoryPoolString(graphicsAllocation);
-        ss << " Root device index: " << graphicsAllocation->getRootDeviceIndex();
-        ss << " GPU address: 0x" << std::hex << graphicsAllocation->getGpuAddress() << " - 0x" << std::hex << graphicsAllocation->getGpuAddress() + graphicsAllocation->getUnderlyingBufferSize() - 1;
-
-        ss << graphicsAllocation->getAllocationInfoString();
-        ss << std::endl;
-        auto str = ss.str();
-        if (logAllocationStdout) {
-            printf("%s", str.c_str());
-            return;
-        }
-
-        if (enabled()) {
-            writeToFile(logFileName, str.c_str(), str.size(), std::ios::app);
-        }
     }
 }
 
@@ -213,6 +182,8 @@ const char *getAllocationTypeString(GraphicsAllocation const *graphicsAllocation
         return "SVM_GPU";
     case AllocationType::svmZeroCopy:
         return "SVM_ZERO_COPY";
+    case AllocationType::syncBuffer:
+        return "SYNC_BUFFER";
     case AllocationType::tagBuffer:
         return "TAG_BUFFER";
     case AllocationType::globalFence:
@@ -245,6 +216,8 @@ const char *getAllocationTypeString(GraphicsAllocation const *graphicsAllocation
         return "DEFERRED_TASKS_LIST";
     case AllocationType::assertBuffer:
         return "ASSERT_BUFFER";
+    case AllocationType::syncDispatchToken:
+        return "SYNC_DISPATCH_TOKEN";
     default:
         return "ILLEGAL_VALUE";
     }

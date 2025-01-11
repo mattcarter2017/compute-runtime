@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -89,9 +89,8 @@ struct AppendMemoryCopyMultiPacketEventFixture : public DeviceFixture {
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testSingleTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
+
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -116,8 +115,8 @@ void testSingleTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpect
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
     uint64_t secondKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + event->getSinglePacketSize();
     uint64_t thirdKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 2 * event->getSinglePacketSize();
-
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(3u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -128,23 +127,29 @@ void testSingleTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpect
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
-    ASSERT_EQ(3u, itorWalkers.size());
-    auto firstWalker = itorWalkers[0];
-    auto secondWalker = itorWalkers[1];
-    auto thirdWalker = itorWalkers[2];
+    auto itWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    constexpr size_t nWalkers = 3u;
+    ASSERT_EQ(nWalkers, itWalkers.size());
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*secondWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(secondKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    uint64_t kernelEventAddresses[nWalkers] = {firstKernelEventAddress,
+                                               secondKernelEventAddress,
+                                               thirdKernelEventAddress};
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*thirdWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(thirdKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    for (auto i = 0u; i < itWalkers.size(); i++) {
+        auto walker = itWalkers[i];
+        WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*walker);
+        std::visit([&arg, &kernelEventAddresses, i](auto &&walker) {
+            using WalkerType = std::decay_t<decltype(*walker)>;
+            using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+            using OPERATION = typename PostSyncType::OPERATION;
+            auto &postSync = walker->getPostSync();
+
+            EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+            EXPECT_EQ(kernelEventAddresses[i], postSync.getDestinationAddress());
+        },
+                   walkerVariant);
+    }
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -157,7 +162,7 @@ void testSingleTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpect
         storeDataImmAddress += input.storeDataImmOffset;
     }
 
-    auto itorStoreDataImm = findAll<MI_STORE_DATA_IMM *>(firstWalker, cmdList.end());
+    auto itorStoreDataImm = findAll<MI_STORE_DATA_IMM *>(itWalkers[0], cmdList.end());
     ASSERT_EQ(expectedPostSyncStoreDataImm, itorStoreDataImm.size());
 
     for (size_t i = 0; i < expectedPostSyncStoreDataImm; i++) {
@@ -172,11 +177,9 @@ void testSingleTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpect
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename FamilyType::PIPE_CONTROL::POST_SYNC_OPERATION;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -203,7 +206,8 @@ void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, 
     uint64_t secondKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + event->getSinglePacketSize();
     uint64_t thirdKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 2 * event->getSinglePacketSize();
 
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(3u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -214,23 +218,29 @@ void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, 
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
-    ASSERT_EQ(3u, itorWalkers.size());
-    auto firstWalker = itorWalkers[0];
-    auto secondWalker = itorWalkers[1];
-    auto thirdWalker = itorWalkers[2];
+    auto itWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    constexpr size_t nWalkers = 3u;
+    ASSERT_EQ(nWalkers, itWalkers.size());
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*secondWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(secondKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    uint64_t kernelEventAddresses[nWalkers] = {firstKernelEventAddress,
+                                               secondKernelEventAddress,
+                                               thirdKernelEventAddress};
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*thirdWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(thirdKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    for (auto i = 0u; i < itWalkers.size(); i++) {
+        auto walker = itWalkers[i];
+        WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*walker);
+        std::visit([&arg, &kernelEventAddresses, i](auto &&walker) {
+            using WalkerType = std::decay_t<decltype(*walker)>;
+            using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+            using OPERATION = typename PostSyncType::OPERATION;
+            auto &postSync = walker->getPostSync();
+
+            EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+            EXPECT_EQ(kernelEventAddresses[i], postSync.getDestinationAddress());
+        },
+                   walkerVariant);
+    }
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -241,7 +251,7 @@ void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, 
         l3FlushPostSyncAddress = gpuBaseAddress;
     }
 
-    auto itorStoreDataImm = findAll<MI_STORE_DATA_IMM *>(thirdWalker, cmdList.end());
+    auto itorStoreDataImm = findAll<MI_STORE_DATA_IMM *>(itWalkers[2], cmdList.end());
     size_t expectedPostSyncStoreDataImm = 0;
     uint64_t storeDataImmAddress = gpuBaseAddress;
     if (input.signalAllPackets) {
@@ -260,7 +270,7 @@ void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, 
         storeDataImmAddress += event->getSinglePacketSize();
     }
 
-    auto itorPipeControls = findAll<PIPE_CONTROL *>(firstWalker, cmdList.end());
+    auto itorPipeControls = findAll<PIPE_CONTROL *>(itWalkers[0], cmdList.end());
 
     uint32_t postSyncPipeControls = 0;
     uint32_t dcFlushFound = 0;
@@ -282,9 +292,8 @@ void testSingleTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, 
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testSingleTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
+
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -306,8 +315,8 @@ void testSingleTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpect
 
     uint64_t gpuBaseAddress = event->getGpuAddress(input.device);
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
-
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(1u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -318,13 +327,21 @@ void testSingleTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpect
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(1u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*firstWalker);
+    std::visit([&arg, firstKernelEventAddress](auto &&walker) {
+        using WalkerType = std::decay_t<decltype(*walker)>;
+        using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+        using OPERATION = typename PostSyncType::OPERATION;
+        auto &postSync = walker->getPostSync();
+
+        EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+        EXPECT_EQ(firstKernelEventAddress, postSync.getDestinationAddress());
+    },
+               walkerVariant);
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -352,11 +369,9 @@ void testSingleTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpect
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testSingleTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename FamilyType::PIPE_CONTROL::POST_SYNC_OPERATION;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -380,8 +395,8 @@ void testSingleTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, 
     uint64_t gpuBaseAddress = event->getGpuAddress(input.device);
 
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
-
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(1u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -392,13 +407,21 @@ void testSingleTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, 
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(1u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*firstWalker);
+    std::visit([&arg, firstKernelEventAddress](auto &&walker) {
+        using WalkerType = std::decay_t<decltype(*walker)>;
+        using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+        using OPERATION = typename PostSyncType::OPERATION;
+        auto &postSync = walker->getPostSync();
+
+        EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+        EXPECT_EQ(firstKernelEventAddress, postSync.getDestinationAddress());
+    },
+               walkerVariant);
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -452,10 +475,8 @@ void testSingleTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, 
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testSingleTileAppendMemoryCopySignalScopeEventToSubDevice(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
-    using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     ze_result_t result = ZE_RESULT_SUCCESS;
     std::unique_ptr<L0::CommandList> commandList(CommandList::create(productFamily, input.device, NEO::EngineGroupType::renderCompute, 0u, result, false));
@@ -471,7 +492,8 @@ void testSingleTileAppendMemoryCopySignalScopeEventToSubDevice(CopyTestInput &in
     auto event = std::unique_ptr<L0::Event>(L0::Event::create<typename FamilyType::TimestampPacketType>(eventPool.get(), &eventDesc, input.device));
 
     size_t usedBefore = commandContainer.getCommandStream()->getUsed();
-    result = commandList->appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event.get(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    result = commandList->appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event.get(), 0, nullptr, copyParams);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     size_t usedAfter = commandContainer.getCommandStream()->getUsed();
 
@@ -481,7 +503,7 @@ void testSingleTileAppendMemoryCopySignalScopeEventToSubDevice(CopyTestInput &in
         ptrOffset(commandContainer.getCommandStream()->getCpuBase(), usedBefore),
         usedAfter - usedBefore));
 
-    auto itorWalker = find<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalker = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
     ASSERT_NE(cmdList.end(), itorWalker);
 
     auto pipeControls = findAll<PIPE_CONTROL *>(itorWalker, cmdList.end());
@@ -508,9 +530,7 @@ void testSingleTileAppendMemoryCopySignalScopeEventToSubDevice(CopyTestInput &in
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testMultiTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -536,8 +556,8 @@ void testMultiTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpecte
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
     uint64_t secondKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 2 * event->getSinglePacketSize();
     uint64_t thirdKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 4 * event->getSinglePacketSize();
-
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(3u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -548,23 +568,26 @@ void testMultiTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpecte
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(3u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
-    auto secondWalker = itorWalkers[1];
-    auto thirdWalker = itorWalkers[2];
+    uint64_t expectedKernelEventAddress[]{firstKernelEventAddress, secondKernelEventAddress, thirdKernelEventAddress};
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    for (auto i = 0u; i < itorWalkers.size(); i++) {
+        auto walker = itorWalkers[i];
+        WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*walker);
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*secondWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(secondKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+        std::visit([&arg, i, expectedKernelEventAddress = expectedKernelEventAddress](auto &&walker) {
+            using WalkerType = std::decay_t<decltype(*walker)>;
+            using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+            using OPERATION = typename PostSyncType::OPERATION;
+            auto &postSync = walker->getPostSync();
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*thirdWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(thirdKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+            EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+            EXPECT_EQ(expectedKernelEventAddress[i], postSync.getDestinationAddress());
+        },
+                   walkerVariant);
+    }
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -597,11 +620,10 @@ void testMultiTileAppendMemoryCopyThreeKernels(CopyTestInput &input, TestExpecte
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testMultiTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
+
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -629,9 +651,9 @@ void testMultiTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, T
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
     uint64_t secondKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 2 * event->getSinglePacketSize();
     uint64_t thirdKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress + 4 * event->getSinglePacketSize();
-
+    CmdListMemoryCopyParams copyParams = {};
     size_t usedBefore = commandContainer.getCommandStream()->getUsed();
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     size_t usedAfter = commandContainer.getCommandStream()->getUsed();
 
     EXPECT_EQ(3u, commandList.appendMemoryCopyKernelWithGACalled);
@@ -645,23 +667,28 @@ void testMultiTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, T
         ptrOffset(commandContainer.getCommandStream()->getCpuBase(), usedBefore),
         usedAfter - usedBefore));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(3u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
-    auto secondWalker = itorWalkers[1];
     auto thirdWalker = itorWalkers[2];
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    uint64_t expectedKernelEventAddress[]{firstKernelEventAddress, secondKernelEventAddress, thirdKernelEventAddress};
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*secondWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(secondKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    for (auto i = 0u; i < itorWalkers.size(); i++) {
+        auto walker = itorWalkers[i];
+        WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*walker);
 
-    walkerCmd = genCmdCast<COMPUTE_WALKER *>(*thirdWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(thirdKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+        std::visit([&arg, i, expectedKernelEventAddress = expectedKernelEventAddress](auto &&walker) {
+            using WalkerType = std::decay_t<decltype(*walker)>;
+            using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+            using OPERATION = typename PostSyncType::OPERATION;
+            auto &postSync = walker->getPostSync();
+
+            EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+            EXPECT_EQ(expectedKernelEventAddress[i], postSync.getDestinationAddress());
+        },
+                   walkerVariant);
+    }
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -725,9 +752,7 @@ void testMultiTileAppendMemoryCopyThreeKernelsAndL3Flush(CopyTestInput &input, T
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testMultiTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -750,8 +775,8 @@ void testMultiTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpecte
 
     uint64_t gpuBaseAddress = event->getGpuAddress(input.device);
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
-
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    CmdListMemoryCopyParams copyParams = {};
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     EXPECT_EQ(1u, commandList.appendMemoryCopyKernelWithGACalled);
     EXPECT_EQ(0u, commandList.appendMemoryCopyBlitCalled);
     EXPECT_EQ(arg.expectedPacketsInUse, event->getPacketsInUse());
@@ -762,13 +787,21 @@ void testMultiTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpecte
         cmdList, ptrOffset(commandList.commandContainer.getCommandStream()->getCpuBase(), 0),
         commandList.commandContainer.getCommandStream()->getUsed()));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(1u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*firstWalker);
+    std::visit([&arg, firstKernelEventAddress](auto &&walker) {
+        using WalkerType = std::decay_t<decltype(*walker)>;
+        using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+        using OPERATION = typename PostSyncType::OPERATION;
+        auto &postSync = walker->getPostSync();
+
+        EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+        EXPECT_EQ(firstKernelEventAddress, postSync.getDestinationAddress());
+    },
+               walkerVariant);
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();
@@ -799,11 +832,9 @@ void testMultiTileAppendMemoryCopySingleKernel(CopyTestInput &input, TestExpecte
 template <GFXCORE_FAMILY gfxCoreFamily>
 void testMultiTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, TestExpectedValues &arg) {
     using FamilyType = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
-    using OPERATION = typename POSTSYNC_DATA::OPERATION;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     MockCommandListCoreFamily<gfxCoreFamily> commandList;
@@ -828,9 +859,9 @@ void testMultiTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, T
 
     uint64_t gpuBaseAddress = event->getGpuAddress(input.device);
     uint64_t firstKernelEventAddress = arg.postSyncAddressZero ? 0 : gpuBaseAddress;
-
+    CmdListMemoryCopyParams copyParams = {};
     size_t usedBefore = commandContainer.getCommandStream()->getUsed();
-    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, false, false);
+    commandList.appendMemoryCopy(input.dstPtr, input.srcPtr, input.size, event->toHandle(), 0, nullptr, copyParams);
     size_t usedAfter = commandContainer.getCommandStream()->getUsed();
 
     EXPECT_EQ(1u, commandList.appendMemoryCopyKernelWithGACalled);
@@ -844,13 +875,21 @@ void testMultiTileAppendMemoryCopySingleKernelAndL3Flush(CopyTestInput &input, T
         ptrOffset(commandContainer.getCommandStream()->getCpuBase(), usedBefore),
         usedAfter - usedBefore));
 
-    auto itorWalkers = findAll<COMPUTE_WALKER *>(cmdList.begin(), cmdList.end());
+    auto itorWalkers = NEO::UnitTestHelper<FamilyType>::findAllWalkerTypeCmds(cmdList.begin(), cmdList.end());
     ASSERT_EQ(1u, itorWalkers.size());
     auto firstWalker = itorWalkers[0];
 
-    auto walkerCmd = genCmdCast<COMPUTE_WALKER *>(*firstWalker);
-    EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), walkerCmd->getPostSync().getOperation());
-    EXPECT_EQ(firstKernelEventAddress, walkerCmd->getPostSync().getDestinationAddress());
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*firstWalker);
+    std::visit([&arg, firstKernelEventAddress](auto &&walker) {
+        using WalkerType = std::decay_t<decltype(*walker)>;
+        using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
+        using OPERATION = typename PostSyncType::OPERATION;
+        auto &postSync = walker->getPostSync();
+
+        EXPECT_EQ(static_cast<OPERATION>(arg.expectedWalkerPostSyncOp), postSync.getOperation());
+        EXPECT_EQ(firstKernelEventAddress, postSync.getDestinationAddress());
+    },
+               walkerVariant);
 
     if (event->isUsingContextEndOffset()) {
         gpuBaseAddress += event->getContextEndOffset();

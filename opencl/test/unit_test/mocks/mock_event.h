@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,12 +35,14 @@ struct MockEvent : public BaseEventType {
     FORWARD_FUNC(submitCommand, BaseEventType);
 
     using BaseEventType::timeStampNode;
+    using Event::areTimestampsCompleted;
     using Event::calcProfilingData;
     using Event::cmdToSubmit;
     using Event::isWaitForTimestampsEnabled;
     using Event::magic;
     using Event::multiRootDeviceTimestampPacketContainer;
     using Event::queueTimeStamp;
+    using Event::startTimeStamp;
     using Event::submitTimeStamp;
     using Event::timestampPacketContainer;
 

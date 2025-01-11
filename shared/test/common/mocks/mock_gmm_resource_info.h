@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -55,13 +55,15 @@ class MockGmmResourceInfo : public GmmResourceInfo {
 
     uint32_t getAuxQPitch() override { return auxQPitch; }
 
-    uint32_t getMipTailStartLodSurfaceState() override { return mipTailStartLod; }
+    uint32_t getMipTailStartLODSurfaceState() override { return mipTailStartLod; }
 
     GMM_RESOURCE_FORMAT getResourceFormat() override { return mockResourceCreateParams.Format; }
 
     GMM_SURFACESTATE_FORMAT getResourceFormatSurfaceState() override { return (GMM_SURFACESTATE_FORMAT)0; }
 
     GMM_RESOURCE_TYPE getResourceType() override { return mockResourceCreateParams.Type; }
+
+    GMM_RESOURCE_USAGE_TYPE getResourceUsage() { return mockResourceCreateParams.Usage; }
 
     GMM_RESOURCE_FLAG *getResourceFlags() override { return &mockResourceCreateParams.Flags; }
 
@@ -80,6 +82,8 @@ class MockGmmResourceInfo : public GmmResourceInfo {
     ADDMETHOD_NOBASE(getUnifiedAuxSurfaceOffset, uint64_t, 0u, (GMM_UNIFIED_AUX_TYPE auxType));
 
     bool is64KBPageSuitable() const override { return is64KBPageSuitableValue; }
+
+    bool isDisplayable() const override { return isDisplayableValue; }
 
     GMM_RESOURCE_INFO *peekGmmResourceInfo() const override { return mockResourceInfoHandle; }
 
@@ -100,7 +104,7 @@ class MockGmmResourceInfo : public GmmResourceInfo {
 
     void setUnifiedAuxPitchTiles(uint32_t value);
     void setAuxQPitch(uint32_t value);
-    void setMipTailStartLod(uint32_t newMipTailStartLod) { mipTailStartLod = newMipTailStartLod; }
+    void setMipTailStartLOD(uint32_t newMipTailStartLod) { mipTailStartLod = newMipTailStartLod; }
 
     void refreshHandle() override {
         refreshHandleCalled++;
@@ -116,6 +120,7 @@ class MockGmmResourceInfo : public GmmResourceInfo {
     uint32_t arrayIndexPassedToGetOffset = 0;
     SurfaceFormatInfo tempSurface{};
     bool is64KBPageSuitableValue = true;
+    bool isDisplayableValue = false;
     GMM_RES_COPY_BLT requestedResCopyBlt = {};
     uint32_t cpuBltCalled = 0u;
     uint8_t cpuBltResult = 1u;

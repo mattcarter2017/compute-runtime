@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,41 +23,18 @@ using namespace NEO;
 
 using CommandEncodeStatesPvcTest = ::testing::Test;
 
-PVCTEST_F(CommandEncodeStatesPvcTest, GivenSmallSlmTotalSizesWhenSetAdditionalInfoIsCalledThenCorrectValuesAreSet) {
+PVCTEST_F(CommandEncodeStatesPvcTest, GivenZeroSlmSizeWhenSetAdditionalInfoIsCalledThenCorrectValuesAreSet) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
     using PREFERRED_SLM_ALLOCATION_SIZE = typename INTERFACE_DESCRIPTOR_DATA::PREFERRED_SLM_ALLOCATION_SIZE;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &rootDeviceEnvironment = *mockExecutionEnvironment.rootDeviceEnvironments[0];
-    auto &hwInfo = *rootDeviceEnvironment.getMutableHardwareInfo();
     uint32_t threadsCount = 1;
     uint32_t slmTotalSize = 0;
 
-    struct {
-        unsigned short revisionId;
-        bool isWaRequired;
-    } revisionsToTest[] = {
-        {0x0, true},
-        {0x1, true},
-        {0x2, true},
-        {0x41, true},
-        {0x3, false},
-        {0x9d, false},
-    };
-
-    for (const auto &revisionToTest : revisionsToTest) {
-        for (const auto &deviceId : pvcXlDeviceIds) {
-            hwInfo.platform.usDeviceID = deviceId;
-            hwInfo.platform.usRevId = revisionToTest.revisionId;
-            INTERFACE_DESCRIPTOR_DATA idd = FamilyType::cmdInitInterfaceDescriptorData;
-            EncodeDispatchKernel<FamilyType>::appendAdditionalIDDFields(&idd, rootDeviceEnvironment, threadsCount, slmTotalSize, SlmPolicy::slmPolicyNone);
-            if (revisionToTest.isWaRequired) {
-                EXPECT_EQ(PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K, idd.getPreferredSlmAllocationSize());
-            } else {
-                EXPECT_EQ(PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0K, idd.getPreferredSlmAllocationSize());
-            }
-        }
-    }
+    INTERFACE_DESCRIPTOR_DATA idd = FamilyType::cmdInitInterfaceDescriptorData;
+    EncodeDispatchKernel<FamilyType>::setupPreferredSlmSize(&idd, rootDeviceEnvironment, threadsCount, slmTotalSize, SlmPolicy::slmPolicyNone);
+    EXPECT_EQ(PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0KB, idd.getPreferredSlmAllocationSize());
 }
 
 using EncodeKernelPvcTest = Test<CommandEncodeStatesFixture>;
@@ -137,74 +114,17 @@ PVCTEST_F(EncodeKernelPvcTest, givenRevisionBAndAboveWhenSpecialModeRequiredAndA
     }
 }
 using CommandEncodeStatesTestPvc = Test<CommandEncodeStatesFixture>;
-PVCTEST_F(CommandEncodeStatesTestPvc, GivenVariousSlmTotalSizesAndSettingRevIDToDifferentValuesWhenSetAdditionalInfoIsCalledThenCorrectValuesAreSet) {
+PVCTEST_F(CommandEncodeStatesTestPvc, GivenVariousSlmTotalSizesWhenSetPreferredSlmIsCalledThenCorrectValuesAreSet) {
     using PREFERRED_SLM_ALLOCATION_SIZE = typename FamilyType::INTERFACE_DESCRIPTOR_DATA::PREFERRED_SLM_ALLOCATION_SIZE;
 
     const std::vector<PreferredSlmTestValues<FamilyType>> valuesToTest = {
-        {0, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0K},
-        {16 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K},
-        {32 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_32K},
-        {64 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_64K},
-        {96 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96K},
-        {128 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_128K},
+        {0, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0KB},
+        {16 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16KB},
+        {32 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_32KB},
+        {64 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_64KB},
+        {96 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96KB},
+        {128 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_128KB},
     };
 
-    const std::vector<PreferredSlmTestValues<FamilyType>> valuesToTestForPvcAStep = {
-        {0, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K},
-        {16 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K},
-        {32 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_32K},
-        {64 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_64K},
-        {96 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96K},
-        {128 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_128K},
-    };
-
-    const std::array<REVID, 5> revs{REVISION_A0, REVISION_B, REVISION_C, REVISION_D, REVISION_K};
-    auto &hwInfo = *pDevice->getRootDeviceEnvironment().getMutableHardwareInfo();
-    auto &productHelper = pDevice->getRootDeviceEnvironment().getProductHelper();
-
-    hwInfo.platform.usDeviceID = pvcXlDeviceIds[0];
-    for (auto rev : revs) {
-        hwInfo.platform.usRevId = productHelper.getHwRevIdFromStepping(rev, hwInfo);
-        if ((hwInfo.platform.eProductFamily == IGFX_PVC) && (rev == REVISION_A0)) {
-            verifyPreferredSlmValues<FamilyType>(valuesToTestForPvcAStep, pDevice->getRootDeviceEnvironment());
-        } else {
-            verifyPreferredSlmValues<FamilyType>(valuesToTest, pDevice->getRootDeviceEnvironment());
-        }
-    }
-}
-
-PVCTEST_F(EncodeKernelPvcTest, givenDefaultSettingForFenceAsPostSyncOperationInComputeWalkerWhenEnqueueKernelIsCalledThenDoNotGenerateFenceCommands) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
-
-    DebugManagerStateRestore restore;
-    debugManager.flags.ProgramGlobalFenceAsPostSyncOperationInComputeWalker.set(-1);
-
-    auto &hwInfo = *pDevice->getRootDeviceEnvironment().getMutableHardwareInfo();
-    auto &productHelper = pDevice->getProductHelper();
-
-    hwInfo.platform.usDeviceID = pvcXlDeviceIds[0];
-    VariableBackup<unsigned short> hwRevId{&hwInfo.platform.usRevId};
-    hwRevId = productHelper.getHwRevIdFromStepping(REVISION_A0, hwInfo);
-
-    uint32_t dims[] = {1, 1, 1};
-    std::unique_ptr<MockDispatchKernelEncoder> dispatchInterface(new MockDispatchKernelEncoder());
-    dispatchInterface->getCrossThreadDataSizeResult = 0u;
-
-    bool requiresUncachedMocs = false;
-    EncodeDispatchKernelArgs dispatchArgs = createDefaultDispatchKernelArgs(pDevice, dispatchInterface.get(), dims, requiresUncachedMocs);
-    dispatchArgs.isKernelUsingSystemAllocation = true;
-    dispatchArgs.isHostScopeSignalEvent = true;
-
-    EncodeDispatchKernel<FamilyType>::template encode<DefaultWalkerType>(*cmdContainer.get(), dispatchArgs);
-
-    GenCmdList commands;
-    CmdParse<FamilyType>::parseCommandBuffer(commands, ptrOffset(cmdContainer->getCommandStream()->getCpuBase(), 0), cmdContainer->getCommandStream()->getUsed());
-
-    auto itor = find<DefaultWalkerType *>(commands.begin(), commands.end());
-    ASSERT_NE(itor, commands.end());
-
-    auto walkerCmd = genCmdCast<DefaultWalkerType *>(*itor);
-    auto &postSyncData = walkerCmd->getPostSync();
-    EXPECT_FALSE(postSyncData.getSystemMemoryFenceRequest());
+    verifyPreferredSlmValues<FamilyType>(valuesToTest, pDevice->getRootDeviceEnvironment());
 }

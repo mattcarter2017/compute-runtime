@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,7 +18,7 @@ template <typename GfxFamily>
 long __stdcall DeviceCallbacks<GfxFamily>::notifyAubCapture(void *csrHandle, uint64_t gfxAddress, size_t gfxSize, bool allocate) {
     auto csr = reinterpret_cast<CommandStreamReceiverHw<GfxFamily> *>(csrHandle);
 
-    if (debugManager.flags.SetCommandStreamReceiver.get() == CSR_HW_WITH_AUB) {
+    if (obtainCsrTypeFromIntegerValue(debugManager.flags.SetCommandStreamReceiver.get(), CommandStreamReceiverType::hardware) == CommandStreamReceiverType::hardwareWithAub) {
         auto csrWithAub = static_cast<CommandStreamReceiverWithAUBDump<WddmCommandStreamReceiver<GfxFamily>> *>(csr);
         auto aubCsr = static_cast<AUBCommandStreamReceiverHw<GfxFamily> *>(csrWithAub->aubCSR.get());
         if (allocate) {
@@ -39,12 +39,14 @@ int __stdcall TTCallbacks<GfxFamily>::writeL3Address(void *queueHandle, uint64_t
     LriHelper<GfxFamily>::program(&csr->getCS(0),
                                   static_cast<uint32_t>(regOffset & 0xFFFFFFFF),
                                   static_cast<uint32_t>(l3GfxAddress & 0xFFFFFFFF),
-                                  true);
+                                  true,
+                                  false);
 
     LriHelper<GfxFamily>::program(&csr->getCS(0),
                                   static_cast<uint32_t>(regOffset >> 32),
                                   static_cast<uint32_t>(l3GfxAddress >> 32),
-                                  true);
+                                  true,
+                                  false);
 
     return 1;
 }

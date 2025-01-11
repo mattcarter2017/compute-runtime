@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,7 +14,7 @@
 #include "opencl/extensions/public/cl_ext_private.h"
 #include "opencl/source/mem_obj/buffer.h"
 #include "opencl/test/unit_test/aub_tests/fixtures/aub_fixture.h"
-#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_aub_fixture.h"
+#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_ocl_aub_fixture.h"
 #include "opencl/test/unit_test/fixtures/simple_arg_kernel_fixture.h"
 #include "opencl/test/unit_test/mocks/mock_kernel.h"
 
@@ -61,13 +61,13 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, GENERATEONLY_givenCompress
     auto compressedAllocation1 = compressedBuffer1->getGraphicsAllocation(device->getRootDeviceIndex());
     EXPECT_TRUE(compressedAllocation1->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedAllocation1->getMemoryPool());
-    EXPECT_TRUE(compressedAllocation1->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation1->getDefaultGmm()->isCompressionEnabled());
 
     auto compressedBuffer2 = std::unique_ptr<Buffer>(Buffer::create(context, CL_MEM_COMPRESSED_HINT_INTEL, bufferSize, nullptr, retVal));
     auto compressedAllocation2 = compressedBuffer2->getGraphicsAllocation(device->getRootDeviceIndex());
     EXPECT_TRUE(compressedAllocation2->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedAllocation2->getMemoryPool());
-    EXPECT_TRUE(compressedAllocation2->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation2->getDefaultGmm()->isCompressionEnabled());
 
     retVal = pCmdQ->enqueueWriteBuffer(compressedBuffer1.get(), CL_FALSE, 0, bufferSize, writePattern, nullptr, 0, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, retVal);
@@ -110,7 +110,7 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, GENERATEONLY_givenCompress
     EXPECT_NE(nullptr, compressedDeviceMemAlloc1);
     EXPECT_TRUE(compressedDeviceMemAlloc1->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedDeviceMemAlloc1->getMemoryPool());
-    EXPECT_TRUE(compressedDeviceMemAlloc1->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedDeviceMemAlloc1->getDefaultGmm()->isCompressionEnabled());
 
     auto compressedDeviceMemAllocPtr2 = clDeviceMemAllocINTEL(context, device.get(), nullptr, bufferSize, 0, &retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -119,7 +119,7 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, GENERATEONLY_givenCompress
     EXPECT_NE(nullptr, compressedDeviceMemAlloc2);
     EXPECT_TRUE(compressedDeviceMemAlloc2->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedDeviceMemAlloc2->getMemoryPool());
-    EXPECT_TRUE(compressedDeviceMemAlloc2->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedDeviceMemAlloc2->getDefaultGmm()->isCompressionEnabled());
 
     retVal = clEnqueueMemcpyINTEL(pCmdQ, true, compressedDeviceMemAllocPtr1, writePattern, bufferSize, 0, nullptr, nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -165,7 +165,7 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, givenUncompressibleBufferI
     auto compressedAllocation = compressedBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
     EXPECT_TRUE(compressedAllocation->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedAllocation->getMemoryPool());
-    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled());
 
     auto uncompressibleBufferInHostMemory = std::unique_ptr<Buffer>(Buffer::create(context, CL_MEM_FORCE_HOST_MEMORY_INTEL, bufferSize, nullptr, retVal));
     auto uncompressibleAllocationInHostMemory = uncompressibleBufferInHostMemory->getGraphicsAllocation(device->getRootDeviceIndex());
@@ -212,7 +212,7 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, givenUncompressibleHostMem
     EXPECT_NE(nullptr, compressedDeviceMemAlloc);
     EXPECT_TRUE(compressedDeviceMemAlloc->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedDeviceMemAlloc->getMemoryPool());
-    EXPECT_TRUE(compressedDeviceMemAlloc->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedDeviceMemAlloc->getDefaultGmm()->isCompressionEnabled());
 
     auto uncompressibleHostMemAllocPtr = clHostMemAllocINTEL(context, nullptr, bufferSize, 0, &retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -248,10 +248,10 @@ XE_HPG_CORETEST_P(XeHpgCoreStatelessCompressionInSBA, givenUncompressibleHostMem
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        XeHpgCoreStatelessCompressionInSBA,
-                        ::testing::Values(aub_stream::ENGINE_RCS,
-                                          aub_stream::ENGINE_CCS));
+INSTANTIATE_TEST_SUITE_P(,
+                         XeHpgCoreStatelessCompressionInSBA,
+                         ::testing::Values(aub_stream::ENGINE_RCS,
+                                           aub_stream::ENGINE_CCS));
 
 struct XeHpgCoreUmStatelessCompressionInSBA : public KernelAUBFixture<StatelessKernelWithIndirectAccessFixture>,
                                               public ::testing::Test,
@@ -475,19 +475,19 @@ XE_HPG_CORETEST_P(XeHpgCoreUmStatelessCompressionInSBA, givenKernelExecInfoWhenI
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        XeHpgCoreUmStatelessCompressionInSBA,
-                        ::testing::Values(aub_stream::ENGINE_RCS,
-                                          aub_stream::ENGINE_CCS));
+INSTANTIATE_TEST_SUITE_P(,
+                         XeHpgCoreUmStatelessCompressionInSBA,
+                         ::testing::Values(aub_stream::ENGINE_RCS,
+                                           aub_stream::ENGINE_CCS));
 
-struct XeHpgCoreStatelessCompressionInSBAWithBCS : public MulticontextAubFixture,
+struct XeHpgCoreStatelessCompressionInSBAWithBCS : public MulticontextOclAubFixture,
                                                    public StatelessCopyKernelFixture,
                                                    public ::testing::Test {
     void SetUp() override {
         debugManager.flags.EnableStatelessCompression.set(1);
         debugManager.flags.ForceAuxTranslationMode.set(static_cast<int32_t>(AuxTranslationMode::blit));
         debugManager.flags.EnableBlitterOperationsSupport.set(true);
-        MulticontextAubFixture::setUp(1, EnabledCommandStreamers::single, true);
+        MulticontextOclAubFixture::setUp(1, EnabledCommandStreamers::single, true);
         StatelessCopyKernelFixture::setUp(tileDevices[0], context.get());
         if (!tileDevices[0]->getHardwareInfo().featureTable.flags.ftrLocalMemory) {
             GTEST_SKIP();
@@ -495,7 +495,7 @@ struct XeHpgCoreStatelessCompressionInSBAWithBCS : public MulticontextAubFixture
     }
 
     void TearDown() override {
-        MulticontextAubFixture::tearDown();
+        MulticontextOclAubFixture::tearDown();
         StatelessCopyKernelFixture::tearDown();
     }
 
@@ -517,7 +517,7 @@ XE_HPG_CORETEST_F(XeHpgCoreStatelessCompressionInSBAWithBCS, GENERATEONLY_givenC
     auto compressedAllocation = compressedBuffer->getGraphicsAllocation(tileDevices[0]->getRootDeviceIndex());
     EXPECT_TRUE(compressedAllocation->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedAllocation->getMemoryPool());
-    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled());
 
     retVal = commandQueues[0][0]->enqueueWriteBuffer(compressedBuffer.get(), CL_FALSE, 0, bufferSize, writePattern, nullptr, 0, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, retVal);
@@ -548,7 +548,7 @@ XE_HPG_CORETEST_F(XeHpgCoreStatelessCompressionInSBAWithBCS, givenUncompressible
     auto compressedAllocation = compressedBuffer->getGraphicsAllocation(tileDevices[0]->getRootDeviceIndex());
     EXPECT_TRUE(compressedAllocation->isCompressionEnabled());
     EXPECT_EQ(MemoryPool::localMemory, compressedAllocation->getMemoryPool());
-    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled);
+    EXPECT_TRUE(compressedAllocation->getDefaultGmm()->isCompressionEnabled());
 
     auto uncompressibleBufferInHostMemory = std::unique_ptr<Buffer>(Buffer::create(context.get(), CL_MEM_FORCE_HOST_MEMORY_INTEL, bufferSize, nullptr, retVal));
     auto uncompressibleAllocationInHostMemory = uncompressibleBufferInHostMemory->getGraphicsAllocation(tileDevices[0]->getRootDeviceIndex());

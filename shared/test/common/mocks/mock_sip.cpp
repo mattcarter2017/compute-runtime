@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -41,13 +41,14 @@ const std::vector<char> &MockSipKernel::getStateSaveAreaHeader() const {
 void MockSipKernel::createMockSipAllocation() {
     this->mockSipMemoryAllocation =
         std::make_unique<MemoryAllocation>(0u,
+                                           1u /*num gmms*/,
                                            AllocationType::kernelIsaInternal,
                                            nullptr,
                                            MemoryConstants::pageSize * 10u,
                                            0u,
                                            MemoryConstants::pageSize,
                                            MemoryPool::system4KBPages,
-                                           3u);
+                                           256u);
 }
 
 } // namespace NEO

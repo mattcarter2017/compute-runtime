@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,10 +15,10 @@
 #include "shared/test/common/mocks/mock_graphics_allocation.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
-#include "level_zero/api/driver_experimental/public/zex_api.h"
 #include "level_zero/core/source/gfx_core_helpers/l0_gfx_core_helper.h"
 #include "level_zero/core/test/unit_tests/fixtures/device_fixture.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_cmdlist.h"
+#include "level_zero/driver_experimental/zex_api.h"
 
 namespace L0 {
 namespace ult {
@@ -80,7 +80,7 @@ class MockCommandListExtensionHw : public WhiteBox<::L0::CommandListCoreFamily<g
     MockCommandListExtensionHw() : WhiteBox<::L0::CommandListCoreFamily<gfxCoreFamily>>() {}
     MockCommandListExtensionHw(bool failOnFirst) : WhiteBox<::L0::CommandListCoreFamily<gfxCoreFamily>>(), failOnFirstCopy(failOnFirst) {}
 
-    AlignedAllocationData getAlignedAllocationData(L0::Device *device, const void *buffer, uint64_t bufferSize, bool allowHostCopy) override {
+    AlignedAllocationData getAlignedAllocationData(L0::Device *device, const void *buffer, uint64_t bufferSize, bool allowHostCopy, bool copyOffload) override {
         getAlignedAllocationCalledTimes++;
         if (buffer) {
             return {0, 0, &alignedAlloc, true};
@@ -286,7 +286,7 @@ HWTEST_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithValidAddressAndData
     ASSERT_TRUE(validateProgramming<FamilyType>(cmdList, waitMemData, castToUint64(ptr), MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, false));
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenReturnErrorIfNotSupported, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenReturnErrorIfNotSupported, MatchAny) {
     ze_result_t result = ZE_RESULT_SUCCESS;
 
     waitMemData = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 123;
@@ -303,7 +303,7 @@ HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenR
     }
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, givenInvalidCmdListWhenWaitOnMemory64CalledThenReturnError, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, givenInvalidCmdListWhenWaitOnMemory64CalledThenReturnError, MatchAny) {
     ze_result_t result = ZE_RESULT_SUCCESS;
 
     waitMemData = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 123;
@@ -316,9 +316,8 @@ HWTEST2_F(CommandListAppendWaitOnMem, givenInvalidCmdListWhenWaitOnMemory64Calle
     EXPECT_EQ(ZE_RESULT_ERROR_INVALID_ARGUMENT, result);
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenProgramLri, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenProgramLri, MatchAny) {
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
 
     if (!FamilyType::isQwordInOrderCounter) {
         GTEST_SKIP();
@@ -340,7 +339,7 @@ HWTEST2_F(CommandListAppendWaitOnMem, given64bValueWhenWaitOnMemory64CalledThenP
     ASSERT_TRUE(validateProgramming<FamilyType>(cmdList, waitMemData, castToUint64(ptr), MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, true));
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, given64bValueAndOutEventWhenWaitOnMemory64CalledThenHandleEvent, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, given64bValueAndOutEventWhenWaitOnMemory64CalledThenHandleEvent, MatchAny) {
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
@@ -389,7 +388,7 @@ HWTEST2_F(CommandListAppendWaitOnMem, given64bValueAndOutEventWhenWaitOnMemory64
     ASSERT_NE(0u, itorPC.size());
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, givenCommandListWaitOnMemoryCalledWithNullPtrThenAppendWaitOnMemoryReturnsError, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, givenCommandListWaitOnMemoryCalledWithNullPtrThenAppendWaitOnMemoryReturnsError, MatchAny) {
     ze_result_t result = ZE_RESULT_SUCCESS;
     MockCommandListExtensionHw<gfxCoreFamily> cmdList;
     cmdList.initialize(device, NEO::EngineGroupType::renderCompute, 0u);
@@ -488,7 +487,6 @@ HWTEST_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithValidAddressAndData
 }
 
 HWTEST_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithValidAddressAndInvalidOpThenReturnsInvalid) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     ze_result_t result = ZE_RESULT_SUCCESS;
 
     zex_wait_on_mem_desc_t desc;
@@ -690,7 +688,7 @@ HWTEST_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemOnBcsWithSignalEventAnd
     ASSERT_TRUE(postSyncFound);
 }
 
-HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithNoScopeAndSystemMemoryPtrThenAlignedPtrUsed, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithNoScopeAndSystemMemoryPtrThenAlignedPtrUsed, MatchAny) {
     auto commandList = std::make_unique<::L0::ult::CommandListCoreFamily<gfxCoreFamily>>();
     commandList->initialize(device, NEO::EngineGroupType::renderCompute, 0u);
 
@@ -700,7 +698,7 @@ HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithNoScopeAndSystemMe
     void *baseAddress = alignDown(startMemory, MemoryConstants::pageSize);
     size_t expectedOffset = ptrDiff(startMemory, baseAddress);
 
-    AlignedAllocationData outData = commandList->getAlignedAllocationData(device, startMemory, cmdListHostPtrSize, false);
+    AlignedAllocationData outData = commandList->getAlignedAllocationData(device, startMemory, cmdListHostPtrSize, false, false);
     ASSERT_NE(nullptr, outData.alloc);
     auto expectedGpuAddress = static_cast<uintptr_t>(alignDown(outData.alloc->getGpuAddress(), MemoryConstants::pageSize));
     EXPECT_EQ(startMemory, outData.alloc->getUnderlyingBuffer());
@@ -736,7 +734,6 @@ HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithNoScopeAndSystemMe
 }
 
 HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithHostMemAndNoScopeThenMiMemFenceEncoded, IsXeHpcCore) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
     ze_result_t result = ZE_RESULT_SUCCESS;
     auto &commandContainer = commandList->commandContainer;
@@ -763,13 +760,12 @@ HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithHostMemAndNoScopeT
     auto itor = find<MI_MEM_FENCE *>(cmdList.begin(), cmdList.end());
     EXPECT_NE(cmdList.end(), itor);
     auto cmd = genCmdCast<MI_MEM_FENCE *>(*itor);
-    EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE, cmd->getFenceType());
+    EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE_FENCE, cmd->getFenceType());
 
     context->freeMem(dstBuffer);
 }
 
 HWTEST2_F(CommandListAppendWaitOnMem, givenAppendWaitOnMemWithDeviceMemAndNoScopeThenMiMemFenceNotEncoded, IsXeHpcCore) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
     ze_result_t result = ZE_RESULT_SUCCESS;
     auto &commandContainer = commandList->commandContainer;
@@ -823,7 +819,7 @@ HWTEST_F(CommandListAppendWriteToMem, givenAppendWriteToMemWithNoScopeThenPipeCo
     ASSERT_TRUE(postSyncFound);
 }
 
-HWTEST2_F(CommandListAppendWriteToMem, givenCommandListWriteToMemCalledWithNullPtrThenAppendWriteToMemoryReturnsError, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWriteToMem, givenCommandListWriteToMemCalledWithNullPtrThenAppendWriteToMemoryReturnsError, MatchAny) {
     ze_result_t result = ZE_RESULT_SUCCESS;
     MockCommandListExtensionHw<gfxCoreFamily> cmdList;
     cmdList.initialize(device, NEO::EngineGroupType::renderCompute, 0u);
@@ -894,7 +890,7 @@ HWTEST_F(CommandListAppendWriteToMem, givenAppendWriteToMemWithScopeThenPipeCont
     ASSERT_TRUE(postSyncFound);
 }
 
-HWTEST2_F(CommandListAppendWriteToMem, givenAppendWriteToMemWithScopeThenPipeControlEncodedCorrectlyAlignedPtrUsed, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendWriteToMem, givenAppendWriteToMemWithScopeThenPipeControlEncodedCorrectlyAlignedPtrUsed, MatchAny) {
     auto commandList = std::make_unique<::L0::ult::CommandListCoreFamily<gfxCoreFamily>>();
     commandList->initialize(device, NEO::EngineGroupType::renderCompute, 0u);
 
@@ -904,7 +900,7 @@ HWTEST2_F(CommandListAppendWriteToMem, givenAppendWriteToMemWithScopeThenPipeCon
     void *baseAddress = alignDown(startMemory, MemoryConstants::pageSize);
     size_t expectedOffset = ptrDiff(startMemory, baseAddress);
 
-    AlignedAllocationData outData = commandList->getAlignedAllocationData(device, startMemory, cmdListHostPtrSize, false);
+    AlignedAllocationData outData = commandList->getAlignedAllocationData(device, startMemory, cmdListHostPtrSize, false, false);
     ASSERT_NE(nullptr, outData.alloc);
     auto expectedGpuAddress = static_cast<uintptr_t>(alignDown(outData.alloc->getGpuAddress(), MemoryConstants::pageSize));
     EXPECT_EQ(startMemory, outData.alloc->getUnderlyingBuffer());
@@ -1104,7 +1100,6 @@ HWTEST_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemWithValidAddre
 }
 
 HWTEST_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemWithValidAddressAndInvalidOpThenReturnsInvalid) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     ze_result_t result = ZE_RESULT_SUCCESS;
 
     zex_wait_on_mem_desc_t desc;
@@ -1307,7 +1302,6 @@ HWTEST_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemOnBcsWithSigna
 }
 
 HWTEST2_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemWithHostMemAndNoScopeThenMiMemFenceEncoded, IsXeHpcCore) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
     ze_result_t result = ZE_RESULT_SUCCESS;
     auto &commandContainer = immCommandList->commandContainer;
@@ -1334,13 +1328,12 @@ HWTEST2_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemWithHostMemAn
     auto itor = find<MI_MEM_FENCE *>(cmdList.begin(), cmdList.end());
     EXPECT_NE(cmdList.end(), itor);
     auto cmd = genCmdCast<MI_MEM_FENCE *>(*itor);
-    EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE, cmd->getFenceType());
+    EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE_FENCE, cmd->getFenceType());
 
     context->freeMem(dstBuffer);
 }
 
 HWTEST2_F(ImmediateCommandListAppendWaitOnMem, givenAppendWaitOnMemWithDeviceMemAndNoScopeThenMiMemFenceNotEncoded, IsXeHpcCore) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
     ze_result_t result = ZE_RESULT_SUCCESS;
     auto &commandContainer = immCommandList->commandContainer;

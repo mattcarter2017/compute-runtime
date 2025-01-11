@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,7 +26,6 @@ void HardwareInterface<Family>::dispatchWorkarounds(
     Kernel &kernel,
     const bool &enable) {
 
-    using MI_LOAD_REGISTER_IMM = typename Family::MI_LOAD_REGISTER_IMM;
     using PIPE_CONTROL = typename Family::PIPE_CONTROL;
 
     if (kernel.requiresWaDisableRccRhwoOptimization()) {
@@ -40,7 +39,8 @@ void HardwareInterface<Family>::dispatchWorkarounds(
         NEO::LriHelper<Family>::program(commandStream,
                                         0x7010,
                                         value,
-                                        false);
+                                        false,
+                                        commandQueue.isBcs());
     }
 }
 
@@ -61,7 +61,7 @@ template Family::DefaultWalkerType *HardwareInterface<Family>::allocateWalkerSpa
 
 template class GpgpuWalkerHelper<Family>;
 template void GpgpuWalkerHelper<Family>::setupTimestampPacket<Family::DefaultWalkerType>(LinearStream *cmdStream, Family::DefaultWalkerType *walkerCmd, TagNodeBase *timestampPacketNode, const RootDeviceEnvironment &rootDeviceEnvironment);
-template size_t GpgpuWalkerHelper<Family>::setGpgpuWalkerThreadData<Family::DefaultWalkerType>(Family::DefaultWalkerType *walkerCmd, const KernelDescriptor &kernelDescriptor, const size_t globalOffsets[3], const size_t startWorkGroups[3],
+template size_t GpgpuWalkerHelper<Family>::setGpgpuWalkerThreadData<Family::DefaultWalkerType>(Family::DefaultWalkerType *walkerCmd, const KernelDescriptor &kernelDescriptor, const size_t startWorkGroups[3],
                                                                                                const size_t numWorkGroups[3], const size_t localWorkSizesIn[3], uint32_t simd, uint32_t workDim, bool localIdsGenerationByRuntime, bool inlineDataProgrammingRequired, uint32_t requiredWorkGroupOrder);
 
 template struct EnqueueOperation<Family>;

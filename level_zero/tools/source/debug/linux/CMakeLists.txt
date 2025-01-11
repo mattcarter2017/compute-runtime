@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2021-2023 Intel Corporation
+# Copyright (C) 2021-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -12,7 +12,7 @@ if(UNIX)
                  ${CMAKE_CURRENT_SOURCE_DIR}/drm_helper.cpp
   )
 
-  if(NEO_ENABLE_i915_PRELIM_DETECTION)
+  if(NEO_ENABLE_I915_PRELIM_DETECTION)
     target_sources(${L0_STATIC_LIB_NAME}
                    PRIVATE
                    ${CMAKE_CURRENT_SOURCE_DIR}/prelim/debug_session.cpp
@@ -20,10 +20,11 @@ if(UNIX)
     )
   endif()
 
-  if(NEO_ENABLE_XE_DRM_DETECTION)
+  if(NEO_ENABLE_XE_EU_DEBUG_SUPPORT)
     target_sources(${L0_STATIC_LIB_NAME}
                    PRIVATE
                    ${CMAKE_CURRENT_SOURCE_DIR}/xe/debug_session.cpp
+                   ${CMAKE_CURRENT_SOURCE_DIR}/xe/${BRANCH_DIR_SUFFIX}handle_event_helper.cpp
                    ${CMAKE_CURRENT_SOURCE_DIR}/xe/debug_session.h
     )
   endif()

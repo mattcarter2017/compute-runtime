@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "sys_calls.h"
+#include "shared/source/os_interface/windows/sys_calls.h"
 
 using mockCreateEventClbT = HANDLE (*)(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCSTR lpName, void *data);
 inline mockCreateEventClbT mockCreateEventClb = nullptr;
@@ -56,3 +56,23 @@ MockGlobalSysCallRestorer<CallbackT> changeSysCallMock(CallbackT &globalClb, voi
     globalClbData = mockCallbackData;
     return ret;
 }
+
+namespace NEO {
+
+namespace SysCalls {
+
+extern HANDLE (*sysCallsCreateFile)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+extern BOOL (*sysCallsDeviceIoControl)(HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped);
+extern CONFIGRET (*sysCallsCmGetDeviceInterfaceListSize)(PULONG pulLen, LPGUID interfaceClassGuid, DEVINSTID_W pDeviceID, ULONG ulFlags);
+extern CONFIGRET (*sysCallsCmGetDeviceInterfaceList)(LPGUID interfaceClassGuid, DEVINSTID_W pDeviceID, PZZWSTR buffer, ULONG bufferLen, ULONG ulFlags);
+extern LPVOID (*sysCallsHeapAlloc)(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes);
+extern BOOL (*sysCallsHeapFree)(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem);
+
+extern BOOL (*sysCallsGetModuleHandleExW)(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule);
+extern DWORD (*sysCallsGetModuleFileNameW)(HMODULE hModule, LPWSTR lpFilename, DWORD nSize);
+extern DWORD (*sysCallsGetFileVersionInfoSizeW)(LPCWSTR lptstrFilename, LPDWORD lpdwHandle);
+extern BOOL (*sysCallsGetFileVersionInfoW)(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData);
+extern BOOL (*sysCallsVerQueryValueW)(LPCVOID pBlock, LPCWSTR lpSubBlock, LPVOID *lplpBuffer, PUINT puLen);
+extern DWORD (*sysCallsGetLastError)();
+} // namespace SysCalls
+} // namespace NEO

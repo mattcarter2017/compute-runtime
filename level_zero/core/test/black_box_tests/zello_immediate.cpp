@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -65,15 +65,15 @@ void testCopyBetweenHostMemAndDeviceMem(ze_context_handle_t &context, ze_device_
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> deviceEvents(numEvents), hostEvents(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPoolDevice,
-                                                     (ze_event_pool_flag_t)(0),
+                                                     0, false, nullptr, nullptr,
                                                      numEvents, deviceEvents.data(),
                                                      ZE_EVENT_SCOPE_FLAG_SUBDEVICE,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPoolHost,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE, false, nullptr, nullptr,
                                                      numEvents, hostEvents.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     // Copy from host-allocated to device-allocated memory
     SUCCESS_OR_TERMINATE(zeCommandListAppendMemoryCopy(cmdList, deviceBuffer, hostBuffer, allocSize,
@@ -95,8 +95,8 @@ void testCopyBetweenHostMemAndDeviceMem(ze_context_handle_t &context, ze_device_
         }
     }
 
-    // Validate stack and xe deviceBuffers have the original data from hostBuffer
-    validRet = (0 == memcmp(hostBuffer, stackBuffer, allocSize));
+    // Validate stack and ze deviceBuffers have the original data from hostBuffer
+    validRet = LevelZeroBlackBoxTests::validate(hostBuffer, stackBuffer, allocSize);
 
     delete[] stackBuffer;
 
@@ -117,7 +117,7 @@ void testCopyBetweenHostMemAndDeviceMem(ze_context_handle_t &context, ze_device_
 void executeGpuKernelAndValidate(ze_context_handle_t &context, ze_device_handle_t &device, bool syncMode, bool &outputValidationSuccessful, bool useEventBasedSync) {
     ze_command_list_handle_t cmdList;
 
-    uint32_t computeOrdinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device);
+    uint32_t computeOrdinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device, false);
     createImmediateCommandList(device, context, computeOrdinal, syncMode, cmdList);
     const auto isEventsUsed = useEventBasedSync && !syncMode;
 
@@ -150,10 +150,10 @@ void executeGpuKernelAndValidate(ze_context_handle_t &context, ze_device_handle_
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> hostEvents(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPoolHost,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE, false, nullptr, nullptr,
                                                      numEvents, hostEvents.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     if (file.is_open()) {
         file.seekg(0, file.end);
@@ -176,11 +176,11 @@ void executeGpuKernelAndValidate(ze_context_handle_t &context, ze_device_handle_
 
             char *strLog = (char *)malloc(szLog);
             zeModuleBuildLogGetString(buildlog, &szLog, strLog);
-            std::cout << "Build log:" << strLog << std::endl;
+            LevelZeroBlackBoxTests::printBuildLog(strLog);
 
             free(strLog);
             SUCCESS_OR_TERMINATE(zeModuleBuildLogDestroy(buildlog));
-            std::cout << "\nZello Immediate Results validation FAILED. Module creation error."
+            std::cerr << "\nZello Immediate Results validation FAILED. Module creation error."
                       << std::endl;
             SUCCESS_OR_TERMINATE_BOOL(false);
         }
@@ -231,19 +231,7 @@ void executeGpuKernelAndValidate(ze_context_handle_t &context, ze_device_handle_
     }
 
     // Validate
-    outputValidationSuccessful = true;
-    if (memcmp(dstBuffer, srcBuffer, allocSize)) {
-        outputValidationSuccessful = false;
-        uint8_t *srcCharBuffer = static_cast<uint8_t *>(srcBuffer);
-        uint8_t *dstCharBuffer = static_cast<uint8_t *>(dstBuffer);
-        for (size_t i = 0; i < allocSize; i++) {
-            if (srcCharBuffer[i] != dstCharBuffer[i]) {
-                std::cout << "srcBuffer[" << i << "] = " << static_cast<unsigned int>(srcCharBuffer[i]) << " not equal to "
-                          << "dstBuffer[" << i << "] = " << static_cast<unsigned int>(dstCharBuffer[i]) << "\n";
-                break;
-            }
-        }
-    }
+    outputValidationSuccessful = LevelZeroBlackBoxTests::validate(srcBuffer, dstBuffer, allocSize);
 
     // Cleanup
     for (auto event : hostEvents) {

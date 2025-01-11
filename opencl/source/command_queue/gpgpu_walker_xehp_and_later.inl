@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,7 +25,6 @@ template <typename WalkerType>
 size_t GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(
     WalkerType *walkerCmd,
     const KernelDescriptor &kernelDescriptor,
-    const size_t globalOffsets[3],
     const size_t startWorkGroups[3],
     const size_t numWorkGroups[3],
     const size_t localWorkSizesIn[3],
@@ -102,11 +101,16 @@ void GpgpuWalkerHelper<GfxFamily>::setupTimestampPacket(LinearStream *cmdStream,
                                                         WalkerType *walkerCmd,
                                                         TagNodeBase *timestampPacketNode,
                                                         const RootDeviceEnvironment &rootDeviceEnvironment) {
-    using POSTSYNC_DATA = std::remove_reference_t<std::invoke_result_t<decltype(&WalkerType::getPostSync), WalkerType &>>;
+    using POSTSYNC_DATA = decltype(GfxFamily::template getPostSyncType<WalkerType>());
 
     auto &postSyncData = walkerCmd->getPostSync();
     postSyncData.setDataportPipelineFlush(true);
     postSyncData.setDataportSubsliceCacheFlush(true);
+
+    if (NEO::debugManager.flags.ForcePostSyncL1Flush.get() != -1) {
+        postSyncData.setDataportPipelineFlush(!!NEO::debugManager.flags.ForcePostSyncL1Flush.get());
+        postSyncData.setDataportSubsliceCacheFlush(!!NEO::debugManager.flags.ForcePostSyncL1Flush.get());
+    }
 
     EncodeDispatchKernel<GfxFamily>::template setupPostSyncMocs<WalkerType>(*walkerCmd, rootDeviceEnvironment,
                                                                             MemorySynchronizationCommands<GfxFamily>::getDcFlushEnable(true, rootDeviceEnvironment));
@@ -122,11 +126,7 @@ void GpgpuWalkerHelper<GfxFamily>::setupTimestampPacket(LinearStream *cmdStream,
         postSyncData.setDestinationAddress(contextStartAddress);
     }
 
-    if constexpr (std::is_same_v<WalkerType, typename GfxFamily::COMPUTE_WALKER>) {
-        if (debugManager.flags.OverrideSystolicInComputeWalker.get() != -1) {
-            walkerCmd->setSystolicModeEnable((debugManager.flags.OverrideSystolicInComputeWalker.get()));
-        }
-    }
+    setSystolicModeEnable(walkerCmd);
 }
 
 template <typename GfxFamily>

@@ -9,6 +9,9 @@
 #include "shared/source/utilities/buffer_pool_allocator.inl"
 #include "shared/source/utilities/heap_allocator.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
+#include "shared/test/common/helpers/mock_product_helper_hw.h"
+#include "shared/test/common/helpers/raii_product_helper.h"
+#include "shared/test/common/mocks/mock_ail_configuration.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
 #include "shared/test/common/test_macros/hw_test.h"
 #include "shared/test/common/test_macros/test.h"
@@ -37,6 +40,7 @@ class AggregatedSmallBuffersTestTemplate : public ::testing::Test {
 
     std::unique_ptr<UltClDeviceFactory> deviceFactory;
     MockClDevice *device;
+    MockDevice *mockNeoDevice;
     std::unique_ptr<MockContext> context;
     MockBufferPoolAllocator *poolAllocator;
     MockMemoryManager *mockMemoryManager;
@@ -53,16 +57,25 @@ class AggregatedSmallBuffersTestTemplate : public ::testing::Test {
         debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(poolBufferFlag);
         debugManager.flags.EnableDeviceUsmAllocationPool.set(0);
         debugManager.flags.EnableHostUsmAllocationPool.set(0);
+        debugManager.flags.RenderCompressedBuffersEnabled.set(1);
         this->deviceFactory = std::make_unique<UltClDeviceFactory>(2, 0);
         this->device = deviceFactory->rootDevices[rootDeviceIndex];
+        this->mockNeoDevice = static_cast<MockDevice *>(&this->device->getDevice());
+        const auto bitfield = mockNeoDevice->getDeviceBitfield();
+        const auto deviceMemory = mockNeoDevice->getGlobalMemorySize(static_cast<uint32_t>(bitfield.to_ulong()));
+        const auto expectedMaxPoolCount = Context::BufferPoolAllocator::calculateMaxPoolCount(deviceMemory, 2);
+        EXPECT_EQ(expectedMaxPoolCount, mockNeoDevice->maxBufferPoolCount);
         this->mockMemoryManager = static_cast<MockMemoryManager *>(device->getMemoryManager());
         this->mockMemoryManager->localMemorySupported[rootDeviceIndex] = true;
         this->setAllocationToFail(failMainStorageAllocation);
         cl_device_id devices[] = {device};
         this->context.reset(Context::create<MockContext>(nullptr, ClDeviceVector(devices, 1), nullptr, nullptr, retVal));
+        this->context->usmPoolInitialized = false;
+        this->context->initializeUsmAllocationPools();
         EXPECT_EQ(retVal, CL_SUCCESS);
         this->setAllocationToFail(false);
         this->poolAllocator = static_cast<MockBufferPoolAllocator *>(&context->smallBufferPoolAllocator);
+        this->mockNeoDevice->updateMaxPoolCount(1u);
     }
 };
 
@@ -98,13 +111,9 @@ class AggregatedSmallBuffersKernelTest : public AggregatedSmallBuffersTestTempla
 
 using AggregatedSmallBuffersDefaultTest = AggregatedSmallBuffersTestTemplate<-1>;
 
-HWTEST2_F(AggregatedSmallBuffersDefaultTest, givenDifferentFlagValuesAndSingleOrMultiDeviceContextWhenCheckIfEnabledThenReturnCorrectValue, IsNotXeHpgCore) {
+HWTEST_F(AggregatedSmallBuffersDefaultTest, givenDifferentFlagValuesAndSingleOrMultiDeviceContextWhenCheckIfEnabledThenReturnCorrectValue) {
     DebugManagerStateRestore restore;
     // Single device context
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(-1);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
     {
         debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(0);
         EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
@@ -119,10 +128,6 @@ HWTEST2_F(AggregatedSmallBuffersDefaultTest, givenDifferentFlagValuesAndSingleOr
     }
     // Multi device context
     context->devices.push_back(nullptr);
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(-1);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
     {
         debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(0);
         EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
@@ -138,44 +143,28 @@ HWTEST2_F(AggregatedSmallBuffersDefaultTest, givenDifferentFlagValuesAndSingleOr
     context->devices.pop_back();
 }
 
-HWTEST2_F(AggregatedSmallBuffersDefaultTest, givenDifferentFlagValuesAndSingleOrMultiDeviceContextWhenCheckIfEnabledThenReturnCorrectValue, IsXeHpgCore) {
-    DebugManagerStateRestore restore;
-    // Single device context
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(-1);
-        EXPECT_TRUE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(0);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(1);
-        EXPECT_TRUE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(2);
-        EXPECT_TRUE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    // Multi device context
-    context->devices.push_back(nullptr);
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(-1);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(0);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(1);
-        EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    {
-        debugManager.flags.ExperimentalSmallBufferPoolAllocator.set(2);
-        EXPECT_TRUE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
-    }
-    context->devices.pop_back();
+HWTEST2_F(AggregatedSmallBuffersDefaultTest, givenSupportsOclBufferPoolCapabilityWhenCheckIfEnabledThenReturnCorrectValue, MatchAny) {
+    auto &rootDeviceEnvironment = *device->getExecutionEnvironment()->rootDeviceEnvironments[1];
+    NEO::RAIIProductHelperFactory<MockProductHelperHw<productFamily>> raii(rootDeviceEnvironment);
+
+    rootDeviceEnvironment.ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(rootDeviceEnvironment.ailConfiguration.get());
+
+    raii.mockProductHelper->isBufferPoolAllocatorSupportedValue = true;
+    mockAIL->isBufferPoolEnabledReturn = true;
+    EXPECT_TRUE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
+
+    raii.mockProductHelper->isBufferPoolAllocatorSupportedValue = true;
+    mockAIL->isBufferPoolEnabledReturn = false;
+    EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
+
+    raii.mockProductHelper->isBufferPoolAllocatorSupportedValue = false;
+    mockAIL->isBufferPoolEnabledReturn = true;
+    EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
+
+    raii.mockProductHelper->isBufferPoolAllocatorSupportedValue = false;
+    mockAIL->isBufferPoolEnabledReturn = false;
+    EXPECT_FALSE(context->getBufferPoolAllocator().isAggregatedSmallBuffersEnabled(context.get()));
 }
 
 using AggregatedSmallBuffersDisabledTest = AggregatedSmallBuffersTestTemplate<0>;
@@ -191,12 +180,20 @@ TEST_F(AggregatedSmallBuffersDisabledTest, givenAggregatedSmallBuffersDisabledWh
 
 using AggregatedSmallBuffersEnabledTest = AggregatedSmallBuffersTestTemplate<1>;
 
-TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledWhenAllocatingMainStorageThenMakeDeviceBufferLockable) {
+TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledWhenCalculateMaxPoolCountCalledThenCorrectValueIsReturned) {
+    EXPECT_EQ(81u, MockBufferPoolAllocator::calculateMaxPoolCount(8 * MemoryConstants::gigaByte, 2));
+    EXPECT_EQ(204u, MockBufferPoolAllocator::calculateMaxPoolCount(8 * MemoryConstants::gigaByte, 5));
+    EXPECT_EQ(1u, MockBufferPoolAllocator::calculateMaxPoolCount(128 * MemoryConstants::megaByte, 2));
+    EXPECT_EQ(1u, MockBufferPoolAllocator::calculateMaxPoolCount(64 * MemoryConstants::megaByte, 2));
+}
+
+TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledWhenAllocatingMainStorageThenMakeDeviceBufferLockableAndNotCompressed) {
     EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
     EXPECT_EQ(1u, poolAllocator->bufferPools.size());
     EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
     EXPECT_NE(nullptr, mockMemoryManager->lastAllocationProperties);
     EXPECT_TRUE(mockMemoryManager->lastAllocationProperties->makeDeviceBufferLockable);
+    EXPECT_FALSE(mockMemoryManager->lastAllocationProperties->flags.preferCompressed);
 }
 
 TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndSizeLargerThanThresholdWhenBufferCreateCalledThenDoNotUsePool) {
@@ -207,6 +204,19 @@ TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndS
     std::unique_ptr<Buffer> buffer(Buffer::create(context.get(), flags, size, hostPtr, retVal));
     EXPECT_NE(nullptr, buffer);
     EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(0u, poolAllocator->bufferPools[0].chunkAllocator->getUsedSize());
+}
+
+TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndFlagCompressedPreferredWhenBufferCreateCalledThenDoNotUsePool) {
+    EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
+    EXPECT_EQ(1u, poolAllocator->bufferPools.size());
+    EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
+    size = PoolAllocator::smallBufferThreshold;
+    flags |= CL_MEM_COMPRESSED_HINT_INTEL;
+    std::unique_ptr<Buffer> buffer(Buffer::create(context.get(), flags, size, hostPtr, retVal));
+    EXPECT_NE(nullptr, buffer);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(0u, poolAllocator->bufferPools[0].chunkAllocator->getUsedSize());
 }
 
 TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndSizeLowerThenChunkAlignmentWhenBufferCreatedAndDestroyedThenSizeIsAsRequestedAndCorrectSizeIsNotFreed) {
@@ -297,6 +307,7 @@ TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndB
 }
 
 TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndBufferPoolIsExhaustedAndAllocationsAreNotInUseAndNoBuffersFreedThenNewPoolIsCreated) {
+    mockNeoDevice->updateMaxPoolCount(2u);
     EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
     EXPECT_EQ(1u, poolAllocator->bufferPools.size());
     EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
@@ -321,6 +332,7 @@ TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndB
 }
 
 TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndBufferPoolIsExhaustedAndAllocationsAreInUseThenNewPoolIsCreated) {
+    mockNeoDevice->updateMaxPoolCount(2u);
     EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
     EXPECT_EQ(1u, poolAllocator->bufferPools.size());
     EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
@@ -342,6 +354,33 @@ TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndB
     EXPECT_EQ(1u, mockMemoryManager->allocInUseCalled);
     EXPECT_EQ(size * buffersToCreate, poolAllocator->bufferPools[0].chunkAllocator->getUsedSize());
     EXPECT_EQ(size, poolAllocator->bufferPools[1].chunkAllocator->getUsedSize());
+}
+
+TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndBufferPoolIsExhaustedAndAllocationsAreInUseAndPoolLimitIsReachedThenNewPoolIsNotCreated) {
+    mockNeoDevice->updateMaxPoolCount(2u);
+    EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
+    EXPECT_EQ(1u, poolAllocator->bufferPools.size());
+    EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
+
+    const std::vector<std::unique_ptr<Buffer>>::size_type buffersToCreate = (PoolAllocator::aggregatedSmallBuffersPoolSize / PoolAllocator::smallBufferThreshold) * mockNeoDevice->maxBufferPoolCount;
+    std::vector<std::unique_ptr<Buffer>> buffers(buffersToCreate);
+    for (auto i = 0u; i < buffersToCreate; ++i) {
+        buffers[i].reset(Buffer::create(context.get(), flags, size, hostPtr, retVal));
+        EXPECT_EQ(retVal, CL_SUCCESS);
+    }
+    EXPECT_EQ(mockNeoDevice->maxBufferPoolCount, poolAllocator->bufferPools.size());
+    for (auto i = 0u; i < mockNeoDevice->maxBufferPoolCount; ++i) {
+        EXPECT_EQ(PoolAllocator::aggregatedSmallBuffersPoolSize, poolAllocator->bufferPools[i].chunkAllocator->getUsedSize());
+    }
+    EXPECT_EQ(1u, mockMemoryManager->allocInUseCalled);
+    mockMemoryManager->deferAllocInUse = true;
+    mockMemoryManager->failInDevicePoolWithError = true;
+
+    std::unique_ptr<Buffer> bufferAfterExhaustMustFail(Buffer::create(context.get(), flags, size, hostPtr, retVal));
+    EXPECT_EQ(nullptr, bufferAfterExhaustMustFail.get());
+    EXPECT_NE(retVal, CL_SUCCESS);
+    EXPECT_EQ(mockNeoDevice->maxBufferPoolCount, poolAllocator->bufferPools.size());
+    EXPECT_EQ(3u, mockMemoryManager->allocInUseCalled);
 }
 
 TEST_F(AggregatedSmallBuffersEnabledTest, givenCopyHostPointerWhenCreatingBufferButCopyFailedThenDoNotUsePool) {
@@ -425,6 +464,53 @@ TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndS
                         subBuffersBounds[j].right <= subBuffersBounds[i].left);
         }
     }
+}
+
+TEST_F(AggregatedSmallBuffersEnabledTest, givenAggregatedSmallBuffersEnabledAndMultipleContextsThenPoolLimitIsTrackedAcrossContexts) {
+    mockNeoDevice->updateMaxPoolCount(2u);
+    EXPECT_TRUE(poolAllocator->isAggregatedSmallBuffersEnabled(context.get()));
+    EXPECT_EQ(1u, poolAllocator->bufferPools.size());
+    EXPECT_NE(nullptr, poolAllocator->bufferPools[0].mainStorage.get());
+    EXPECT_EQ(1u, mockNeoDevice->bufferPoolCount.load());
+    std::unique_ptr<MockContext> secondContext;
+    cl_device_id devices[] = {device};
+    secondContext.reset(Context::create<MockContext>(nullptr, ClDeviceVector(devices, 1), nullptr, nullptr, retVal));
+    EXPECT_EQ(retVal, CL_SUCCESS);
+    this->setAllocationToFail(false);
+    EXPECT_EQ(2u, mockNeoDevice->bufferPoolCount.load());
+
+    constexpr auto buffersToCreate = PoolAllocator::aggregatedSmallBuffersPoolSize / PoolAllocator::smallBufferThreshold;
+    std::vector<std::unique_ptr<Buffer>> buffers(buffersToCreate);
+    for (auto i = 0u; i < buffersToCreate; i++) {
+        buffers[i].reset(Buffer::create(context.get(), flags, size, hostPtr, retVal));
+        EXPECT_EQ(retVal, CL_SUCCESS);
+    }
+
+    std::unique_ptr<Buffer> bufferAfterExhaustMustSucceed(Buffer::create(context.get(), flags, size, hostPtr, retVal));
+    EXPECT_EQ(retVal, CL_SUCCESS);
+    EXPECT_EQ(1u, poolAllocator->bufferPools.size());
+    EXPECT_EQ(size * buffersToCreate, poolAllocator->bufferPools[0].chunkAllocator->getUsedSize());
+    EXPECT_FALSE(bufferAfterExhaustMustSucceed->isSubBuffer());
+
+    mockNeoDevice->callBaseGetGlobalMemorySize = false;
+    mockNeoDevice->getGlobalMemorySizeReturn = static_cast<uint64_t>(2 * 2 * MemoryConstants::megaByte / 0.02);
+    const auto bitfield = mockNeoDevice->getDeviceBitfield();
+    const auto deviceMemory = mockNeoDevice->getGlobalMemorySize(static_cast<uint32_t>(bitfield.to_ulong()));
+    EXPECT_EQ(2u, MockBufferPoolAllocator::calculateMaxPoolCount(deviceMemory, 2));
+    std::unique_ptr<MockContext> thirdContext;
+    thirdContext.reset(Context::create<MockContext>(nullptr, ClDeviceVector(devices, 1), nullptr, nullptr, retVal));
+    EXPECT_EQ(retVal, CL_SUCCESS);
+    MockBufferPoolAllocator *thirdPoolAllocator = static_cast<MockBufferPoolAllocator *>(&thirdContext->smallBufferPoolAllocator);
+    EXPECT_EQ(0u, thirdPoolAllocator->bufferPools.size());
+    EXPECT_EQ(2u, mockNeoDevice->bufferPoolCount.load());
+
+    secondContext.reset(nullptr);
+    EXPECT_EQ(1u, mockNeoDevice->bufferPoolCount.load());
+
+    buffers.clear();
+    bufferAfterExhaustMustSucceed.reset(nullptr);
+    context.reset(nullptr);
+    EXPECT_EQ(0u, mockNeoDevice->bufferPoolCount.load());
 }
 
 TEST_F(AggregatedSmallBuffersKernelTest, givenBufferFromPoolWhenOffsetSubbufferIsPassedToSetKernelArgThenCorrectGpuVAIsPatched) {

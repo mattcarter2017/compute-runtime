@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -166,6 +166,26 @@ TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingzesDeviceResetE
     pProperties.resetType = ZES_RESET_TYPE_FLR;
     result = zesDeviceResetExt(device, &pProperties);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingZesDeviceResetExtForColdResetThenErrorIsReturned) {
+    initGlobalOps();
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0];
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp = pMockGlobalOpsLinuxSysmanImp.get();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp->pDevice = pLinuxSysmanImp->getDeviceHandle();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+    pMockGlobalOpsLinuxSysmanImp->ourDevicePid = pProcfsAccess->ourDevicePid;
+    pMockGlobalOpsLinuxSysmanImp->ourDeviceFd = pProcfsAccess->ourDevicePid;
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcfsAccess->isRepeated.push_back(false);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    pSysfsAccess->mockBindDeviceError = ZE_RESULT_ERROR_NOT_AVAILABLE;
+    zes_reset_properties_t pProperties = {.stype = ZES_STRUCTURE_TYPE_RESET_PROPERTIES, .pNext = nullptr, .force = true, .resetType = ZES_RESET_TYPE_COLD};
+    ze_result_t result = zesDeviceResetExt(device, &pProperties);
+    EXPECT_EQ(ZE_RESULT_ERROR_NOT_AVAILABLE, result);
 }
 
 TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingResetExtWithInvalidTypeThenFailureIsReturned) {
@@ -805,6 +825,22 @@ TEST_F(SysmanGlobalOperationsFixture, GivenForceTrueWhenCallingResetThenSuccessI
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
 }
 
+TEST_F(SysmanGlobalOperationsFixture, GivenPermissionDeniedWhenCallingGetDeviceStateThenZeResultErrorInsufficientPermissionsIsReturned) {
+    pSysfsAccess->isRootSet = false;
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingResetThenZeResultErrorHandleObjectInUseIsReturned) {
+
+    pProcfsAccess->ourDevicePid = pProcfsAccess->extraPid;
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    ze_result_t result = zesDeviceReset(device, false);
+    EXPECT_EQ(ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE, result);
+}
+
 TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenPermissionDeniedWhenCallingGetDeviceStateThenZeResultErrorInsufficientPermissionsIsReturned) {
     pSysfsAccess->isRootSet = false;
     ze_result_t result = zesDeviceReset(device, true);
@@ -819,6 +855,51 @@ TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceInUseWhenCallingReset
     pProcfsAccess->isRepeated.push_back(true);
     ze_result_t result = zesDeviceReset(device, false);
     EXPECT_EQ(ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE, result);
+}
+
+TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceInUseAndBindingFailsDuringResetWhenCallingResetThenErrorIsReturned) {
+
+    initGlobalOps();
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0]; // make sure it isn't our process id
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp = pMockGlobalOpsLinuxSysmanImp.get();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp->pDevice = pLinuxSysmanImp->getDeviceHandle();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+
+    pMockGlobalOpsLinuxSysmanImp->ourDevicePid = pProcfsAccess->ourDevicePid;
+    pMockGlobalOpsLinuxSysmanImp->ourDeviceFd = pProcfsAccess->ourDevicePid;
+
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcfsAccess->isRepeated.push_back(false);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    pSysfsAccess->mockBindDeviceError = ZE_RESULT_ERROR_NOT_AVAILABLE;
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_NOT_AVAILABLE, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseAndReInitFailsDuringResetWhenCallingResetThenErrorIsReturned) {
+
+    initGlobalOps();
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0]; // make sure it isn't our process id
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp = pMockGlobalOpsLinuxSysmanImp.get();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp->pDevice = pLinuxSysmanImp->getDeviceHandle();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+
+    pMockGlobalOpsLinuxSysmanImp->ourDevicePid = pProcfsAccess->ourDevicePid;
+    pMockGlobalOpsLinuxSysmanImp->ourDeviceFd = pProcfsAccess->ourDevicePid;
+    pMockGlobalOpsLinuxSysmanImp->setMockInitDeviceError(ZE_RESULT_ERROR_UNKNOWN);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcfsAccess->isRepeated.push_back(false);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, result);
 }
 
 TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceNotInUseWhenCallingResetThenSuccessIsReturned) {
@@ -1005,21 +1086,21 @@ TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenProcessStartsMidResetWhenCa
 }
 
 TEST(SysmanGlobalOperationsTest, GivenValidDevicePciPathWhenPreparingDeviceEnvironmentThenPrepareDeviceEnvironmentReturnsTrue) {
-    auto device1 = std::unique_ptr<MockDevice>{MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get())};
+    MockExecutionEnvironment executionEnvironment;
     std::string pciPath1 = "0000:00:02.0";
-    EXPECT_TRUE(DeviceFactory::prepareDeviceEnvironment(*device1->getExecutionEnvironment(), pciPath1, 0u));
+    EXPECT_TRUE(DeviceFactory::prepareDeviceEnvironment(executionEnvironment, pciPath1, 0u));
 }
 
 TEST(SysmanGlobalOperationsTest, GivenValidDevicePciPathWhoseFileDescriptorOpenFailedThenPrepareDeviceEnvironmentReturnsFalse) {
-    auto device2 = std::unique_ptr<MockDevice>{MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get())};
+    MockExecutionEnvironment executionEnvironment;
     std::string pciPath2 = "0000:00:03.0";
-    EXPECT_FALSE(DeviceFactory::prepareDeviceEnvironment(*device2->getExecutionEnvironment(), pciPath2, 0u));
+    EXPECT_FALSE(DeviceFactory::prepareDeviceEnvironment(executionEnvironment, pciPath2, 0u));
 }
 
 TEST(SysmanGlobalOperationsTest, GivenNotExisitingPciPathWhenPrepareDeviceEnvironmentIsCalledThenFalseIsReturned) {
-    auto device3 = std::unique_ptr<MockDevice>{MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get())};
+    MockExecutionEnvironment executionEnvironment;
     std::string pciPath3 = "0000:00:04.0";
-    EXPECT_FALSE(DeviceFactory::prepareDeviceEnvironment(*device3->getExecutionEnvironment(), pciPath3, 0u));
+    EXPECT_FALSE(DeviceFactory::prepareDeviceEnvironment(executionEnvironment, pciPath3, 0u));
 }
 
 TEST_F(SysmanDeviceFixture, GivenValidDeviceHandleWhenCallingDeviceGetStateThenSuccessResultIsReturned) {

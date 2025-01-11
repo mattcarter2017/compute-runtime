@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,8 +25,7 @@
 namespace NEO {
 
 template <typename GfxFamily>
-void ImageHw<GfxFamily>::setImageArg(void *memory, bool setAsMediaBlockImage, uint32_t mipLevel, uint32_t rootDeviceIndex, bool useGlobalAtomics) {
-    using SURFACE_FORMAT = typename RENDER_SURFACE_STATE::SURFACE_FORMAT;
+void ImageHw<GfxFamily>::setImageArg(void *memory, bool setAsMediaBlockImage, uint32_t mipLevel, uint32_t rootDeviceIndex) {
     auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(memory);
 
     auto graphicsAllocation = multiGraphicsAllocation.getGraphicsAllocation(rootDeviceIndex);
@@ -66,9 +65,9 @@ void ImageHw<GfxFamily>::setImageArg(void *memory, bool setAsMediaBlockImage, ui
     }
 
     uint32_t mipCount = this->mipCount > 0 ? this->mipCount - 1 : 0;
-    surfaceState->setSurfaceMinLod(this->baseMipLevel + mipLevel);
-    surfaceState->setMipCountLod(mipCount);
-    setMipTailStartLod<GfxFamily>(surfaceState, gmm);
+    surfaceState->setSurfaceMinLOD(this->baseMipLevel + mipLevel);
+    surfaceState->setMIPCountLOD(mipCount);
+    setMipTailStartLOD<GfxFamily>(surfaceState, gmm);
 
     cl_channel_order imgChannelOrder = getSurfaceFormatInfo().oclImageFormat.image_channel_order;
     int shaderChannelValue = ImageHw<GfxFamily>::getShaderChannelValue(RENDER_SURFACE_STATE::SHADER_CHANNEL_SELECT_RED, imgChannelOrder);
@@ -100,10 +99,9 @@ void ImageHw<GfxFamily>::setImageArg(void *memory, bool setAsMediaBlockImage, ui
     appendSurfaceStateDepthParams(surfaceState, gmm);
     EncodeSurfaceState<GfxFamily>::appendImageCompressionParams(surfaceState, graphicsAllocation, gmmHelper, isImageFromBuffer(),
                                                                 this->plane);
-    auto releaseHelper = executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->getReleaseHelper();
 
-    adjustDepthLimitations(surfaceState, minArrayElement, renderTargetViewExtent, depth, mipCount, is3DUAVOrRTV, releaseHelper);
-    appendSurfaceStateParams(surfaceState, rootDeviceIndex, useGlobalAtomics);
+    adjustDepthLimitations(surfaceState, minArrayElement, renderTargetViewExtent, depth, mipCount, is3DUAVOrRTV);
+    appendSurfaceStateParams(surfaceState, rootDeviceIndex);
     appendSurfaceStateExt(surfaceState);
 }
 
@@ -119,7 +117,7 @@ void ImageHw<GfxFamily>::setAuxParamsForMultisamples(RENDER_SURFACE_STATE *surfa
             DEBUG_BREAK_IF(releaseHelper == nullptr);
             EncodeSurfaceState<GfxFamily>::setAuxParamsForMCSCCS(surfaceState, releaseHelper);
             surfaceState->setAuxiliarySurfacePitch(mcsGmm->getUnifiedAuxPitchTiles());
-            surfaceState->setAuxiliarySurfaceQpitch(mcsGmm->getAuxQPitch());
+            surfaceState->setAuxiliarySurfaceQPitch(mcsGmm->getAuxQPitch());
             EncodeSurfaceState<GfxFamily>::setClearColorParams(surfaceState, mcsGmm);
             setUnifiedAuxBaseAddress<GfxFamily>(surfaceState, mcsGmm);
         } else if (mcsGmm->unifiedAuxTranslationCapable()) {
@@ -127,7 +125,7 @@ void ImageHw<GfxFamily>::setAuxParamsForMultisamples(RENDER_SURFACE_STATE *surfa
         } else {
             surfaceState->setAuxiliarySurfaceMode((typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE)1);
             surfaceState->setAuxiliarySurfacePitch(mcsSurfaceInfo.pitch);
-            surfaceState->setAuxiliarySurfaceQpitch(mcsSurfaceInfo.qPitch);
+            surfaceState->setAuxiliarySurfaceQPitch(mcsSurfaceInfo.qPitch);
             surfaceState->setAuxiliarySurfaceBaseAddress(mcsAllocation->getGpuAddress());
         }
     } else if (isDepthFormat(imageFormat) && surfaceState->getSurfaceFormat() != SURFACE_FORMAT::SURFACE_FORMAT_R32_FLOAT_X8X24_TYPELESS) {
@@ -136,7 +134,7 @@ void ImageHw<GfxFamily>::setAuxParamsForMultisamples(RENDER_SURFACE_STATE *surfa
 }
 
 template <typename GfxFamily>
-void ImageHw<GfxFamily>::appendSurfaceStateParams(RENDER_SURFACE_STATE *surfaceState, uint32_t rootDeviceIndex, bool useGlobalAtomics) {
+void ImageHw<GfxFamily>::appendSurfaceStateParams(RENDER_SURFACE_STATE *surfaceState, uint32_t rootDeviceIndex) {
 }
 
 template <typename GfxFamily>
@@ -212,17 +210,12 @@ void ImageHw<GfxFamily>::transformImage3dTo2dArray(void *memory) {
 }
 
 template <typename GfxFamily>
-void ImageHw<GfxFamily>::adjustDepthLimitations(RENDER_SURFACE_STATE *surfaceState, uint32_t minArrayElement, uint32_t renderTargetViewExtent, uint32_t depth, uint32_t mipCount, bool is3DUavOrRtv, ReleaseHelper *releaseHelper) {
-    if (is3DUavOrRtv && releaseHelper && releaseHelper->shouldAdjustDepth()) {
-        auto newDepth = std::min(depth, (renderTargetViewExtent + minArrayElement) << mipCount);
-        surfaceState->setDepth(newDepth);
-    }
+void ImageHw<GfxFamily>::adjustDepthLimitations(RENDER_SURFACE_STATE *surfaceState, uint32_t minArrayElement, uint32_t renderTargetViewExtent, uint32_t depth, uint32_t mipCount, bool is3DUavOrRtv) {
 }
 
 template <typename GfxFamily>
 inline void ImageHw<GfxFamily>::setMediaSurfaceRotation(void *memory) {
     using MEDIA_SURFACE_STATE = typename GfxFamily::MEDIA_SURFACE_STATE;
-    using SURFACE_FORMAT = typename MEDIA_SURFACE_STATE::SURFACE_FORMAT;
 
     auto surfaceState = reinterpret_cast<MEDIA_SURFACE_STATE *>(memory);
 
@@ -234,7 +227,6 @@ inline void ImageHw<GfxFamily>::setMediaSurfaceRotation(void *memory) {
 template <typename GfxFamily>
 inline void ImageHw<GfxFamily>::setSurfaceMemoryObjectControlState(void *memory, uint32_t value) {
     using MEDIA_SURFACE_STATE = typename GfxFamily::MEDIA_SURFACE_STATE;
-    using SURFACE_FORMAT = typename MEDIA_SURFACE_STATE::SURFACE_FORMAT;
 
     auto surfaceState = reinterpret_cast<MEDIA_SURFACE_STATE *>(memory);
 

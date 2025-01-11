@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,15 +23,16 @@ class WddmGlobalOperationsImp : public OsGlobalOperations, NEO::NonCopyableOrMov
     void getModelName(char (&modelName)[ZES_STRING_PROPERTY_SIZE]) override;
     void getVendorName(char (&vendorName)[ZES_STRING_PROPERTY_SIZE]) override;
     void getDriverVersion(char (&driverVersion)[ZES_STRING_PROPERTY_SIZE]) override;
-    void getWedgedStatus(zes_device_state_t *pState) override;
     void getRepairStatus(zes_device_state_t *pState) override;
+    void getTimerResolution(double *pTimerResolution) override;
     ze_result_t reset(ze_bool_t force) override;
     ze_result_t scanProcessesState(std::vector<zes_process_state_t> &pProcessList) override;
     ze_result_t deviceGetState(zes_device_state_t *pState) override;
     ze_result_t resetExt(zes_reset_properties_t *pProperties) override;
     bool getUuid(std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) override;
     bool generateUuidFromPciBusInfo(const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) override;
-
+    ze_bool_t getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) override;
+    ze_result_t getSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) override;
     WddmGlobalOperationsImp(OsSysman *pOsSysman);
     WddmGlobalOperationsImp() = default;
     ~WddmGlobalOperationsImp() override = default;

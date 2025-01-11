@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,6 +10,7 @@
 #include "shared/source/command_container/cmdcontainer.h"
 #include "shared/source/command_stream/preemption_mode.h"
 #include "shared/source/command_stream/stream_properties.h"
+#include "shared/source/command_stream/thread_arbitration_policy.h"
 #include "shared/source/helpers/cache_policy.h"
 #include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/definitions/command_encoder_args.h"
@@ -19,14 +20,24 @@
 #include "shared/source/utilities/stackvec.h"
 
 #include "level_zero/core/source/cmdlist/cmdlist_launch_params.h"
+#include "level_zero/core/source/helpers/api_handle_helper.h"
+#include "level_zero/include/level_zero/ze_intel_gpu.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zet_api.h>
 
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
-struct _ze_command_list_handle_t {};
+struct _ze_command_list_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_COMMAND_LIST;
+};
+
+namespace NEO {
+class ScratchSpaceController;
+} // namespace NEO
 
 namespace L0 {
 struct Device;
@@ -53,19 +64,6 @@ struct CommandList : _ze_command_list_handle_t {
         static CommandList *allocate(uint32_t numIddsPerBlock) { return new Type(numIddsPerBlock); }
     };
 
-    struct CommandToPatch {
-        enum CommandType {
-            FrontEndState,
-            PauseOnEnqueueSemaphoreStart,
-            PauseOnEnqueueSemaphoreEnd,
-            PauseOnEnqueuePipeControlStart,
-            PauseOnEnqueuePipeControlEnd,
-            Invalid
-        };
-        void *pDestination = nullptr;
-        void *pCommand = nullptr;
-        CommandType type = Invalid;
-    };
     using CommandsToPatch = StackVec<CommandToPatch, 16>;
     using CmdListReturnPoints = StackVec<CmdListReturnPoint, 32>;
 
@@ -87,6 +85,16 @@ struct CommandList : _ze_command_list_handle_t {
                                                 const ze_image_region_t *pSrcRegion,
                                                 ze_event_handle_t hEvent, uint32_t numWaitEvents,
                                                 ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch) = 0;
+    virtual ze_result_t appendImageCopyFromMemoryExt(ze_image_handle_t hDstImage, const void *srcptr,
+                                                     const ze_image_region_t *pDstRegion,
+                                                     uint32_t srcRowPitch, uint32_t srcSlicePitch,
+                                                     ze_event_handle_t hEvent, uint32_t numWaitEvents,
+                                                     ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch) = 0;
+    virtual ze_result_t appendImageCopyToMemoryExt(void *dstptr, ze_image_handle_t hSrcImage,
+                                                   const ze_image_region_t *pSrcRegion,
+                                                   uint32_t destRowPitch, uint32_t destSlicePitch,
+                                                   ze_event_handle_t hEvent, uint32_t numWaitEvents,
+                                                   ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch) = 0;
     virtual ze_result_t appendImageCopyRegion(ze_image_handle_t hDstImage, ze_image_handle_t hSrcImage,
                                               const ze_image_region_t *pDstRegion, const ze_image_region_t *pSrcRegion,
                                               ze_event_handle_t hSignalEvent, uint32_t numWaitEvents,
@@ -96,12 +104,7 @@ struct CommandList : _ze_command_list_handle_t {
                                         ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch) = 0;
     virtual ze_result_t appendLaunchKernel(ze_kernel_handle_t kernelHandle, const ze_group_count_t &threadGroupDimensions,
                                            ze_event_handle_t hEvent, uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents,
-                                           const CmdListKernelLaunchParams &launchParams, bool relaxedOrderingDispatch) = 0;
-    virtual ze_result_t appendLaunchCooperativeKernel(ze_kernel_handle_t kernelHandle,
-                                                      const ze_group_count_t &launchKernelArgs,
-                                                      ze_event_handle_t hSignalEvent,
-                                                      uint32_t numWaitEvents,
-                                                      ze_event_handle_t *waitEventHandles, bool relaxedOrderingDispatch) = 0;
+                                           CmdListKernelLaunchParams &launchParams, bool relaxedOrderingDispatch) = 0;
     virtual ze_result_t appendLaunchKernelIndirect(ze_kernel_handle_t kernelHandle,
                                                    const ze_group_count_t &pDispatchArgumentsBuffer,
                                                    ze_event_handle_t hEvent, uint32_t numWaitEvents,
@@ -114,7 +117,7 @@ struct CommandList : _ze_command_list_handle_t {
                                         ze_memory_advice_t advice) = 0;
     virtual ze_result_t appendMemoryCopy(void *dstptr, const void *srcptr, size_t size,
                                          ze_event_handle_t hSignalEvent, uint32_t numWaitEvents,
-                                         ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch, bool forceDisableCopyOnlyInOrderSignaling) = 0;
+                                         ze_event_handle_t *phWaitEvents, CmdListMemoryCopyParams &memoryCopyParams) = 0;
     virtual ze_result_t appendPageFaultCopy(NEO::GraphicsAllocation *dstptr, NEO::GraphicsAllocation *srcptr, size_t size, bool flushHost) = 0;
     virtual ze_result_t appendMemoryCopyRegion(void *dstPtr,
                                                const ze_copy_region_t *dstRegion,
@@ -126,13 +129,14 @@ struct CommandList : _ze_command_list_handle_t {
                                                uint32_t srcSlicePitch,
                                                ze_event_handle_t hSignalEvent,
                                                uint32_t numWaitEvents,
-                                               ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch, bool forceDisableCopyOnlyInOrderSignaling) = 0;
+                                               ze_event_handle_t *phWaitEvents, CmdListMemoryCopyParams &memoryCopyParams) = 0;
     virtual ze_result_t appendMemoryFill(void *ptr, const void *pattern,
                                          size_t patternSize, size_t size, ze_event_handle_t hSignalEvent,
                                          uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents, bool relaxedOrderingDispatch) = 0;
     virtual ze_result_t appendMemoryPrefetch(const void *ptr, size_t count) = 0;
-    virtual ze_result_t appendSignalEvent(ze_event_handle_t hEvent) = 0;
-    virtual ze_result_t appendWaitOnEvents(uint32_t numEvents, ze_event_handle_t *phEvent, bool relaxedOrderingAllowed, bool trackDependencies, bool apiRequest) = 0;
+    virtual ze_result_t appendSignalEvent(ze_event_handle_t hEvent, bool relaxedOrderingDispatch) = 0;
+    virtual ze_result_t appendWaitOnEvents(uint32_t numEvents, ze_event_handle_t *phEvent, CommandToPatchContainer *outWaitCmds,
+                                           bool relaxedOrderingAllowed, bool trackDependencies, bool apiRequest, bool skipAddingWaitEventsToResidency, bool skipFlush, bool copyOffloadOperation) = 0;
     virtual ze_result_t appendWriteGlobalTimestamp(uint64_t *dstptr, ze_event_handle_t hSignalEvent,
                                                    uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents) = 0;
     virtual ze_result_t appendMemoryCopyFromContext(void *dstptr, ze_context_handle_t hContextSrc,
@@ -155,7 +159,7 @@ struct CommandList : _ze_command_list_handle_t {
                                                     const size_t *pOffsets, ze_event_handle_t hSignalEvent,
                                                     uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents) = 0;
 
-    virtual ze_result_t appendMILoadRegImm(uint32_t reg, uint32_t value) = 0;
+    virtual ze_result_t appendMILoadRegImm(uint32_t reg, uint32_t value, bool isBcs) = 0;
     virtual ze_result_t appendMILoadRegReg(uint32_t reg1, uint32_t reg2) = 0;
     virtual ze_result_t appendMILoadRegMem(uint32_t reg1, uint64_t address) = 0;
     virtual ze_result_t appendMIStoreRegMem(uint32_t reg1, uint64_t address) = 0;
@@ -168,7 +172,22 @@ struct CommandList : _ze_command_list_handle_t {
     virtual ze_result_t appendWaitOnMemory(void *desc, void *ptr, uint64_t data, ze_event_handle_t signalEventHandle, bool useQwordData) = 0;
     virtual ze_result_t appendWriteToMemory(void *desc, void *ptr,
                                             uint64_t data) = 0;
+    virtual ze_result_t appendWaitExternalSemaphores(uint32_t numExternalSemaphores, const ze_intel_external_semaphore_exp_handle_t *hSemaphores,
+                                                     const ze_intel_external_semaphore_wait_params_exp_t *params, ze_event_handle_t hSignalEvent,
+                                                     uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents) = 0;
+    virtual ze_result_t appendSignalExternalSemaphores(size_t numExternalSemaphores, const ze_intel_external_semaphore_exp_handle_t *hSemaphores,
+                                                       const ze_intel_external_semaphore_signal_params_exp_t *params, ze_event_handle_t hSignalEvent,
+                                                       uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents) = 0;
     virtual ze_result_t hostSynchronize(uint64_t timeout) = 0;
+
+    virtual ze_result_t getDeviceHandle(ze_device_handle_t *phDevice) = 0;
+    virtual ze_result_t getContextHandle(ze_context_handle_t *phContext) = 0;
+    virtual ze_result_t getOrdinal(uint32_t *pOrdinal) = 0;
+    virtual ze_result_t getImmediateIndex(uint32_t *pIndex) = 0;
+    virtual ze_result_t isImmediate(ze_bool_t *pIsImmediate) = 0;
+
+    virtual ze_result_t appendCommandLists(uint32_t numCommandLists, ze_command_list_handle_t *phCommandLists,
+                                           ze_event_handle_t hSignalEvent, uint32_t numWaitEvents, ze_event_handle_t *phWaitEvents) = 0;
 
     static CommandList *create(uint32_t productFamily, Device *device, NEO::EngineGroupType engineGroupType,
                                ze_command_list_flags_t flags, ze_result_t &resultValue,
@@ -184,20 +203,32 @@ struct CommandList : _ze_command_list_handle_t {
 
     inline ze_command_list_handle_t toHandle() { return this; }
 
-    uint32_t getCommandListPerThreadScratchSize() const {
-        return commandListPerThreadScratchSize;
+    uint32_t getCommandListPerThreadScratchSize(uint32_t slotId) const {
+        return commandListPerThreadScratchSize[slotId];
     }
 
-    void setCommandListPerThreadScratchSize(uint32_t size) {
-        commandListPerThreadScratchSize = size;
+    void forceDcFlushForDcFlushMitigation();
+
+    void setOrdinal(uint32_t ord) { ordinal = ord; }
+    void setCommandListPerThreadScratchSize(uint32_t slotId, uint32_t size) {
+        UNRECOVERABLE_IF(slotId > 1);
+        commandListPerThreadScratchSize[slotId] = size;
     }
 
-    uint32_t getCommandListPerThreadPrivateScratchSize() const {
-        return commandListPerThreadPrivateScratchSize;
+    uint64_t getCurrentScratchPatchAddress() const {
+        return currentScratchPatchAddress;
     }
 
-    void setCommandListPerThreadPrivateScratchSize(uint32_t size) {
-        commandListPerThreadPrivateScratchSize = size;
+    void setCurrentScratchPatchAddress(uint64_t scratchPatchAddress) {
+        currentScratchPatchAddress = scratchPatchAddress;
+    }
+
+    NEO::ScratchSpaceController *getCommandListUsedScratchController() const {
+        return usedScratchController;
+    }
+
+    void setCommandListUsedScratchController(NEO::ScratchSpaceController *scratchController) {
+        usedScratchController = scratchController;
     }
 
     uint32_t getCommandListSLMEnable() const {
@@ -230,9 +261,11 @@ struct CommandList : _ze_command_list_handle_t {
     void removeMemoryPrefetchAllocations();
     void eraseDeallocationContainerEntry(NEO::GraphicsAllocation *allocation);
     void eraseResidencyContainerEntry(NEO::GraphicsAllocation *allocation);
-    bool isCopyOnly() const {
-        return NEO::EngineHelper::isCopyOnlyEngineType(engineGroupType);
+    bool isCopyOnly(bool copyOffloadOperation) const {
+        return NEO::EngineHelper::isCopyOnlyEngineType(engineGroupType) || (copyOffloadOperation && this->isCopyOffloadEnabled());
     }
+    bool isCopyOffloadEnabled() const { return copyOperationOffloadEnabled; }
+
     bool isInternal() const {
         return internalUsage;
     }
@@ -243,7 +276,7 @@ struct CommandList : _ze_command_list_handle_t {
         return performMemoryPrefetch;
     }
     bool storeExternalPtrAsTemporary() const {
-        return isImmediateType() && (this->isFlushTaskSubmissionEnabled || isCopyOnly());
+        return isImmediateType() && (this->isFlushTaskSubmissionEnabled || isCopyOnly(false));
     }
     bool isWaitForEventsFromHostEnabled();
 
@@ -261,10 +294,16 @@ struct CommandList : _ze_command_list_handle_t {
         return hostPtrMap;
     };
 
-    const NEO::StreamProperties &getRequiredStreamState() {
+    const NEO::StreamProperties &getRequiredStreamState() const {
         return requiredStreamState;
     }
-    const NEO::StreamProperties &getFinalStreamState() {
+    const NEO::StreamProperties &getFinalStreamState() const {
+        return finalStreamState;
+    }
+    NEO::StreamProperties &getRequiredStreamState() {
+        return requiredStreamState;
+    }
+    NEO::StreamProperties &getFinalStreamState() {
         return finalStreamState;
     }
     const CommandsToPatch &getCommandsToPatch() {
@@ -325,16 +364,18 @@ struct CommandList : _ze_command_list_handle_t {
         return this->commandContainer;
     }
 
-    void setCsr(NEO::CommandStreamReceiver *newCsr) {
-        this->csr = newCsr;
-    }
-
-    NEO::CommandStreamReceiver *getCsr() const {
-        return this->csr;
-    }
+    NEO::CommandStreamReceiver *getCsr(bool copyOffload) const;
 
     bool hasKernelWithAssert() {
         return kernelWithAssertAppended;
+    }
+
+    bool isHeaplessModeEnabled() const {
+        return heaplessModeEnabled;
+    }
+
+    bool isHeaplessStateInitEnabled() const {
+        return heaplessStateInitEnabled;
     }
 
     virtual bool skipInOrderNonWalkerSignalingAllowed(ze_event_handle_t signalEvent) const { return false; }
@@ -343,15 +384,39 @@ struct CommandList : _ze_command_list_handle_t {
         return dispatchCmdListBatchBufferAsPrimary;
     }
 
+    bool getCmdListStateBaseAddressTracking() const {
+        return stateBaseAddressTracking;
+    }
+
+    bool getCmdListScratchAddressPatchingEnabled() const {
+        return scratchAddressPatchingEnabled;
+    }
+    bool isTaskCountUpdateFenceRequired() const {
+        return taskCountUpdateFenceRequired;
+    }
+
+    bool isStatelessBuiltinsEnabled() const {
+        return statelessBuiltinsEnabled;
+    }
+
+    void registerCsrDcFlushForDcMitigation(NEO::CommandStreamReceiver &csr);
+
+    NEO::EngineGroupType getEngineGroupType() const {
+        return engineGroupType;
+    }
+
+    bool getLocalDispatchSupport() const {
+        return localDispatchSupport;
+    }
+
   protected:
-    NEO::GraphicsAllocation *getAllocationFromHostPtrMap(const void *buffer, uint64_t bufferSize);
-    NEO::GraphicsAllocation *getHostPtrAlloc(const void *buffer, uint64_t bufferSize, bool hostCopyAllowed);
+    NEO::GraphicsAllocation *getAllocationFromHostPtrMap(const void *buffer, uint64_t bufferSize, bool copyOffload);
+    NEO::GraphicsAllocation *getHostPtrAlloc(const void *buffer, uint64_t bufferSize, bool hostCopyAllowed, bool copyOffload);
     bool setupTimestampEventForMultiTile(Event *signalEvent);
     bool isTimestampEventForMultiTile(Event *signalEvent);
     bool getDcFlushRequired(bool externalCondition) const {
         return externalCondition ? dcFlushSupport : false;
     }
-    void makeResidentDummyAllocation();
     MOCKABLE_VIRTUAL void synchronizeEventList(uint32_t numWaitEvents, ze_event_handle_t *waitEventList);
 
     std::map<const void *, NEO::GraphicsAllocation *> hostPtrMap;
@@ -375,25 +440,30 @@ struct CommandList : _ze_command_list_handle_t {
     int64_t currentIndirectObjectBaseAddress = NEO::StreamProperty64::initValue;
     int64_t currentBindingTablePoolBaseAddress = NEO::StreamProperty64::initValue;
 
+    uint64_t currentScratchPatchAddress = 0;
+
     ze_context_handle_t hContext = nullptr;
     CommandQueue *cmdQImmediate = nullptr;
-    NEO::CommandStreamReceiver *csr = nullptr;
+    CommandQueue *cmdQImmediateCopyOffload = nullptr;
     Device *device = nullptr;
+    NEO::ScratchSpaceController *usedScratchController = nullptr;
 
     size_t minimalSizeForBcsSplit = 4 * MemoryConstants::megaByte;
     size_t cmdListCurrentStartOffset = 0;
     size_t maxFillPaternSizeForCopyEngine = 0;
 
+    uint32_t commandListPerThreadScratchSize[2]{};
+
     ze_command_list_flags_t flags = 0u;
     NEO::PreemptionMode commandListPreemptionMode = NEO::PreemptionMode::Initial;
     NEO::EngineGroupType engineGroupType = NEO::EngineGroupType::maxEngineGroups;
     NEO::HeapAddressModel cmdListHeapAddressModel = NEO::HeapAddressModel::privateHeaps;
+    std::optional<uint32_t> ordinal = std::nullopt;
 
     CommandListType cmdListType = CommandListType::typeRegular;
-    uint32_t commandListPerThreadScratchSize = 0u;
-    uint32_t commandListPerThreadPrivateScratchSize = 0u;
     uint32_t partitionCount = 1;
     uint32_t defaultMocsIndex = 0;
+    int32_t defaultPipelinedThreadArbitrationPolicy = NEO::ThreadArbitrationPolicy::NotPresent;
 
     bool isFlushTaskSubmissionEnabled = false;
     bool isSyncModeQueue = false;
@@ -424,6 +494,13 @@ struct CommandList : _ze_command_list_handle_t {
     bool copyThroughLockedPtrEnabled = false;
     bool useOnlyGlobalTimestamps = false;
     bool heaplessModeEnabled = false;
+    bool heaplessStateInitEnabled = false;
+    bool scratchAddressPatchingEnabled = false;
+    bool taskCountUpdateFenceRequired = false;
+    bool requiresDcFlushForDcMitigation = false;
+    bool statelessBuiltinsEnabled = false;
+    bool localDispatchSupport = false;
+    bool copyOperationOffloadEnabled = false;
 };
 
 using CommandListAllocatorFn = CommandList *(*)(uint32_t);

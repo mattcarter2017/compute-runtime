@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,12 +14,9 @@
 #include <link.h>
 
 namespace NEO {
-OsLibrary *OsLibrary::load(const std::string &name) {
-    return load(name, nullptr);
-}
 
-OsLibrary *OsLibrary::load(const std::string &name, std::string *errorValue) {
-    auto ptr = new (std::nothrow) Linux::OsLibrary(name, errorValue);
+OsLibrary *OsLibrary::load(const OsLibraryCreateProperties &properties) {
+    auto ptr = new (std::nothrow) Linux::OsLibrary(properties);
     if (ptr == nullptr)
         return nullptr;
 
@@ -34,10 +31,14 @@ const std::string OsLibrary::createFullSystemPath(const std::string &name) {
     return name;
 }
 
+bool getLoadedLibVersion(const std::string &libName, const std::string &regexVersionPattern, std::string &outVersion, std::string &errReason) {
+    return false;
+}
+
 namespace Linux {
 
-OsLibrary::OsLibrary(const std::string &name, std::string *errorValue) {
-    if (name.empty()) {
+OsLibrary::OsLibrary(const OsLibraryCreateProperties &properties) {
+    if (properties.libraryName.empty() || properties.performSelfLoad) {
         this->handle = SysCalls::dlopen(0, RTLD_LAZY);
     } else {
 #ifdef SANITIZER_BUILD
@@ -46,10 +47,11 @@ OsLibrary::OsLibrary(const std::string &name, std::string *errorValue) {
         auto dlopenFlag = RTLD_LAZY | RTLD_DEEPBIND;
         /* Background: https://github.com/intel/compute-runtime/issues/122 */
 #endif
+        dlopenFlag = properties.customLoadFlags ? *properties.customLoadFlags : dlopenFlag;
         adjustLibraryFlags(dlopenFlag);
-        this->handle = SysCalls::dlopen(name.c_str(), dlopenFlag);
-        if (!this->handle && (errorValue != nullptr)) {
-            errorValue->assign(dlerror());
+        this->handle = SysCalls::dlopen(properties.libraryName.c_str(), dlopenFlag);
+        if (!this->handle && (properties.errorValue != nullptr)) {
+            properties.errorValue->assign(dlerror());
         }
     }
 }

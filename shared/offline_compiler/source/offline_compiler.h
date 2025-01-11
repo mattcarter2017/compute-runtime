@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,10 @@
 
 class OclocArgHelper;
 
+namespace Ocloc {
+enum class SupportedDevicesMode;
+};
+
 namespace NEO {
 
 class CompilerCache;
@@ -38,6 +42,8 @@ struct NameVersionPair : ocloc_name_version {
 };
 static_assert(sizeof(NameVersionPair) == sizeof(ocloc_name_version));
 
+const HardwareInfo *getHwInfoForDeprecatedAcronym(const std::string &deviceName);
+
 class OfflineCompiler {
   public:
     static std::vector<NameVersionPair> getExtensions(ConstStringRef product, bool needVersions, OclocArgHelper *helper);
@@ -45,6 +51,7 @@ class OfflineCompiler {
     static std::vector<NameVersionPair> getOpenCLCFeatures(ConstStringRef product, OclocArgHelper *helper);
     static int query(size_t numArgs, const std::vector<std::string> &allArgs, OclocArgHelper *helper);
     static int queryAcronymIds(size_t numArgs, const std::vector<std::string> &allArgs, OclocArgHelper *helper);
+    static int querySupportedDevices(Ocloc::SupportedDevicesMode mode, OclocArgHelper *helper);
 
     static OfflineCompiler *create(size_t numArgs, const std::vector<std::string> &allArgs, bool dumpFiles, int &retVal, OclocArgHelper *helper);
 
@@ -72,6 +79,23 @@ Supported query options:
   CL_DEVICE_PROFILE                 ; OpenCL device profile supported by device_filter
   CL_DEVICE_OPENCL_C_ALL_VERSIONS   ; OpenCL C versions supported by device_filter
   CL_DEVICE_OPENCL_C_FEATURES       ; OpenCL C features supported by device_filter
+  SUPPORTED_DEVICES                 ; Generates a YAML file with information about supported devices
+
+SUPPORTED_DEVICES option:
+  Linux:
+    Description: Generates a YAML file containing information about supported devices
+                 for the current and previous versions of ocloc.
+    Usage: ocloc query SUPPORTED_DEVICES [<mode>]
+    Supported Modes:
+      -merge   - Combines supported devices from all ocloc versions into a single list (default if not specified)
+      -concat  - Lists supported devices for each ocloc version separately
+    Output file: <ocloc_version>_supported_devices_<mode>.yaml
+
+  Windows:
+    Description: Generates a YAML file containing information about supported devices
+                 for the current version of ocloc.
+    Usage: ocloc query SUPPORTED_DEVICES
+    Output file: <ocloc_version>_supported_devices.yaml
 
 Examples:
   ocloc query OCL_DRIVER_VERSION
@@ -129,7 +153,7 @@ All supported acronyms: %s.
 
     int initHardwareInfo(std::string deviceName);
     int initHardwareInfoForProductConfig(std::string deviceName);
-    int initHardwareInfoForDeprecatedAcronyms(std::string deviceName, std::unique_ptr<NEO::CompilerProductHelper> &compilerProductHelper, std::unique_ptr<NEO::ReleaseHelper> &releaseHelper);
+    int initHardwareInfoForDeprecatedAcronyms(const std::string &deviceName, std::unique_ptr<NEO::CompilerProductHelper> &compilerProductHelper, std::unique_ptr<NEO::ReleaseHelper> &releaseHelper);
     bool isArgumentDeviceId(const std::string &argument) const;
     std::string getStringWithinDelimiters(const std::string &src);
     int initialize(size_t numArgs, const std::vector<std::string> &allArgs, bool dumpFiles);
@@ -175,6 +199,7 @@ All supported acronyms: %s.
     std::string optionsReadFromFile = "";
     std::string internalOptionsReadFromFile = "";
     std::string formatToEnforce = "";
+    std::string addressingMode = "default";
     std::string irHash, genHash, dbgHash, elfHash;
     std::string cacheDir;
 
@@ -191,7 +216,7 @@ All supported acronyms: %s.
     bool inputFileSpirV = false;
     bool outputNoSuffix = false;
     bool forceStatelessToStatefulOptimization = false;
-    bool isSpirV = false;
+    bool isSpirV = true;
     bool showHelp = false;
     bool excludeIr = false;
 
@@ -203,8 +228,8 @@ All supported acronyms: %s.
     size_t irBinarySize = 0;
     char *debugDataBinary = nullptr;
     size_t debugDataBinarySize = 0;
-    struct buildInfo;
-    std::unique_ptr<buildInfo> pBuildInfo;
+    struct BuildInfo;
+    std::unique_ptr<BuildInfo> pBuildInfo;
     int revisionId = -1;
     uint64_t hwInfoConfig = 0u;
 

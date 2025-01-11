@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,15 @@
 #include "gtest/gtest.h"
 
 using namespace NEO;
+
+namespace NEO {
+NTSTATUS(*pCallEscape)
+(D3DKMT_ESCAPE &escapeCommand) = nullptr;
+uint32_t (*pGetTimestampFrequency)() = nullptr;
+bool (*pPerfOpenEuStallStream)(uint32_t sampleRate, uint32_t minBufferSize) = nullptr;
+bool (*pPerfDisableEuStallStream)() = nullptr;
+bool (*pPerfReadEuStallStream)(uint8_t *pRawData, size_t *pRawDataSize) = nullptr;
+} // namespace NEO
 
 struct MockHwDeviceId : public HwDeviceIdWddm {
     using HwDeviceIdWddm::osEnvironment;
@@ -74,6 +83,12 @@ NTSTATUS WddmMock::createAllocationsAndMapGpuVa(OsHandleStorage &osHandles) {
     }
     return createAllocationsAndMapGpuVaStatus;
 }
+NTSTATUS WddmMock::escape(D3DKMT_ESCAPE &escapeCommand) {
+    if (pCallEscape != nullptr) {
+        return pCallEscape(escapeCommand);
+    }
+    return Wddm::escape(escapeCommand);
+}
 bool WddmMock::mapGpuVirtualAddress(WddmAllocation *allocation) {
     D3DGPU_VIRTUAL_ADDRESS minimumAddress = gfxPartition.Standard.Base;
     D3DGPU_VIRTUAL_ADDRESS maximumAddress = gfxPartition.Standard.Limit;
@@ -82,14 +97,14 @@ bool WddmMock::mapGpuVirtualAddress(WddmAllocation *allocation) {
         maximumAddress = MemoryConstants::maxSvmAddress;
     }
     return mapGpuVirtualAddress(allocation->getDefaultGmm(), allocation->getDefaultHandle(), minimumAddress, maximumAddress,
-                                reinterpret_cast<D3DGPU_VIRTUAL_ADDRESS>(allocation->getAlignedCpuPtr()), allocation->getGpuAddressToModify());
+                                reinterpret_cast<D3DGPU_VIRTUAL_ADDRESS>(allocation->getAlignedCpuPtr()), allocation->getGpuAddressToModify(), allocation->getAllocationType());
 }
-bool WddmMock::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr) {
+bool WddmMock::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr, AllocationType type) {
     mapGpuVirtualAddressResult.called++;
     mapGpuVirtualAddressResult.cpuPtrPassed = reinterpret_cast<void *>(preferredAddress);
     mapGpuVirtualAddressResult.uint64ParamPassed = preferredAddress;
     if (callBaseMapGpuVa) {
-        return mapGpuVirtualAddressResult.success = Wddm::mapGpuVirtualAddress(gmm, handle, minimumAddress, maximumAddress, preferredAddress, gpuPtr);
+        return mapGpuVirtualAddressResult.success = Wddm::mapGpuVirtualAddress(gmm, handle, minimumAddress, maximumAddress, preferredAddress, gpuPtr, type);
     } else {
         gpuPtr = preferredAddress;
         return mapGpuVaStatus;
@@ -104,7 +119,7 @@ bool WddmMock::freeGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS &gpuPtr, uint64_t si
 }
 NTSTATUS WddmMock::createAllocation(WddmAllocation *wddmAllocation) {
     if (wddmAllocation) {
-        return createAllocation(wddmAllocation->getAlignedCpuPtr(), wddmAllocation->getDefaultGmm(), wddmAllocation->getHandleToModify(0u), wddmAllocation->resourceHandle, wddmAllocation->getSharedHandleToModify());
+        return createAllocation(wddmAllocation->getAlignedCpuPtr(), wddmAllocation->getDefaultGmm(), wddmAllocation->getHandleToModify(0u), wddmAllocation->getResourceHandleToModify(), wddmAllocation->getSharedHandleToModify());
     }
     return false;
 }
@@ -150,7 +165,7 @@ bool WddmMock::destroyAllocation(WddmAllocation *alloc, OsContextWin *osContext)
     D3DKMT_HANDLE resourceHandle = 0;
     void *reserveAddress = alloc->getReservedAddressPtr();
     if (alloc->peekSharedHandle()) {
-        resourceHandle = alloc->resourceHandle;
+        resourceHandle = alloc->getResourceHandle();
     } else {
         allocationHandles = &alloc->getHandles()[0];
         allocationCount = static_cast<uint32_t>(alloc->getHandles().size());
@@ -161,11 +176,11 @@ bool WddmMock::destroyAllocation(WddmAllocation *alloc, OsContextWin *osContext)
     return success;
 }
 
-bool WddmMock::openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc) {
+bool WddmMock::openSharedHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc) {
     if (failOpenSharedHandle) {
         return false;
     } else {
-        return Wddm::openSharedHandle(handle, alloc);
+        return Wddm::openSharedHandle(osHandleData, alloc);
     }
 }
 
@@ -305,7 +320,7 @@ NTSTATUS WddmMock::reserveGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS baseAddress, 
     return Wddm::reserveGpuVirtualAddress(baseAddress, minimumAddress, maximumAddress, size, reservedAddress);
 }
 
-uint64_t *WddmMock::getPagingFenceAddress() {
+volatile uint64_t *WddmMock::getPagingFenceAddress() {
     if (NEO::wddmResidencyLoggingAvailable) {
         getPagingFenceAddressResult.called++;
     }
@@ -342,4 +357,32 @@ bool WddmMock::setAllocationPriority(const D3DKMT_HANDLE *handles, uint32_t allo
         return status;
     }
     return setAllocationPriorityResult.success;
+}
+
+bool WddmMock::perfOpenEuStallStream(uint32_t sampleRate, uint32_t minBufferSize) {
+    if (pPerfOpenEuStallStream != nullptr) {
+        return pPerfOpenEuStallStream(sampleRate, minBufferSize);
+    }
+    return Wddm::perfOpenEuStallStream(sampleRate, minBufferSize);
+}
+
+bool WddmMock::perfDisableEuStallStream() {
+    if (pPerfDisableEuStallStream != nullptr) {
+        return pPerfDisableEuStallStream();
+    }
+    return Wddm::perfDisableEuStallStream();
+}
+
+bool WddmMock::perfReadEuStallStream(uint8_t *pRawData, size_t *pRawDataSize) {
+    if (pPerfReadEuStallStream != nullptr) {
+        return pPerfReadEuStallStream(pRawData, pRawDataSize);
+    }
+    return Wddm::perfReadEuStallStream(pRawData, pRawDataSize);
+}
+
+uint32_t WddmMock::getTimestampFrequency() const {
+    if (pGetTimestampFrequency != nullptr) {
+        return pGetTimestampFrequency();
+    }
+    return Wddm::getTimestampFrequency();
 }

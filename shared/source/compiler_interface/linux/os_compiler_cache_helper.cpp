@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,13 +18,9 @@
 #include <link.h>
 
 namespace NEO {
-int64_t defaultCacheEnabled() {
-    return 1l;
-}
-
 bool createCompilerCachePath(std::string &cacheDir) {
-    if (NEO::SysCalls::pathExists(cacheDir)) {
-        if (NEO::SysCalls::pathExists(joinPath(cacheDir, "neo_compiler_cache"))) {
+    if (NEO::pathExists(cacheDir)) {
+        if (NEO::pathExists(joinPath(cacheDir, "neo_compiler_cache"))) {
             cacheDir = joinPath(cacheDir, "neo_compiler_cache");
             return true;
         }
@@ -56,14 +52,14 @@ bool checkDefaultCacheDirSettings(std::string &cacheDir, NEO::EnvironmentVariabl
 
         // .cache might not exist on fresh installation
         cacheDir = joinPath(cacheDir, ".cache/");
-        if (!NEO::SysCalls::pathExists(cacheDir)) {
+        if (!NEO::pathExists(cacheDir)) {
             NEO::SysCalls::mkdir(cacheDir);
         }
 
         return createCompilerCachePath(cacheDir);
     }
 
-    if (NEO::SysCalls::pathExists(cacheDir)) {
+    if (NEO::pathExists(cacheDir)) {
         return createCompilerCachePath(cacheDir);
     }
 
@@ -71,7 +67,7 @@ bool checkDefaultCacheDirSettings(std::string &cacheDir, NEO::EnvironmentVariabl
 }
 
 time_t getFileModificationTime(const std::string &path) {
-    struct stat st;
+    struct stat st {};
     if (NEO::SysCalls::stat(path, &st) == 0) {
         return st.st_mtime;
     }
@@ -79,7 +75,7 @@ time_t getFileModificationTime(const std::string &path) {
 }
 
 size_t getFileSize(const std::string &path) {
-    struct stat st;
+    struct stat st {};
     if (NEO::SysCalls::stat(path, &st) == 0) {
         return static_cast<size_t>(st.st_size);
     }

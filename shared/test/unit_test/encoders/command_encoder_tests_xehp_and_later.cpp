@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,7 +26,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterHardwareCommandsTest, givenXeHPAndLater
     EXPECT_FALSE(EncodeSurfaceState<FamilyType>::doBindingTablePrefetch());
 }
 
-HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterHardwareCommandsTest, GivenXeHPAndLaterPlatformWhenSetCoherencyTypeIsCalledThenOnlyEncodingSupportedIsSingleGpuCoherent) {
+HWTEST2_F(XeHPAndLaterHardwareCommandsTest, GivenXeHPAndLaterPlatformWhenSetCoherencyTypeIsCalledThenOnlyEncodingSupportedIsSingleGpuCoherent, IsWithinXeGfxFamily) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using COHERENCY_TYPE = typename RENDER_SURFACE_STATE::COHERENCY_TYPE;
 
@@ -73,7 +73,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterHardwareCommandsTest, givenPartitionArg
                                                        dword0,
                                                        dword1,
                                                        false,
-                                                       false);
+                                                       false,
+                                                       nullptr);
 
     auto storeDataImm = genCmdCast<MI_STORE_DATA_IMM *>(buffer);
     ASSERT_NE(nullptr, storeDataImm);
@@ -96,7 +97,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterHardwareCommandsTest, givenPartitionArg
                                                        dword0,
                                                        dword1,
                                                        false,
-                                                       true);
+                                                       true,
+                                                       nullptr);
 
     auto storeDataImm = genCmdCast<MI_STORE_DATA_IMM *>(buffer);
     ASSERT_NE(nullptr, storeDataImm);
@@ -109,18 +111,34 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterHardwareCommandsTest, givenWorkloadPart
     uint64_t gpuAddress = 0xFFA000;
     uint32_t offset = 0x123;
 
-    constexpr size_t bufferSize = 64;
+    constexpr size_t bufferSize = 256;
     uint8_t buffer[bufferSize];
     LinearStream cmdStream(buffer, bufferSize);
 
     EncodeStoreMMIO<FamilyType>::encode(cmdStream,
                                         offset,
                                         gpuAddress,
-                                        true);
+                                        true,
+                                        nullptr,
+                                        false);
 
     auto storeRegMem = genCmdCast<MI_STORE_REGISTER_MEM *>(buffer);
     ASSERT_NE(nullptr, storeRegMem);
     EXPECT_TRUE(storeRegMem->getWorkloadPartitionIdOffsetEnable());
+
+    void *outCmdBuffer = nullptr;
+    size_t beforeEncode = cmdStream.getUsed();
+    EncodeStoreMMIO<FamilyType>::encode(cmdStream,
+                                        offset,
+                                        gpuAddress,
+                                        true,
+                                        &outCmdBuffer,
+                                        false);
+
+    storeRegMem = genCmdCast<MI_STORE_REGISTER_MEM *>(ptrOffset(buffer, beforeEncode));
+    ASSERT_NE(nullptr, storeRegMem);
+    EXPECT_TRUE(storeRegMem->getWorkloadPartitionIdOffsetEnable());
+    EXPECT_EQ(storeRegMem, outCmdBuffer);
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterCommandEncoderTest, givenOffsetAndValueAndWorkloadPartitionWhenEncodeBitwiseAndValIsCalledThenContainerHasCorrectMathCommands) {
@@ -135,7 +153,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterCommandEncoderTest, givenOffsetAndValue
     constexpr uint32_t regOffset = 0x2000u;
     constexpr uint32_t immVal = 0xbaau;
     constexpr uint64_t dstAddress = 0xDEADCAF0u;
-    EncodeMathMMIO<FamilyType>::encodeBitwiseAndVal(cmdContainer, regOffset, immVal, dstAddress, true);
+    void *storeRegMem = nullptr;
+    EncodeMathMMIO<FamilyType>::encodeBitwiseAndVal(cmdContainer, regOffset, immVal, dstAddress, true, &storeRegMem, false);
 
     CmdParse<FamilyType>::parseCommandBuffer(commands,
                                              ptrOffset(cmdContainer.getCommandStream()->getCpuBase(), 0),
@@ -167,7 +186,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHPAndLaterCommandEncoderTest, givenOffsetAndValue
     itor++;
     ASSERT_NE(commands.end(), itor);
     auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
-    EXPECT_EQ(RegisterOffsets::csGprR15, cmdMem->getRegisterAddress());
+    EXPECT_EQ(cmdMem, storeRegMem);
+    EXPECT_EQ(RegisterOffsets::csGprR12, cmdMem->getRegisterAddress());
     EXPECT_EQ(dstAddress, cmdMem->getMemoryAddress());
     EXPECT_TRUE(cmdMem->getWorkloadPartitionIdOffsetEnable());
 }

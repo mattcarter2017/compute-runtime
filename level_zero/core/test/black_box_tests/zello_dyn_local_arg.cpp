@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,45 +14,11 @@
 #include <memory>
 #include <vector>
 
-const char *clProgram = R"==(
-__kernel void local_barrier_arg(__local int *local_dst1, __global int *dst, __local int *local_dst2,
-        __local ulong *local_dst3, __local int *local_dst4) {
-    unsigned int gid = get_global_id(0);
-    if(get_local_id(0) == 0){
-        local_dst1[0] = 6;
-        local_dst2[0] = 7;
-        local_dst3[0] = 8;
-        local_dst4[0] = 9;
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if(get_local_id(0) == 0){
-        local_dst1[0] = gid + local_dst1[0];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if(get_local_id(0) == 0){
-        local_dst2[0] = gid + local_dst2[0];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if(get_local_id(0) == 0){
-        local_dst3[0] = gid + local_dst3[0];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if(get_local_id(0) == 0){
-        local_dst4[0] = gid + local_dst4[0];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    barrier(CLK_GLOBAL_MEM_FENCE);
-    if(gid == 0){
-        dst[0] = local_dst1[0] + local_dst2[0] + local_dst3[0] + local_dst4[0];
-    }
-}
-)==";
-
 void createModule(ze_module_handle_t &module, ze_context_handle_t &context, ze_device_handle_t &device) {
     // Prepare spirV
     std::string buildLog;
 
-    auto binaryModule = LevelZeroBlackBoxTests::compileToSpirV(clProgram, "", buildLog);
+    auto binaryModule = LevelZeroBlackBoxTests::compileToSpirV(LevelZeroBlackBoxTests::dynLocalBarrierArgSrc, "", buildLog);
     if (buildLog.size() > 0) {
         std::cerr << "CL->spirV comilation log : " << buildLog
                   << std::endl;
@@ -87,7 +53,7 @@ void createCmdQueueAndCmdList(ze_context_handle_t &context, ze_device_handle_t &
                               ze_command_list_handle_t &cmdList,
                               ze_command_queue_desc_t *cmdQueueDesc,
                               ze_command_list_desc_t *cmdListDesc) {
-    cmdQueueDesc->ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device);
+    cmdQueueDesc->ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device, false);
     cmdQueueDesc->mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
     SUCCESS_OR_TERMINATE(zeCommandQueueCreate(context, device, cmdQueueDesc, &cmdqueue));
 
@@ -141,7 +107,7 @@ bool testLocalBarrier(ze_context_handle_t &context, ze_device_handle_t &device) 
 
     realResult = reinterpret_cast<int *>(dstBuffer);
     if (LevelZeroBlackBoxTests::verbose) {
-        std::cerr << "Inital Gobal Memory Value " << *realResult << std::endl;
+        std::cout << "Inital Gobal Memory Value " << *realResult << std::endl;
     }
 
     // Set kernel args and get ready to dispatch
@@ -154,11 +120,7 @@ bool testLocalBarrier(ze_context_handle_t &context, ze_device_handle_t &device) 
     dispatchTraits.groupCountX = 3u;
     dispatchTraits.groupCountY = 1u;
     dispatchTraits.groupCountZ = 1u;
-    if (LevelZeroBlackBoxTests::verbose) {
-        std::cerr << "Number of groups : (" << dispatchTraits.groupCountX << ", "
-                  << dispatchTraits.groupCountY << ", " << dispatchTraits.groupCountZ << ")"
-                  << std::endl;
-    }
+    LevelZeroBlackBoxTests::printGroupCount(dispatchTraits);
 
     SUCCESS_OR_TERMINATE(
         zeCommandListAppendLaunchKernel(cmdList, kernel, &dispatchTraits, nullptr, 0, nullptr));
@@ -169,7 +131,7 @@ bool testLocalBarrier(ze_context_handle_t &context, ze_device_handle_t &device) 
 
     realResult = reinterpret_cast<int *>(dstBuffer);
     if (LevelZeroBlackBoxTests::verbose) {
-        std::cerr << "Final Gobal Memory Value " << *realResult << std::endl;
+        std::cout << "Final Gobal Memory Value " << *realResult << std::endl;
     }
 
     if (*realResult != expectedResult) {

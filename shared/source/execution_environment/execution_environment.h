@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,6 +10,9 @@
 #include "shared/source/utilities/reference_tracked_object.h"
 
 #include <mutex>
+#include <stdarg.h>
+#include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -28,6 +31,7 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
 
     MOCKABLE_VIRTUAL bool initializeMemoryManager();
     void calculateMaxOsContextCount();
+    int clearErrorDescription();
     virtual void prepareRootDeviceEnvironments(uint32_t numRootDevices);
     void prepareRootDeviceEnvironment(const uint32_t rootDeviceIndexForReInit);
     void parseAffinityMask();
@@ -37,6 +41,7 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     void setDeviceHierarchy(const GfxCoreHelper &gfxCoreHelper);
     void adjustRootDeviceEnvironments();
     void prepareForCleanup() const;
+    void configureCcsMode();
     void setDebuggingMode(DebuggingMode debuggingMode) {
         debuggingEnabledMode = debuggingMode;
     }
@@ -53,8 +58,10 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     }
     bool isExposingSubDevicesAsDevices() const { return this->subDevicesAsDevices; }
     bool isCombinedDeviceHierarchy() const { return this->combinedDeviceHierarchy; }
+    void getErrorDescription(const char **ppString);
     bool getSubDeviceHierarchy(uint32_t index, std::tuple<uint32_t, uint32_t, uint32_t> *subDeviceMap);
     bool areMetricsEnabled() { return this->metricsEnabled; }
+    int setErrorDescription(const std::string &str);
     void setFP64EmulationEnabled() {
         fp64EmulationEnabled = true;
     }
@@ -71,12 +78,15 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     // <RootDeviceIndex, SubDeviceIndex, SubDeviceCount>
     // Primarily used by the Metrics Library to communicate the actual Sub Device Index being used in queries.
     std::unordered_map<uint32_t, std::tuple<uint32_t, uint32_t, uint32_t>> mapOfSubDeviceIndices;
+    std::unordered_map<std::thread::id, std::string> errorDescs;
+    std::mutex errorDescsMutex;
 
   protected:
     static bool comparePciIdBusNumber(std::unique_ptr<RootDeviceEnvironment> &rootDeviceEnvironment1, std::unique_ptr<RootDeviceEnvironment> &rootDeviceEnvironment2);
     void parseCcsCountLimitations();
     void adjustCcsCountImpl(RootDeviceEnvironment *rootDeviceEnvironment) const;
     void configureNeoEnvironment();
+    void restoreCcsMode();
     bool metricsEnabled = false;
     bool fp64EmulationEnabled = false;
     bool subDevicesAsDevices = false;
@@ -85,5 +95,6 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     DebuggingMode debuggingEnabledMode = DebuggingMode::disabled;
     std::unordered_map<uint32_t, uint32_t> rootDeviceNumCcsMap;
     std::mutex initializeDirectSubmissionControllerMutex;
+    std::vector<std::tuple<std::string, uint32_t>> deviceCcsModeVec;
 };
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,7 @@
 #include "shared/offline_compiler/source/offline_linker.h"
 #include "shared/offline_compiler/source/utilities/safety_caller.h"
 #include "shared/source/device_binary_format/elf/elf_decoder.h"
+#include "shared/source/os_interface/os_library.h"
 
 #include <memory>
 
@@ -116,16 +117,36 @@ void printOclocOptionsReadFromFile(OclocArgHelper &wrapper, OfflineCompiler *pCo
     }
 }
 
+std::string oclocCurrentLibName = std::string(NEO_OCLOC_CURRENT_LIB_NAME);
+std::string oclocFormerLibName = std::string(NEO_OCLOC_FORMER_LIB_NAME);
+
+static_assert(std::string_view(NEO_OCLOC_CURRENT_LIB_NAME) != std::string_view(NEO_OCLOC_FORMER_LIB_NAME), "Ocloc current and former names cannot be same");
+
+const std::string &getOclocCurrentLibName() { return oclocCurrentLibName; }
+const std::string &getOclocFormerLibName() { return oclocFormerLibName; }
+
 namespace Commands {
 
 int compile(OclocArgHelper *argHelper, const std::vector<std::string> &args) {
+    std::vector<std::string> argsCopy(args);
+
     if (NEO::requestedFatBinary(args, argHelper)) {
-        return NEO::buildFatBinary(args, argHelper);
+        bool onlySpirV = NEO::isSpvOnly(args);
+
+        if (onlySpirV) {
+            int deviceArgIndex = NEO::getDeviceArgValueIdx(args);
+            UNRECOVERABLE_IF(deviceArgIndex < 0);
+            std::vector<ConstStringRef> targetProducts = NEO::getTargetProductsForFatbinary(ConstStringRef(args[deviceArgIndex]), argHelper);
+            ConstStringRef firstDevice = targetProducts.front();
+            argsCopy[deviceArgIndex] = firstDevice.str();
+        } else {
+            return NEO::buildFatBinary(args, argHelper);
+        }
     }
 
     int retVal = OCLOC_SUCCESS;
+    std::unique_ptr<OfflineCompiler> pCompiler{OfflineCompiler::create(argsCopy.size(), argsCopy, true, retVal, argHelper)};
 
-    std::unique_ptr<OfflineCompiler> pCompiler{OfflineCompiler::create(args.size(), args, true, retVal, argHelper)};
     if (retVal == OCLOC_SUCCESS) {
         if (pCompiler->showHelpOnly()) {
             return retVal;
@@ -147,7 +168,6 @@ int compile(OclocArgHelper *argHelper, const std::vector<std::string> &args) {
 
     if (retVal != OCLOC_SUCCESS) {
         printOclocOptionsReadFromFile(*argHelper, pCompiler.get());
-        printOclocCmdLine(*argHelper, args);
     }
     return retVal;
 };
@@ -243,6 +263,24 @@ int concat(OclocArgHelper *argHelper, const std::vector<std::string> &args) {
 
     error = arConcat.concatenate();
     return error;
+}
+std::optional<int> invokeFormerOcloc(const std::string &formerOclocName, unsigned int numArgs, const char *argv[],
+                                     const uint32_t numSources, const uint8_t **dataSources, const uint64_t *lenSources, const char **nameSources,
+                                     const uint32_t numInputHeaders, const uint8_t **dataInputHeaders, const uint64_t *lenInputHeaders, const char **nameInputHeaders,
+                                     uint32_t *numOutputs, uint8_t ***dataOutputs, uint64_t **lenOutputs, char ***nameOutputs) {
+    if (formerOclocName.empty()) {
+        return {};
+    }
+
+    std::unique_ptr<OsLibrary> oclocLib(OsLibrary::loadFunc(formerOclocName));
+
+    if (!oclocLib) {
+        return {};
+    }
+
+    auto oclocInvokeFunc = reinterpret_cast<pOclocInvoke>(oclocLib->getProcAddress("oclocInvoke"));
+
+    return oclocInvokeFunc(numArgs, argv, numSources, dataSources, lenSources, nameSources, numInputHeaders, dataInputHeaders, lenInputHeaders, nameInputHeaders, numOutputs, dataOutputs, lenOutputs, nameOutputs);
 }
 
 } // namespace Commands

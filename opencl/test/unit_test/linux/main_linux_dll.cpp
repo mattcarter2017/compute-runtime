@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,6 +14,7 @@
 #include "shared/source/os_interface/driver_info.h"
 #include "shared/source/os_interface/linux/allocator_helper.h"
 #include "shared/source/os_interface/linux/i915.h"
+#include "shared/source/os_interface/linux/ioctl_helper.h"
 #include "shared/source/os_interface/linux/sys_calls.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/test/common/helpers/custom_event_listener.h"
@@ -23,7 +24,9 @@
 #include "shared/test/common/helpers/ult_hw_config.inl"
 #include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/libult/signal_utils.h"
+#include "shared/test/common/mocks/mock_compiler_product_helper.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_release_helper.h"
 #include "shared/test/common/os_interface/linux/device_command_stream_fixture.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
@@ -234,7 +237,7 @@ TEST_F(DrmSimpleTests, givenPrintIoctlTimesWhenCallIoctlThenStatisticsAreGathere
     auto drm = DrmWrap::createDrm(*(mockExecutionEnvironment.rootDeviceEnvironments[0].get()));
 
     DebugManagerStateRestore restorer;
-    debugManager.flags.PrintIoctlTimes.set(true);
+    debugManager.flags.PrintKmdTimes.set(true);
     VariableBackup<decltype(forceExtraIoctlDuration)> backupForceExtraIoctlDuration(&forceExtraIoctlDuration, true);
 
     EXPECT_TRUE(drm->ioctlStatistics.empty());
@@ -535,14 +538,6 @@ TEST_F(DrmTests, GivenKnownDeviceWhenCreatingDrmThenHwInfoIsProperlySet) {
     EXPECT_EQ(deviceId, mockRootDeviceEnvironment->getHardwareInfo()->platform.usDeviceID);
 }
 
-TEST_F(DrmTests, GivenNoSoftPinWhenCreatingDrmThenNullIsReturned) {
-    VariableBackup<decltype(haveSoftPin)> backupHaveSoftPin(&haveSoftPin);
-    haveSoftPin = 0;
-
-    auto drm = DrmWrap::createDrm(*mockRootDeviceEnvironment);
-    EXPECT_EQ(drm, nullptr);
-}
-
 TEST_F(DrmTests, WhenCantFindDeviceIdThenDrmIsNotCreated) {
     VariableBackup<decltype(failOnDeviceId)> backupFailOnDeviceId(&failOnDeviceId);
     failOnDeviceId = -1;
@@ -570,14 +565,6 @@ TEST_F(DrmTests, WhenCantQuerySubsliceCountThenDrmIsNotCreated) {
 TEST_F(DrmTests, WhenCantQueryRevisionIdThenDrmIsNotCreated) {
     VariableBackup<decltype(failOnRevisionId)> backupFailOnRevisionId(&failOnRevisionId);
     failOnRevisionId = -1;
-
-    auto drm = DrmWrap::createDrm(*mockRootDeviceEnvironment);
-    EXPECT_EQ(drm, nullptr);
-}
-
-TEST_F(DrmTests, WhenCantQuerySoftPinSupportThenDrmIsNotCreated) {
-    VariableBackup<decltype(failOnSoftPin)> backupFailOnSoftPin(&failOnSoftPin);
-    failOnSoftPin = -1;
 
     auto drm = DrmWrap::createDrm(*mockRootDeviceEnvironment);
     EXPECT_EQ(drm, nullptr);
@@ -707,21 +694,40 @@ TEST_F(DrmTests, whenDrmIsCreatedWithMultipleSubDevicesThenCreateMultipleVirtual
 
 TEST_F(DrmTests, givenDebuggingEnabledWhenDrmIsCreatedThenPerContextVMIsTrueGetVirtualMemoryAddressSpaceReturnsZeroAndVMsAreNotCreated) {
     DebugManagerStateRestore restore;
+
     debugManager.flags.CreateMultipleSubDevices.set(2);
     debugManager.flags.UseVmBind.set(1);
 
     mockExecutionEnvironment.setDebuggingMode(NEO::DebuggingMode::online);
 
     auto drm = DrmWrap::createDrm(*mockRootDeviceEnvironment);
+    auto &compilerProductHelper = drm->getRootDeviceEnvironment().getHelper<CompilerProductHelper>();
+
+    bool heapless = compilerProductHelper.isHeaplessModeEnabled();
+
     ASSERT_NE(drm, nullptr);
     if (drm->isVmBindAvailable()) {
-        EXPECT_TRUE(drm->isPerContextVMRequired());
+        if (heapless) {
+            EXPECT_FALSE(drm->isPerContextVMRequired());
+        } else {
+            EXPECT_TRUE(drm->isPerContextVMRequired());
+        }
 
         auto numSubDevices = GfxCoreHelper::getSubDevicesCount(mockRootDeviceEnvironment->getHardwareInfo());
         for (auto id = 0u; id < numSubDevices; id++) {
-            EXPECT_EQ(0u, drm->getVirtualMemoryAddressSpace(id));
+            if (heapless) {
+                EXPECT_EQ(id + 1, drm->getVirtualMemoryAddressSpace(id));
+
+            } else {
+                EXPECT_EQ(0u, drm->getVirtualMemoryAddressSpace(id));
+            }
         }
-        EXPECT_EQ(0u, static_cast<DrmWrap *>(drm.get())->virtualMemoryIds.size());
+        if (heapless) {
+            EXPECT_EQ(2u, static_cast<DrmWrap *>(drm.get())->virtualMemoryIds.size());
+
+        } else {
+            EXPECT_EQ(0u, static_cast<DrmWrap *>(drm.get())->virtualMemoryIds.size());
+        }
     }
 }
 
@@ -756,7 +762,28 @@ TEST_F(DrmTests, givenEnabledDebuggingAndVmBindNotAvailableWhenDrmIsCreatedThenP
     ::testing::internal::GetCapturedStdout();
     std::string errStr = ::testing::internal::GetCapturedStderr();
 
-    EXPECT_TRUE(hasSubstr(errStr, std::string("WARNING: Debugging not supported\n")));
+    auto &compilerProductHelper = drm->getRootDeviceEnvironment().getHelper<CompilerProductHelper>();
+    bool heapless = compilerProductHelper.isHeaplessModeEnabled();
+    if (heapless) {
+        EXPECT_FALSE(hasSubstr(errStr, std::string("WARNING: Debugging not supported\n")));
+
+    } else {
+        EXPECT_TRUE(hasSubstr(errStr, std::string("WARNING: Debugging not supported\n")));
+    }
+}
+
+TEST_F(DrmTests, givenEnabledDebuggingAndHeaplessModeWhenDrmIsCreatedThenPerContextVMIsFalse) {
+
+    mockRootDeviceEnvironment->executionEnvironment.setDebuggingMode(NEO::DebuggingMode::online);
+    auto compilerHelper = std::unique_ptr<MockCompilerProductHelper>(new MockCompilerProductHelper());
+    auto releaseHelper = std::unique_ptr<MockReleaseHelper>(new MockReleaseHelper());
+    compilerHelper->isHeaplessModeEnabledResult = true;
+    mockRootDeviceEnvironment->compilerProductHelper.reset(compilerHelper.release());
+    mockRootDeviceEnvironment->releaseHelper.reset(releaseHelper.release());
+
+    auto drm = DrmWrap::createDrm(*mockRootDeviceEnvironment);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_FALSE(drm->isPerContextVMRequired());
 }
 
 TEST_F(DrmTests, givenDrmIsCreatedWhenCreateVirtualMemoryFailsThenReturnVirtualMemoryIdZeroAndPrintDebugMessage) {
@@ -831,6 +858,7 @@ int main(int argc, char **argv) {
     defaultHwInfo = std::make_unique<HardwareInfo>();
     *defaultHwInfo = DEFAULT_TEST_PLATFORM::hwInfo;
 
+    debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
     initializeTestedDevice();
 
     Os::dxcoreDllName = "";
@@ -873,11 +901,11 @@ TEST(DeviceTest, whenCheckBlitSplitEnabledThenReturnsTrue) {
 }
 
 TEST(DeviceTest, givenCsrHwWhenCheckIsInitDeviceWithFirstSubmissionEnabledThenReturnsTrue) {
-    EXPECT_TRUE(Device::isInitDeviceWithFirstSubmissionEnabled(CommandStreamReceiverType::CSR_HW));
+    EXPECT_TRUE(Device::isInitDeviceWithFirstSubmissionEnabled(CommandStreamReceiverType::hardware));
 }
 
 TEST(DeviceTest, givenCsrNonHwWhenCheckIsInitDeviceWithFirstSubmissionEnabledThenReturnsTrue) {
-    EXPECT_FALSE(Device::isInitDeviceWithFirstSubmissionEnabled(CommandStreamReceiverType::CSR_TBX));
+    EXPECT_FALSE(Device::isInitDeviceWithFirstSubmissionEnabled(CommandStreamReceiverType::tbx));
 }
 
 TEST(PlatformsDestructor, whenGlobalPlatformsDestructorIsCalledThenGlobalPlatformsAreDestroyed) {
@@ -952,4 +980,43 @@ TEST_F(DrmTests, givenInValidPciPathThenNothingIsReturned) {
     openCounter = 1;
     hwDeviceIds = OSInterface::discoverDevices(mockExecutionEnvironment);
     EXPECT_TRUE(hwDeviceIds.empty());
+}
+
+TEST_F(DrmTests, whenDrmIsCreatedAndQueryEngineInfoFailsThenWarningIsReported) {
+    DebugManagerStateRestore dbgRestorer;
+    debugManager.flags.PrintDebugMessages.set(true);
+
+    VariableBackup<decltype(DrmQueryConfig::failOnQueryEngineInfo)> backupFailOnFdSetParamEngineMap(&DrmQueryConfig::failOnQueryEngineInfo);
+    DrmQueryConfig::failOnQueryEngineInfo = true;
+
+    ::testing::internal::CaptureStderr();
+    ::testing::internal::CaptureStdout();
+
+    MockExecutionEnvironment mockExecutionEnvironment;
+    auto drm = DrmWrap::createDrm(*mockExecutionEnvironment.rootDeviceEnvironments[0]);
+    EXPECT_NE(drm, nullptr);
+
+    std::string errStr = ::testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(hasSubstr(errStr, std::string("WARNING: Failed to query engine info\n")));
+    ::testing::internal::GetCapturedStdout();
+}
+
+TEST_F(DrmTests, whenDrmIsCreatedAndQueryMemoryInfoFailsThenWarningIsReported) {
+    DebugManagerStateRestore dbgRestorer;
+    debugManager.flags.PrintDebugMessages.set(true);
+    debugManager.flags.EnableLocalMemory.set(true);
+
+    VariableBackup<decltype(DrmQueryConfig::failOnQueryMemoryInfo)> backupFailOnFdSetParamMemRegionMap(&DrmQueryConfig::failOnQueryMemoryInfo);
+    DrmQueryConfig::failOnQueryMemoryInfo = true;
+
+    ::testing::internal::CaptureStderr();
+    ::testing::internal::CaptureStdout();
+
+    MockExecutionEnvironment mockExecutionEnvironment;
+    auto drm = DrmWrap::createDrm(*mockExecutionEnvironment.rootDeviceEnvironments[0]);
+    EXPECT_NE(drm, nullptr);
+
+    std::string errStr = ::testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(hasSubstr(errStr, std::string("WARNING: Failed to query memory info\n")));
+    ::testing::internal::GetCapturedStdout();
 }

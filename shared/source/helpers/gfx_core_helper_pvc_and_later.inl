@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -50,7 +50,7 @@ bool GfxCoreHelperHw<Family>::isCooperativeDispatchSupported(const EngineGroupTy
 
 template <typename Family>
 uint32_t GfxCoreHelperHw<Family>::adjustMaxWorkGroupCount(uint32_t maxWorkGroupCount, const EngineGroupType engineGroupType,
-                                                          const RootDeviceEnvironment &rootDeviceEnvironment, bool isEngineInstanced) const {
+                                                          const RootDeviceEnvironment &rootDeviceEnvironment) const {
     if ((debugManager.flags.ForceTheoreticalMaxWorkGroupCount.get()) ||
         (debugManager.flags.OverrideMaxWorkGroupCount.get() != -1)) {
         return maxWorkGroupCount;
@@ -61,8 +61,7 @@ uint32_t GfxCoreHelperHw<Family>::adjustMaxWorkGroupCount(uint32_t maxWorkGroupC
     auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
     auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
     bool requiresLimitation = productHelper.isCooperativeEngineSupported(hwInfo) &&
-                              (engineGroupType != EngineGroupType::cooperativeCompute) &&
-                              (!isEngineInstanced);
+                              (engineGroupType != EngineGroupType::cooperativeCompute);
 
     auto ccsCount = hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled;
     auto numberOfpartsInTileForConcurrentKernels = productHelper.getNumberOfPartsInTileForConcurrentKernel(ccsCount);
@@ -70,7 +69,7 @@ uint32_t GfxCoreHelperHw<Family>::adjustMaxWorkGroupCount(uint32_t maxWorkGroupC
         UNRECOVERABLE_IF(ccsCount == 0);
         numberOfpartsInTileForConcurrentKernels = std::max(numberOfpartsInTileForConcurrentKernels, ccsCount);
     }
-    return maxWorkGroupCount / numberOfpartsInTileForConcurrentKernels;
+    return std::max(maxWorkGroupCount / numberOfpartsInTileForConcurrentKernels, 1u);
 }
 
 template <typename Family>
@@ -84,12 +83,6 @@ size_t GfxCoreHelperHw<Family>::getPaddingForISAAllocation() const {
         return 0xE00 + (MemoryConstants::pageSize * debugManager.flags.ForceExtendedKernelIsaSize.get());
     }
     return 0xE00;
-}
-
-template <typename Family>
-uint32_t GfxCoreHelperHw<Family>::calculateAvailableThreadCount(const HardwareInfo &hwInfo, uint32_t grfCount) const {
-    auto maxThreadsPerEuCount = 1024u / grfCount;
-    return maxThreadsPerEuCount * hwInfo.gtSystemInfo.EUCount;
 }
 
 } // namespace NEO

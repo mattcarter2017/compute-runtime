@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -33,7 +33,7 @@ void Ioctls::reset() {
     gemSetDomain = 0;
     gemWait = 0;
     gemClose = 0;
-    gemResetStats = 0;
+    getResetStats = 0;
     regRead = 0;
     getParam = 0;
     contextGetParam = 0;
@@ -62,6 +62,7 @@ void DrmMockCustom::testIoctls() {
     NEO_IOCTL_EXPECT_EQ(gemSetDomain);
     NEO_IOCTL_EXPECT_EQ(gemWait);
     NEO_IOCTL_EXPECT_EQ(gemClose);
+    NEO_IOCTL_EXPECT_EQ(getResetStats);
     NEO_IOCTL_EXPECT_EQ(regRead);
     NEO_IOCTL_EXPECT_EQ(getParam);
     NEO_IOCTL_EXPECT_EQ(contextGetParam);
@@ -116,6 +117,11 @@ int DrmMockCustom::ioctl(DrmIoctl request, void *arg) {
         primeToHandleParams->handle = outputHandle;
         inputFd = primeToHandleParams->fileDescriptor;
         ioctlCnt.primeFdToHandle++;
+        if (failOnSecondPrimeFdToHandle == true) {
+            failOnSecondPrimeFdToHandle = false;
+            failOnPrimeFdToHandle = true;
+            break;
+        }
         if (failOnPrimeFdToHandle == true) {
             return -1;
         }
@@ -130,6 +136,9 @@ int DrmMockCustom::ioctl(DrmIoctl request, void *arg) {
             outputFd++;
         }
         ioctlCnt.handleToPrimeFd++;
+        if (failOnPrimeHandleToFd == true) {
+            return -1;
+        }
     } break;
     case DrmIoctl::gemSetDomain: {
         auto setDomainParams = static_cast<NEO::GemSetDomain *>(arg);
@@ -206,6 +215,10 @@ int DrmMockCustom::ioctl(DrmIoctl request, void *arg) {
         vmCreate->vmId = vmIdToCreate;
         break;
     }
+    case DrmIoctl::getResetStats: {
+        ioctlCnt.getResetStats++;
+        break;
+    }
     default:
         int res = ioctlExtra(request, arg);
         if (returnIoctlExtraErrorValue) {
@@ -221,19 +234,31 @@ int DrmMockCustom::ioctl(DrmIoctl request, void *arg) {
     return ioctlRes.load();
 }
 
-DrmMockCustom::DrmMockCustom(RootDeviceEnvironment &rootDeviceEnvironment)
-    : Drm(std::make_unique<HwDeviceIdDrm>(mockFd, mockPciPath), rootDeviceEnvironment) {
-    reset();
-    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<NEO::GfxCoreHelper>();
-    ioctlExpected.contextCreate = static_cast<int>(gfxCoreHelper.getGpgpuEngineInstances(rootDeviceEnvironment).size());
-    ioctlExpected.contextDestroy = ioctlExpected.contextCreate.load();
-    setupIoctlHelper(rootDeviceEnvironment.getHardwareInfo()->platform.eProductFamily);
-    createVirtualMemoryAddressSpace(NEO::GfxCoreHelper::getSubDevicesCount(rootDeviceEnvironment.getHardwareInfo()));
-    isVmBindAvailable(); // NOLINT(clang-analyzer-optin.cplusplus.VirtualCall)
-    reset();
+std::unique_ptr<DrmMockCustom> DrmMockCustom::create(RootDeviceEnvironment &rootDeviceEnvironment) {
+    return DrmMockCustom::create(std::make_unique<HwDeviceIdDrm>(mockFd, mockPciPath), rootDeviceEnvironment);
 }
 
-int DrmMockCustom::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) {
+std::unique_ptr<DrmMockCustom> DrmMockCustom::create(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment) {
+    DebugManagerStateRestore restore;
+    debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
+    auto drm{new DrmMockCustom{std::move(hwDeviceId), rootDeviceEnvironment}};
+
+    drm->reset();
+    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<NEO::GfxCoreHelper>();
+    drm->ioctlExpected.contextCreate = static_cast<int>(gfxCoreHelper.getGpgpuEngineInstances(rootDeviceEnvironment).size());
+    drm->ioctlExpected.contextDestroy = drm->ioctlExpected.contextCreate.load();
+    drm->setupIoctlHelper(rootDeviceEnvironment.getHardwareInfo()->platform.eProductFamily);
+    drm->createVirtualMemoryAddressSpace(NEO::GfxCoreHelper::getSubDevicesCount(rootDeviceEnvironment.getHardwareInfo()));
+    drm->isVmBindAvailable();
+    drm->reset();
+
+    return std::unique_ptr<DrmMockCustom>{drm};
+}
+
+DrmMockCustom::DrmMockCustom(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment)
+    : Drm(std::move(hwDeviceId), rootDeviceEnvironment) {}
+
+int DrmMockCustom::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, NEO::GraphicsAllocation *allocForInterruptWait) {
     waitUserFenceCall.called++;
     waitUserFenceCall.ctxId = ctxId;
     waitUserFenceCall.address = address;
@@ -245,7 +270,12 @@ int DrmMockCustom::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t valu
     if (waitUserFenceCall.called == waitUserFenceCall.failSpecificCall) {
         return 123;
     }
-    return Drm::waitUserFence(ctxId, address, value, dataWidth, timeout, flags);
+
+    if (waitUserFenceCall.failOnWaitUserFence == true) {
+        return -1;
+    }
+
+    return Drm::waitUserFence(ctxId, address, value, dataWidth, timeout, flags, userInterrupt, externalInterruptId, allocForInterruptWait);
 }
 
 bool DrmMockCustom::isVmBindAvailable() {

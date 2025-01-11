@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,11 +7,13 @@
 
 #pragma once
 #include "shared/source/commands/bxml_generator_glue.h"
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/debug_helpers.h"
 
 #include <cstring>
 #include <igfxfmid.h>
 #include <type_traits>
+#include <variant>
 
 template <class T>
 struct CmdParse;
@@ -48,7 +50,6 @@ struct Gen12Lp {
     };
 
     struct StateBaseAddressStateSupport {
-        static constexpr bool globalAtomics = false;
         static constexpr bool bindingTablePoolBaseAddress = false;
     };
 
@@ -85,6 +86,9 @@ struct Gen12Lp {
             return bindlessSurfaceOffset << 12;
         }
     };
+
+    static constexpr uint32_t cacheLineSize = 0x40;
+    static constexpr bool isDcFlushAllowed = true;
 
     static_assert(sizeof(DataPortBindlessSurfaceExtendedMessageDescriptor) == sizeof(DataPortBindlessSurfaceExtendedMessageDescriptor::packed), "");
 };
@@ -133,9 +137,10 @@ struct Gen12LpFamily : public Gen12Lp {
     static const XY_FAST_COLOR_BLT cmdInitXyColorBlt;
     static constexpr bool isQwordInOrderCounter = false;
     static constexpr bool walkerPostSyncSupport = false;
+    static constexpr size_t indirectDataAlignment = GPGPU_WALKER::INDIRECTDATASTARTADDRESS_ALIGN_SIZE;
 
     static constexpr bool supportsCmdSet(GFXCORE_FAMILY cmdSetBaseFamily) {
-        return cmdSetBaseFamily == IGFX_GEN8_CORE;
+        return cmdSetBaseFamily == IGFX_GEN12LP_CORE;
     }
 
     template <typename WalkerType>
@@ -152,6 +157,18 @@ struct Gen12LpFamily : public Gen12Lp {
     static constexpr bool isHeaplessMode() {
         return false;
     }
+
+    template <typename InterfaceDescriptorType>
+    static constexpr bool isInterfaceDescriptorHeaplessMode() {
+        return false;
+    }
+
+    template <typename WalkerType = DefaultWalkerType>
+    static WalkerType getInitGpuWalker() {
+        return cmdInitGpgpuWalker;
+    }
+
+    using WalkerVariant = std::variant<GPGPU_WALKER *>;
 };
 
 } // namespace NEO

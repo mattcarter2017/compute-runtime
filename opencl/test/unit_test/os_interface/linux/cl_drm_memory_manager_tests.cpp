@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -52,7 +52,7 @@ struct ClDrmMemoryManagerTest : public DrmMemoryManagerTest {
         MemoryManagementFixture::setUp();
 
         executionEnvironment = MockClDevice::prepareExecutionEnvironment(defaultHwInfo.get(), numRootDevices - 1);
-        DrmMemoryManagerFixture::setUp(new DrmMockCustom(*executionEnvironment->rootDeviceEnvironments[0]), false);
+        DrmMemoryManagerFixture::setUp(DrmMockCustom::create(*executionEnvironment->rootDeviceEnvironments[0]).release(), false);
         pClDevice = new MockClDevice{device}; // NOLINT(clang-analyzer-cplusplus.NewDeleteLeaks)
         device->incRefInternal();
     }
@@ -458,7 +458,7 @@ HWTEST_F(ClDrmMemoryManagerTest, givenDrmMemoryManagerWhenTiledImageIsBeingCreat
     mock->ioctlExpected.execbuffer2 = 0;
 
     // builtins kernels
-    mock->ioctlExpected.gemUserptr += 5;
+    mock->ioctlExpected.gemUserptr += 7;
 
     // command buffers
     mock->ioctlExpected.gemUserptr += 2;
@@ -747,7 +747,7 @@ TEST_F(ClDrmMemoryManagerTest, givenOsHandleWithNonTiledObjectWhenCreateFromShar
     auto ioctlHelper = this->mock->getIoctlHelper();
     mock->getTilingModeOut = ioctlHelper->getDrmParamValue(DrmParam::tilingNone);
 
-    osHandle handle = 1u;
+    TestedDrmMemoryManager::OsHandleData osHandleData{1u};
     uint32_t boHandle = 2u;
     mock->outputHandle = boHandle;
 
@@ -769,7 +769,7 @@ TEST_F(ClDrmMemoryManagerTest, givenOsHandleWithNonTiledObjectWhenCreateFromShar
 
     AllocationProperties properties(rootDeviceIndex, false, &imgInfo, AllocationType::sharedImage, context.getDevice(0)->getDeviceBitfield());
 
-    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(handle, properties, false, false, true, nullptr);
+    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
     ASSERT_NE(nullptr, graphicsAllocation);
     EXPECT_EQ(boHandle, mock->getTilingHandleIn);
     EXPECT_EQ(AllocationType::sharedImage, graphicsAllocation->getAllocationType());
@@ -790,7 +790,7 @@ TEST_F(ClDrmMemoryManagerTest, givenOsHandleWithTileYObjectWhenCreateFromSharedH
     auto ioctlHelper = this->mock->getIoctlHelper();
     mock->getTilingModeOut = ioctlHelper->getDrmParamValue(DrmParam::tilingY);
 
-    osHandle handle = 1u;
+    TestedDrmMemoryManager::OsHandleData osHandleData{1u};
     uint32_t boHandle = 2u;
     mock->outputHandle = boHandle;
 
@@ -812,7 +812,7 @@ TEST_F(ClDrmMemoryManagerTest, givenOsHandleWithTileYObjectWhenCreateFromSharedH
 
     AllocationProperties properties(rootDeviceIndex, false, &imgInfo, AllocationType::sharedImage, context.getDevice(0)->getDeviceBitfield());
 
-    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(handle, properties, false, false, true, nullptr);
+    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
     ASSERT_NE(nullptr, graphicsAllocation);
     EXPECT_EQ(boHandle, mock->getTilingHandleIn);
     EXPECT_EQ(AllocationType::sharedImage, graphicsAllocation->getAllocationType());
@@ -832,7 +832,7 @@ TEST_F(ClDrmMemoryManagerTest, givenDrmMemoryManagerWhenCreateFromSharedHandleFa
     this->ioctlResExt = {mock->ioctlCnt.total + 1, -1};
     mock->ioctlResExt = &ioctlResExt;
 
-    osHandle handle = 1u;
+    TestedDrmMemoryManager::OsHandleData osHandleData{1u};
     uint32_t boHandle = 2u;
     mock->outputHandle = boHandle;
 
@@ -854,7 +854,7 @@ TEST_F(ClDrmMemoryManagerTest, givenDrmMemoryManagerWhenCreateFromSharedHandleFa
 
     AllocationProperties properties(rootDeviceIndex, false, &imgInfo, AllocationType::sharedImage, context.getDevice(0)->getDeviceBitfield());
 
-    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(handle, properties, false, false, true, nullptr);
+    auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, true, nullptr);
     ASSERT_NE(nullptr, graphicsAllocation);
     EXPECT_EQ(boHandle, mock->getTilingHandleIn);
     EXPECT_EQ(AllocationType::sharedImage, graphicsAllocation->getAllocationType());

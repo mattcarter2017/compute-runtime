@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,17 +7,15 @@
 
 #include "level_zero/sysman/source/api/pci/windows/sysman_os_pci_imp.h"
 
+#include "level_zero/sysman/source/shared/windows/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/windows/sysman_kmd_sys_manager.h"
-#include "level_zero/sysman/source/shared/windows/zes_os_sysman_imp.h"
 
 namespace L0 {
 namespace Sysman {
 
 ze_result_t WddmPciImp::getProperties(zes_pci_properties_t *properties) {
-    properties->haveBandwidthCounters = false;
-    properties->havePacketCounters = false;
-    properties->haveReplayCounters = false;
-    return ZE_RESULT_SUCCESS;
+    auto pSysmanProductHelper = pWddmSysmanImp->getSysmanProductHelper();
+    return pSysmanProductHelper->getPciProperties(properties);
 }
 
 ze_result_t WddmPciImp::getPciBdf(zes_pci_properties_t &pciProperties) {
@@ -111,9 +109,9 @@ ze_result_t WddmPciImp::getState(zes_pci_state_t *state) {
     std::vector<KmdSysman::ResponseProperty> vResponses = {};
     KmdSysman::RequestProperty request = {};
 
-    state->qualityIssues = ZES_PCI_LINK_QUAL_ISSUE_FLAG_FORCE_UINT32;
-    state->stabilityIssues = ZES_PCI_LINK_STAB_ISSUE_FLAG_FORCE_UINT32;
-    state->status = ZES_PCI_LINK_STATUS_FORCE_UINT32;
+    state->qualityIssues = 0;
+    state->stabilityIssues = 0;
+    state->status = ZES_PCI_LINK_STATUS_UNKNOWN;
 
     state->speed.gen = -1;
     state->speed.width = -1;
@@ -152,6 +150,11 @@ ze_result_t WddmPciImp::getState(zes_pci_state_t *state) {
     }
 
     return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t WddmPciImp::getStats(zes_pci_stats_t *stats) {
+    auto pSysmanProductHelper = pWddmSysmanImp->getSysmanProductHelper();
+    return pSysmanProductHelper->getPciStats(stats, pWddmSysmanImp);
 }
 
 bool WddmPciImp::resizableBarSupported() {
@@ -200,7 +203,7 @@ ze_result_t WddmPciImp::initializeBarProperties(std::vector<zes_pci_bar_properti
 }
 
 WddmPciImp::WddmPciImp(OsSysman *pOsSysman) {
-    WddmSysmanImp *pWddmSysmanImp = static_cast<WddmSysmanImp *>(pOsSysman);
+    pWddmSysmanImp = static_cast<WddmSysmanImp *>(pOsSysman);
     pKmdSysManager = &pWddmSysmanImp->getKmdSysManager();
 
     isLmemSupported = !(pWddmSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getHardwareInfo()->capabilityTable.isIntegratedDevice);

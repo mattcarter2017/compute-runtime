@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,43 +10,22 @@
 #include "shared/source/helpers/non_copyable_or_moveable.h"
 #include "shared/source/memory_manager/graphics_allocation.h"
 
+#include <string>
+
 namespace NEO {
 
+class ReleaseHelper;
 struct HardwareInfo;
 
 class AubHelper : public NonCopyableOrMovableClass {
   public:
-    static bool isOneTimeAubWritableAllocationType(const AllocationType &type) {
-        switch (type) {
-        case AllocationType::pipe:
-        case AllocationType::constantSurface:
-        case AllocationType::globalSurface:
-        case AllocationType::kernelIsa:
-        case AllocationType::kernelIsaInternal:
-        case AllocationType::privateSurface:
-        case AllocationType::scratchSurface:
-        case AllocationType::workPartitionSurface:
-        case AllocationType::buffer:
-        case AllocationType::bufferHostMemory:
-        case AllocationType::image:
-        case AllocationType::timestampPacketTagBuffer:
-        case AllocationType::externalHostPtr:
-        case AllocationType::mapAllocation:
-        case AllocationType::svmGpu:
-        case AllocationType::gpuTimestampDeviceBuffer:
-        case AllocationType::assertBuffer:
-        case AllocationType::tagBuffer:
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    static uint64_t getTotalMemBankSize();
+    static bool isOneTimeAubWritableAllocationType(const AllocationType &type);
+    static uint64_t getTotalMemBankSize(const ReleaseHelper *releaseHelper);
     static int getMemTrace(uint64_t pdEntryBits);
     static uint64_t getPTEntryBits(uint64_t pdEntryBits);
     static uint32_t getMemType(uint32_t addressSpace);
-    static uint64_t getPerTileLocalMemorySize(const HardwareInfo *pHwInfo);
+    static uint64_t getPerTileLocalMemorySize(const HardwareInfo *pHwInfo, const ReleaseHelper *releaseHelper);
+    static const std::string getDeviceConfigString(const ReleaseHelper *releaseHelper, uint32_t tileCount, uint32_t sliceCount, uint32_t subSliceCount, uint32_t euPerSubSliceCount);
     static MMIOList getAdditionalMmioList();
     static void setTbxConfiguration();
 

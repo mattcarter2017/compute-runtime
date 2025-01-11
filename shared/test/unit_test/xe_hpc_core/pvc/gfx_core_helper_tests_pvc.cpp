@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -153,7 +153,7 @@ PVCTEST_F(GfxCoreHelperTestsPvc, givenMemorySynchronizationCommandsWhenAddingSyn
 
             auto fenceCmd = genCmdCast<MI_MEM_FENCE *>(*hwParser.cmdList.begin());
             ASSERT_NE(nullptr, fenceCmd);
-            EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_RELEASE, fenceCmd->getFenceType());
+            EXPECT_EQ(MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_RELEASE_FENCE, fenceCmd->getFenceType());
         }
     }
 }
@@ -182,17 +182,15 @@ PVCTEST_F(GfxCoreHelperTestsPvc, GivenCooperativeEngineSupportedAndNotUsedWhenAd
                 bool disallowDispatch = (engineGroupType == EngineGroupType::renderCompute ||
                                          (engineGroupType == EngineGroupType::compute && isRcsEnabled)) &&
                                         productHelper.isCooperativeEngineSupported(hwInfo);
-                for (auto isEngineInstanced : ::testing::Bool()) {
-                    if (disallowDispatch) {
-                        EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(passedMaxWorkGroupCount, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                    } else {
-                        for (uint32_t ccsCount : {1, 2, 4}) {
-                            hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = ccsCount;
-                            tilePartsForConcurrentKernels = ccsCount == 1   ? 2
-                                                            : ccsCount == 2 ? 4
-                                                                            : 8;
-                            EXPECT_EQ(passedMaxWorkGroupCount / tilePartsForConcurrentKernels, gfxCoreHelper.adjustMaxWorkGroupCount(passedMaxWorkGroupCount, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                        }
+                if (disallowDispatch) {
+                    EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(passedMaxWorkGroupCount, engineGroupType, rootDeviceEnvironment));
+                } else {
+                    for (uint32_t ccsCount : {1, 2, 4}) {
+                        hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = ccsCount;
+                        tilePartsForConcurrentKernels = ccsCount == 1   ? 1
+                                                        : ccsCount == 2 ? 4
+                                                                        : 8;
+                        EXPECT_EQ(passedMaxWorkGroupCount / tilePartsForConcurrentKernels, gfxCoreHelper.adjustMaxWorkGroupCount(passedMaxWorkGroupCount, engineGroupType, rootDeviceEnvironment));
                     }
                 }
             }

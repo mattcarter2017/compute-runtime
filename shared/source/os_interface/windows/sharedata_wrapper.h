@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -94,6 +94,9 @@ struct SKU_FEATURE_TABLE_KMD : SKU_FEATURE_TABLE_GMM { // NOLINT(readability-ide
     bool FtrRcsNode : 1;              // NOLINT(readability-identifier-naming)
     bool FtrLocalMemory : 1;          // NOLINT(readability-identifier-naming)
     bool FtrLocalMemoryAllows4KB : 1; // NOLINT(readability-identifier-naming)
+
+    bool FtrHwScheduling : 1; // NOLINT(readability-identifier-naming)
+    bool FtrWalkerMTP : 1;    // NOLINT(readability-identifier-naming)
 };
 
 struct WA_TABLE_KMD : WA_TABLE_GMM { // NOLINT(readability-identifier-naming)
@@ -161,6 +164,7 @@ struct CREATECONTEXT_PVTDATA { // NOLINT(readability-identifier-naming)
     uint8_t IsMediaUsage;       // NOLINT(readability-identifier-naming)
     uint8_t GpuVAContext;       // NOLINT(readability-identifier-naming)
     BOOLEAN NoRingFlushes;      // NOLINT(readability-identifier-naming)
+    uint32_t UmdContextType;    // NOLINT(readability-identifier-naming)
 };
 
 struct PLATFORM_KMD : PLATFORM_GMM { // NOLINT(readability-identifier-naming)

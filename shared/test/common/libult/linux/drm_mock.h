@@ -26,19 +26,21 @@ class DrmMock : public Drm {
   public:
     using Drm::adapterBDF;
     using Drm::bindAvailable;
-    using Drm::cacheInfo;
     using Drm::checkQueueSliceSupport;
     using Drm::chunkingAvailable;
     using Drm::chunkingMode;
     using Drm::completionFenceSupported;
     using Drm::contextDebugSupported;
     using Drm::engineInfo;
+    using Drm::engineInfoQueried;
     using Drm::fenceVal;
     using Drm::generateElfUUID;
     using Drm::generateUUID;
     using Drm::getQueueSliceCount;
     using Drm::ioctlHelper;
+    using Drm::l3CacheInfo;
     using Drm::memoryInfo;
+    using Drm::memoryInfoQueried;
     using Drm::minimalChunkingSize;
     using Drm::nonPersistentContextsSupported;
     using Drm::pageFaultSupported;
@@ -52,6 +54,8 @@ class DrmMock : public Drm {
     using Drm::setupIoctlHelper;
     using Drm::sliceCountChangeSupported;
     using Drm::systemInfo;
+    using Drm::systemInfoQueried;
+    using Drm::topologyQueried;
     using Drm::virtualMemoryIds;
     using Drm::vmBindPatIndexProgrammingSupported;
 
@@ -68,7 +72,7 @@ class DrmMock : public Drm {
         return errnoRetVal;
     }
 
-    int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) override;
+    int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) override;
 
     void writeConfigFile(const char *name, int deviceID) {
         std::ofstream tempfile(name, std::ios::binary);
@@ -174,7 +178,7 @@ class DrmMock : public Drm {
         else
             return Drm::useVMBindImmediate();
     }
-    int queryGttSize(uint64_t &gttSizeOutput) override {
+    int queryGttSize(uint64_t &gttSizeOutput, bool alignUpToFullRange) override {
         gttSizeOutput = storedGTTSize;
         return storedRetValForGetGttSize;
     }
@@ -205,7 +209,6 @@ class DrmMock : public Drm {
     int storedRetValForPersistant = 0;
     int storedRetValForVmCreate = 0;
     int storedPreemptionSupport = 0;
-    int storedExecSoftPin = 0;
     int storedRetValForVmId = 1;
     int storedCsTimestampFrequency = 1000;
     int storedOaTimestampFrequency = 123456;
@@ -222,6 +225,7 @@ class DrmMock : public Drm {
     bool unrecoverableContextSet = false;
     bool failRetHwIpVersion = false;
     bool returnInvalidHwIpVersionLength = false;
+    bool failPerfOpen = false;
 
     bool capturedCooperativeContextRequest = false;
     bool incrementVmId = false;
@@ -276,7 +280,7 @@ class DrmMock : public Drm {
     GemVmControl receivedGemVmControl{};
     uint32_t latestCreatedVmId = 0u;
 
-    uint64_t storedGTTSize = 1ull << 47;
+    uint64_t storedGTTSize = defaultHwInfo->capabilityTable.gpuAddressSpace + 1;
     uint64_t storedParamSseu = ULONG_MAX;
 
     Ioctls ioctlCount{};

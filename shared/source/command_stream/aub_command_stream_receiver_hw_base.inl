@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -36,6 +36,7 @@
 #include "shared/source/memory_manager/memory_banks.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/memory_manager/page_table.h"
+#include "shared/source/os_interface/aub_memory_operations_handler.h"
 #include "shared/source/os_interface/product_helper.h"
 
 #include "aubstream/aubstream.h"
@@ -63,8 +64,9 @@ AUBCommandStreamReceiverHw<GfxFamily>::AUBCommandStreamReceiverHw(const std::str
 
     aubManager = aubCenter->getAubManager();
 
+    auto releaseHelper = executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getReleaseHelper();
     if (!aubCenter->getPhysicalAddressAllocator()) {
-        aubCenter->initPhysicalAddressAllocator(this->createPhysicalAddressAllocator(&this->peekHwInfo()));
+        aubCenter->initPhysicalAddressAllocator(this->createPhysicalAddressAllocator(&this->peekHwInfo(), releaseHelper));
     }
     auto physicalAddressAllocator = aubCenter->getPhysicalAddressAllocator();
     UNRECOVERABLE_IF(nullptr == physicalAddressAllocator);
@@ -583,9 +585,9 @@ void AUBCommandStreamReceiverHw<GfxFamily>::submitBatchBufferAub(uint64_t batchB
 }
 
 template <typename GfxFamily>
-void AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletion() {
+void AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletion(bool skipTaskCountCheck) {
     const auto lock = std::unique_lock<decltype(pollForCompletionLock)>{pollForCompletionLock};
-    if (this->pollForCompletionTaskCount == this->latestSentTaskCount) {
+    if (!skipTaskCountCheck && (this->pollForCompletionTaskCount == this->latestSentTaskCount)) {
         return;
     }
     pollForCompletionImpl();
@@ -705,7 +707,7 @@ bool AUBCommandStreamReceiverHw<GfxFamily>::writeMemory(GraphicsAllocation &gfxA
 
 template <typename GfxFamily>
 bool AUBCommandStreamReceiverHw<GfxFamily>::writeMemory(AllocationView &allocationView) {
-    GraphicsAllocation gfxAllocation(this->rootDeviceIndex, AllocationType::unknown, reinterpret_cast<void *>(allocationView.first), allocationView.first, 0llu, allocationView.second, MemoryPool::memoryNull, 0u);
+    GraphicsAllocation gfxAllocation(this->rootDeviceIndex, 1u /*num gmms*/, AllocationType::unknown, reinterpret_cast<void *>(allocationView.first), allocationView.first, 0llu, allocationView.second, MemoryPool::memoryNull, 0u);
     return writeMemory(gfxAllocation);
 }
 
@@ -754,7 +756,7 @@ bool AUBCommandStreamReceiverHw<GfxFamily>::expectMemory(const void *gfxAddress,
 }
 
 template <typename GfxFamily>
-SubmissionStatus AUBCommandStreamReceiverHw<GfxFamily>::processResidency(const ResidencyContainer &allocationsForResidency, uint32_t handleId) {
+SubmissionStatus AUBCommandStreamReceiverHw<GfxFamily>::processResidency(ResidencyContainer &allocationsForResidency, uint32_t handleId) {
     if (subCaptureManager->isSubCaptureMode()) {
         if (!subCaptureManager->isSubCaptureEnabled()) {
             return SubmissionStatus::success;
@@ -776,6 +778,10 @@ SubmissionStatus AUBCommandStreamReceiverHw<GfxFamily>::processResidency(const R
                              !this->isAubWritable(*gfxAllocation)));
         }
         gfxAllocation->updateResidencyTaskCount(this->taskCount + 1, this->osContext->getContextId());
+    }
+
+    if (this->executionEnvironment.rootDeviceEnvironments[this->rootDeviceIndex]->memoryOperationsInterface) {
+        this->executionEnvironment.rootDeviceEnvironments[this->rootDeviceIndex]->memoryOperationsInterface->processFlushResidency(this);
     }
 
     dumpAubNonWritable = false;

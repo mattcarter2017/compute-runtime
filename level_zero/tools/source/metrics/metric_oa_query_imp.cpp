@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -179,7 +179,7 @@ void MetricsLibrary::release() {
 
 bool MetricsLibrary::load() {
     // Load library.
-    handle = OaMetricSourceImp::osLibraryLoadFunction(getFilename());
+    handle = NEO::OsLibrary::loadFunc({getFilename()});
 
     // Load exported functions.
     if (handle) {
@@ -190,7 +190,7 @@ bool MetricsLibrary::load() {
     }
 
     if (contextCreateFunction == nullptr || contextDeleteFunction == nullptr) {
-        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "cannot load %s exported functions\n", MetricsLibrary::getFilename());
+        METRICS_LOG_ERR("cannot load %s exported functions", MetricsLibrary::getFilename());
         return false;
     }
 
@@ -471,11 +471,11 @@ ze_result_t OaMetricQueryPoolImp::metricQueryPoolCreate(zet_context_handle_t hCo
 
     if (metricSource.isImplicitScalingCapable()) {
 
-        auto emptyMetricGroups = std::vector<zet_metric_group_handle_t>();
+        auto emptyMetricGroups = std::vector<MetricGroupImp *>();
 
-        auto &metricGroups = hMetricGroup
-                                 ? static_cast<OaMetricGroupImp *>(MetricGroup::fromHandle(hMetricGroup))->getMetricGroups()
-                                 : emptyMetricGroups;
+        auto metricGroups = hMetricGroup
+                                ? static_cast<OaMetricGroupImp *>(MetricGroup::fromHandle(hMetricGroup))->getMetricGroups()
+                                : emptyMetricGroups;
 
         const bool useMetricGroupSubDevice = metricGroups.size() > 0;
 
@@ -626,9 +626,9 @@ bool OaMetricQueryPoolImp::allocateGpuMemory() {
 
 bool OaMetricQueryPoolImp::createMetricQueryPool() {
     // Validate metric group query - only event based is supported.
-    zet_metric_group_properties_t metricGroupProperites = {ZET_STRUCTURE_TYPE_METRIC_GROUP_PROPERTIES, nullptr};
-    OaMetricGroupImp::getProperties(hMetricGroup, &metricGroupProperites);
-    const bool validMetricGroup = metricGroupProperites.samplingType == ZET_METRIC_GROUP_SAMPLING_TYPE_FLAG_EVENT_BASED;
+    zet_metric_group_properties_t metricGroupProperties = {ZET_STRUCTURE_TYPE_METRIC_GROUP_PROPERTIES, nullptr};
+    OaMetricGroupImp::getProperties(hMetricGroup, &metricGroupProperties);
+    const bool validMetricGroup = metricGroupProperties.samplingType == ZET_METRIC_GROUP_SAMPLING_TYPE_FLAG_EVENT_BASED;
 
     if (!validMetricGroup) {
         return false;
@@ -819,7 +819,7 @@ ze_result_t OaMetricQueryImp::writeMetricQuery(CommandList &commandList, ze_even
     commandList.getCmdContainer().addToResidencyContainer(pool.pAllocation);
 
     // Wait for events before executing query.
-    commandList.appendWaitOnEvents(numWaitEvents, phWaitEvents, false, true, false);
+    commandList.appendWaitOnEvents(numWaitEvents, phWaitEvents, nullptr, false, true, false, false, false, false);
 
     if (metricQueriesSize) {
 
@@ -901,7 +901,7 @@ ze_result_t OaMetricQueryImp::writeMetricQuery(CommandList &commandList, ze_even
 
     // Write completion event.
     if (result && writeCompletionEvent) {
-        result = commandList.appendSignalEvent(hSignalEvent) == ZE_RESULT_SUCCESS;
+        result = commandList.appendSignalEvent(hSignalEvent, false) == ZE_RESULT_SUCCESS;
     }
 
     return result ? ZE_RESULT_SUCCESS : ZE_RESULT_ERROR_UNKNOWN;
@@ -942,5 +942,14 @@ MetricQuery *MetricQuery::fromHandle(zet_metric_query_handle_t handle) {
 }
 
 zet_metric_query_handle_t MetricQuery::toHandle() { return this; }
+
+StatusCode ML_STDCALL MetricsLibrary::flushCommandBufferCallback(ClientHandle_1_0 handle) {
+    Device *device = static_cast<Device *>(handle.data);
+    if (device) {
+        device->getNEODevice()->stopDirectSubmissionAndWaitForCompletion();
+        return StatusCode::Success;
+    }
+    return StatusCode::Failed;
+}
 
 } // namespace L0

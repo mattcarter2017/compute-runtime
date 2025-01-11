@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,7 +20,7 @@ namespace ult {
 
 class MockOsLibrary : public NEO::OsLibrary {
   public:
-    MockOsLibrary(const std::string &name, std::string *errorValue) {
+    MockOsLibrary() {
     }
 
     void *getProcAddress(const std::string &procName) override {
@@ -35,8 +35,8 @@ class MockOsLibrary : public NEO::OsLibrary {
         return std::string();
     }
 
-    static OsLibrary *load(const std::string &name) {
-        auto ptr = new (std::nothrow) MockOsLibrary(name, nullptr);
+    static OsLibrary *load(const OsLibraryCreateProperties &properties) {
+        auto ptr = new (std::nothrow) MockOsLibrary();
         if (ptr == nullptr) {
             return nullptr;
         }
@@ -49,9 +49,8 @@ using MetricInitializationTest = Test<MetricContextFixture>;
 TEST_F(MetricInitializationTest, GivenOaDependenciesAreAvailableThenMetricInitializationIsSuccess) {
 
     globalDriverHandle = static_cast<_ze_driver_handle_t *>(driverHandle.get());
-    OaMetricSourceImp::osLibraryLoadFunction = MockOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibrary::load};
     EXPECT_EQ(device->getMetricDeviceContext().enableMetricApi(), ZE_RESULT_SUCCESS);
-    OaMetricSourceImp::osLibraryLoadFunction = NEO::OsLibrary::load;
 }
 
 } // namespace ult

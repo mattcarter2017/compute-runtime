@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -57,7 +57,6 @@ class LinuxPowerImp : public OsPower, NEO::NonCopyableOrMovableClass {
     uint32_t subdeviceId = 0;
     uint32_t powerLimitCount = 0;
     PRODUCT_FAMILY productFamily{};
-    class PowerLimitRestorer;
 
     ze_result_t getErrorCode(ze_result_t result) {
         if (result == ZE_RESULT_ERROR_NOT_AVAILABLE) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,7 +24,7 @@ TEST(EngineNodeHelperTest, givenValidEngineUsageWhenGettingStringRepresentationT
 
 TEST(EngineNodeHelperTest, givenInValidEngineUsageWhenGettingStringRepresentationThenReturnUnknown) {
     EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineUsageToString(EngineUsage::engineUsageCount));
-    EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineUsageToString(static_cast<EngineUsage>(0xcc)));
+    EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineUsageToString(static_cast<EngineUsage>(0xcc))); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
 }
 
 TEST(EngineNodeHelperTest, givenValidEngineTypeWhenGettingStringRepresentationThenItIsCorrect) {
@@ -79,7 +79,7 @@ TEST(EngineNodeHelperTest, givenCcsWhenGettingCcsIndexThenReturnCorrectIndex) {
 
 TEST(EngineNodeHelperTest, givenInvalidEngineTypeWhenGettingStringRepresentationThenItIsCorrect) {
     EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineTypeToString(aub_stream::EngineType::NUM_ENGINES));
-    EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineTypeToString(static_cast<aub_stream::EngineType>(0xcc)));
+    EXPECT_EQ(std::string{"Unknown"}, EngineHelpers::engineTypeToString(static_cast<aub_stream::EngineType>(0xcc))); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
 }
 
 TEST(EngineNodeHelperTest, givenLinkCopyEnginesSupportedWhenGettingBcsEngineTypeThenFirstReturnMainCopyEngineAndThenRoundRobinBetweenLinkEngines) {
@@ -163,7 +163,7 @@ TEST(EngineNodeHelperTest, givenLinkCopyEnginesAndInternalUsageEnabledWhenGettin
     auto &rootDeviceEnvironment = *executionEnvironment.rootDeviceEnvironments[0];
     auto &hwInfo = *rootDeviceEnvironment.getMutableHardwareInfo();
     DeviceBitfield deviceBitfield = 0b11;
-    hwInfo.featureTable.ftrBcsInfo = 0b111;
+    hwInfo.featureTable.ftrBcsInfo = 0b1111;
     auto isInternalUsage = true;
     EXPECT_EQ(aub_stream::EngineType::ENGINE_BCS3, EngineHelpers::getBcsEngineType(rootDeviceEnvironment, deviceBitfield, selectorCopyEngine, isInternalUsage));
     EXPECT_EQ(aub_stream::EngineType::ENGINE_BCS3, EngineHelpers::getBcsEngineType(rootDeviceEnvironment, deviceBitfield, selectorCopyEngine, isInternalUsage));

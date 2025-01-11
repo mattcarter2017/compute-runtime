@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,8 +22,7 @@ OsContext::OsContext(uint32_t rootDeviceIndex, uint32_t contextId, const EngineD
       numSupportedDevices(static_cast<uint32_t>(engineDescriptor.deviceBitfield.count())),
       engineType(engineDescriptor.engineTypeUsage.first),
       engineUsage(engineDescriptor.engineTypeUsage.second),
-      rootDevice(engineDescriptor.isRootDevice),
-      engineInstancedDevice(engineDescriptor.isEngineInstanced) {}
+      rootDevice(engineDescriptor.isRootDevice) {}
 
 bool OsContext::isImmediateContextInitializationEnabled(bool isDefaultEngine) const {
     if (debugManager.flags.DeferOsContextInitialization.get() == 0) {
@@ -45,8 +44,8 @@ bool OsContext::isImmediateContextInitializationEnabled(bool isDefaultEngine) co
     return false;
 }
 
-bool OsContext::ensureContextInitialized() {
-    std::call_once(contextInitializedFlag, [this] {
+bool OsContext::ensureContextInitialized(bool allocateInterrupt) {
+    std::call_once(contextInitializedFlag, [this, allocateInterrupt] {
         if (debugManager.flags.PrintOsContextInitializations.get()) {
             printf("OsContext initialization: contextId=%d usage=%s type=%s isRootDevice=%d\n",
                    contextId,
@@ -55,7 +54,7 @@ bool OsContext::ensureContextInitialized() {
                    static_cast<int>(rootDevice));
         }
 
-        if (!initializeContext()) {
+        if (!initializeContext(allocateInterrupt)) {
             contextInitialized = false;
         } else {
             contextInitialized = true;

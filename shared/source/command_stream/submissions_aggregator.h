@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,15 @@ class Event;
 class FlushStampTracker;
 class GraphicsAllocation;
 
+struct PagingFenceSemaphoreInfo {
+    bool requiresBlockingResidencyHandling = true;
+    uint64_t pagingFenceValue = 0u;
+
+    bool requiresProgrammingSemaphore() {
+        return !requiresBlockingResidencyHandling && pagingFenceValue > 0u;
+    }
+};
+
 struct BatchBuffer {
     BatchBuffer(GraphicsAllocation *commandBufferAllocation,
                 size_t startOffset,
@@ -34,19 +43,17 @@ struct BatchBuffer {
                 uint32_t numCsrClients,
                 bool hasStallingCmds,
                 bool hasRelaxedOrderingDependencies,
-                bool dispatchMonitorFence);
+                bool dispatchMonitorFence,
+                bool taskCountUpdateOnly);
     BatchBuffer() {}
+
+    PagingFenceSemaphoreInfo pagingFenceSemInfo{};
+
     GraphicsAllocation *commandBufferAllocation = nullptr;
     ResidencyContainer *allocationsForResidency = nullptr;
     size_t startOffset = 0u;
     size_t chainedBatchBufferStartOffset = 0u;
     uint64_t taskStartAddress = 0; // if task not available, use CSR stream
-
-    GraphicsAllocation *chainedBatchBuffer = nullptr;
-    bool lowPriority = false;
-    QueueThrottle throttle = QueueThrottle::MEDIUM;
-    uint64_t sliceCount = QueueSliceCount::defaultSliceCount;
-    size_t usedSize = 0u;
 
     // only used in drm csr in gem close worker active mode
     LinearStream *stream = nullptr;
@@ -55,9 +62,15 @@ struct BatchBuffer {
 
     bool hasStallingCmds = false;
     bool hasRelaxedOrderingDependencies = false;
-    bool ringBufferRestartRequest = false;
     bool disableFlatRingBuffer = false;
     bool dispatchMonitorFence = false;
+    bool taskCountUpdateOnly = false;
+
+    bool lowPriority = false;
+    QueueThrottle throttle = QueueThrottle::MEDIUM;
+    GraphicsAllocation *chainedBatchBuffer = nullptr;
+    uint64_t sliceCount = QueueSliceCount::defaultSliceCount;
+    size_t usedSize = 0u;
 };
 
 struct CommandBuffer : public IDNode<CommandBuffer> {

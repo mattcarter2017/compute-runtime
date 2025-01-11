@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,15 +19,15 @@
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenGetSizeWhenDispatchingCmdBufferThenConsumedSizeMatchEstimatedAndCmdBufferHasCorrectCmds) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
 
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -36,11 +36,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenGetSizeWhenDispatchingCm
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, false, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(32, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, 0u, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(0, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(2u, partitionCount);
+    EXPECT_EQ(2u, dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -62,15 +63,15 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenGetSizeWhenDispatchingCm
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndNoPartitionHintWhenDispatchingCmdBufferThenPartitionCountOneAndPartitionTypeDisabled) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
 
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(1);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -79,11 +80,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndNoPartiti
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, false, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, false, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, 0u, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(0, partitionCount);
+    dispatchArgs.useSecondaryBatchBuffer = false;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(1u, partitionCount);
+    EXPECT_EQ(1u, dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -105,16 +108,16 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndNoPartiti
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndPartitionHintWhenDispatchingCmdBufferThenPartitionCountOneAndPartitionTypeFromHint) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
 
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(1);
     debugManager.flags.ExperimentalSetWalkerPartitionType.set(static_cast<int32_t>(DefaultWalkerType::PARTITION_TYPE::PARTITION_TYPE_X));
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -123,11 +126,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndPartition
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, false, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, 0u, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(0, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(1u, partitionCount);
+    EXPECT_EQ(1u, dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -149,7 +153,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenWorkgroupOneAndPartition
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenDispatchingCmdBufferThenCorrectStaticPartitioningCommandsAreProgrammed) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
     using MI_LOAD_REGISTER_MEM = typename FamilyType::MI_LOAD_REGISTER_MEM;
 
@@ -158,10 +162,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenDi
     uint64_t workPartitionAllocationAddress = 0x987654;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -170,11 +174,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenDi
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, true, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(32, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(2u, partitionCount);
+    EXPECT_EQ(2u, dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -200,7 +205,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenDi
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenPartitionRegisterIsRequiredThenCorrectStaticPartitioningCommandsAreProgrammed) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
     using MI_LOAD_REGISTER_MEM = typename FamilyType::MI_LOAD_REGISTER_MEM;
 
@@ -210,10 +215,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenPa
     uint64_t workPartitionAllocationAddress = 0x987654;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -222,11 +227,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenPa
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, true, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(32, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(2u, partitionCount);
+    EXPECT_EQ(2u, dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -255,7 +261,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningWhenPa
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPreferredAndPartitionCountIsOneWhenDispatchingCmdBufferThenCorrectStaticPartitioningCommandsAreProgrammed) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
     using MI_LOAD_REGISTER_MEM = typename FamilyType::MI_LOAD_REGISTER_MEM;
 
@@ -264,10 +270,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     uint64_t workPartitionAllocationAddress = 0x987654;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(1);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -276,11 +282,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, true, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -306,8 +313,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPreferredWhenForceDisabledWparidRegisterThenExpectNoCommandFound) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using MI_LOAD_REGISTER_MEM = typename FamilyType::MI_LOAD_REGISTER_MEM;
 
     debugManager.flags.WparidRegisterProgramming.set(0);
@@ -315,10 +321,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     uint64_t workPartitionAllocationAddress = 0x987654;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(1);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -327,11 +333,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, true, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -343,8 +350,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPreferredWhenForceDisabledPipeControlThenExpectNoCommandFound) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     debugManager.flags.UsePipeControlAfterPartitionedWalker.set(0);
@@ -352,10 +358,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     uint64_t workPartitionAllocationAddress = 0x987654;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(1);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -364,11 +370,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, true, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -380,8 +387,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenStaticPartitioningPrefer
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenDynamicPartitioningPreferredWhenForceDisabledPipeControlThenExpectNoCommandFound) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using POSTSYNC_DATA = typename FamilyType::POSTSYNC_DATA;
-    using BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     debugManager.flags.UsePipeControlAfterPartitionedWalker.set(0);
@@ -389,10 +395,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenDynamicPartitioningPrefe
     uint64_t workPartitionAllocationAddress = 0x0;
     uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
 
     size_t expectedSize = 0;
@@ -401,11 +407,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests, GivenDynamicPartitioningPrefe
     expectedSize = ImplicitScalingDispatch<FamilyType>::template getSize<DefaultWalkerType>(false, false, twoTile, Vec3<size_t>(0, 0, 0), Vec3<size_t>(1, 1, 1));
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(commandStream, 0);
@@ -429,7 +436,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(DefaultWalkerType) +
@@ -449,11 +456,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -496,7 +505,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(MI_LOAD_REGISTER_MEM) +
@@ -517,11 +526,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -552,7 +563,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndPartitionRegisterProgrammingForcedWhenApiRequiresCleanupSectionThenDoNotAddPipeControlCrossTileSyncAndCleanupSection) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -564,7 +574,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(MI_LOAD_REGISTER_MEM) +
@@ -577,11 +587,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -612,7 +624,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcePartitionRegisterProgrammingWhenApiRequiresCleanupSectionThenDoNotAddPipeControlCrossTileSyncAndCleanupSection) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -624,7 +635,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(MI_LOAD_REGISTER_MEM) +
@@ -637,11 +648,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -672,7 +685,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcedCrossTileSyncWhenApiRequiresCleanupSectionThenDoNotAddPipeControlAndAddCrossTileSyncAndCleanupSection) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -685,7 +697,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(DefaultWalkerType) +
@@ -704,11 +716,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -739,7 +753,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcedCrossTileSyncWhenApiRequiresNoCleanupSectionThenDoNotAddPipeControlAndCleanupSectionAndAddCrossTileSync) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -752,7 +765,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(DefaultWalkerType) +
@@ -767,11 +780,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -802,7 +816,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcedCrossTileSyncAndPartitionRegisterWhenApiRequiresNoCleanupSectionThenDoNotAddPipeControlAndCleanupSectionAndAddCrossTileSync) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -816,7 +829,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(MI_LOAD_REGISTER_MEM) +
@@ -832,11 +845,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -867,7 +881,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcedCrossTileSyncBeforeExecWhenApiRequiresCleanupSectionThenDoNotAddPipeControlAndAddCrossTileSyncAndCleanupSection) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -880,7 +893,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(MI_ATOMIC) + NEO::EncodeSemaphore<FamilyType>::getSizeMiSemaphoreWait() +
@@ -900,11 +913,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, true, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.apiSelfCleanup = true;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -935,7 +950,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
             givenPipeControlIsNotRequiredAndForcedCleanupSectionWhenApiNotRequiresCleanupSectionThenDoNotAddPipeControlAndCrossTileSyncAndAddCleanupSection) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
@@ -948,7 +962,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
 
     uint64_t workPartitionAllocationAddress = 0x1000;
 
-    DefaultWalkerType walker = FamilyType::cmdInitGpgpuWalker;
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
     walker.setThreadGroupIdXDimension(32);
 
     size_t expectedSize = sizeof(DefaultWalkerType) +
@@ -967,11 +981,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(expectedSize, estimatedSize);
 
     uint32_t partitionCount = 0;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, nullptr, twoTile, NEO::RequiredPartitionDim::none, partitionCount, true, false, dcFlushFlag,
-                                                          forceExecutionOnSingleTileFlag, workPartitionAllocationAddress, *defaultHwInfo);
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
     totalBytesProgrammed = commandStream.getUsed();
     EXPECT_EQ(expectedSize, totalBytesProgrammed);
-    EXPECT_EQ(twoTile.count(), partitionCount);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
 
     HardwareParse hwParser;
     hwParser.parsePipeControl = true;
@@ -1563,4 +1578,41 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
     EXPECT_EQ(1u, bbStartList.size());
     auto bbStart = reinterpret_cast<MI_BATCH_BUFFER_START *>(*bbStartList.begin());
     EXPECT_EQ(MI_BATCH_BUFFER_START::SECOND_LEVEL_BATCH_BUFFER::SECOND_LEVEL_BATCH_BUFFER_SECOND_LEVEL_BATCH, bbStart->getSecondLevelBatchBuffer());
+}
+
+HWCMDTEST_F(IGFX_XE_HP_CORE, ImplicitScalingTests,
+            givenStaticPartitioningWhenBlockDispatchFlagIsTrueThenDoNotDispatchAnyCommands) {
+    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
+
+    uint64_t postSyncAddress = (1ull << 48) | (1ull << 24);
+
+    DefaultWalkerType walker = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
+    walker.setThreadGroupIdXDimension(32);
+    auto &postSync = walker.getPostSync();
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setDestinationAddress(postSyncAddress);
+
+    DefaultWalkerType walkerDispatched = walker;
+
+    uint64_t workPartitionAllocationAddress = 0x1000;
+    size_t expectedTotalBytesProgrammed = 0;
+    void *outWalkerPtr = nullptr;
+
+    uint32_t partitionCount = 0;
+    auto dispatchArgs = createDispatchCommandArgs(workPartitionAllocationAddress, partitionCount);
+    dispatchArgs.blockDispatchToCommandBuffer = true;
+    dispatchArgs.outWalkerPtr = &outWalkerPtr;
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walker, twoTile, dispatchArgs);
+    size_t totalBytesProgrammed = commandStream.getUsed();
+    EXPECT_EQ(expectedTotalBytesProgrammed, totalBytesProgrammed);
+    EXPECT_EQ(twoTile.count(), dispatchArgs.partitionCount);
+    EXPECT_EQ(nullptr, outWalkerPtr);
+
+    dispatchArgs.blockDispatchToCommandBuffer = false;
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(commandStream, walkerDispatched, twoTile, dispatchArgs);
+    ASSERT_NE(nullptr, outWalkerPtr);
+
+    EXPECT_EQ(0, memcmp(&walkerDispatched, outWalkerPtr, sizeof(DefaultWalkerType)));
 }

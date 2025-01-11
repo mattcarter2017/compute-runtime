@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,21 +10,25 @@
 #include "shared/test/common/utilities/base_object_utils.h"
 
 #include "opencl/source/mem_obj/buffer.h"
-#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_aub_fixture.h"
+#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_ocl_aub_fixture.h"
+#include "opencl/test/unit_test/mocks/mock_cl_device.h"
+#include "opencl/test/unit_test/mocks/mock_context.h"
+
+#include "multitile_matchers.h"
 
 using namespace NEO;
 
-struct OneVAFourPhysicalStoragesTest : public MulticontextAubFixture, public ::testing::Test {
+struct OneVAFourPhysicalStoragesTest : public MulticontextOclAubFixture, public ::testing::Test {
     static const uint32_t numTiles = 4;
     void SetUp() override {
-        MulticontextAubFixture::setUp(numTiles, MulticontextAubFixture::EnabledCommandStreamers::single, false);
+        MulticontextOclAubFixture::setUp(numTiles, MulticontextOclAubFixture::EnabledCommandStreamers::single, false);
     }
     void TearDown() override {
-        MulticontextAubFixture::tearDown();
+        MulticontextOclAubFixture::tearDown();
     }
 };
 
-HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourPhysicalStoragesWhenEnqueueReadBufferThenReadFromCorrectBank) {
+HWTEST2_F(OneVAFourPhysicalStoragesTest, givenBufferWithFourPhysicalStoragesWhenEnqueueReadBufferThenReadFromCorrectBank, SupportsMultiTile) {
     if (is32bit) {
         return;
     }
@@ -38,7 +42,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourP
     buffer->forceDisallowCPUCopy = true;
     auto allocation = buffer->getGraphicsAllocation(rootDeviceIndex);
     EXPECT_EQ(MemoryPool::localMemory, allocation->getMemoryPool());
-    auto gpuAddress = allocation->getGpuAddress();
+    auto gpuAddress = ptrOffset(allocation->getGpuAddress(), buffer->getOffset());
     allocation->storageInfo.cloningOfPageTables = false;
     allocation->storageInfo.memoryBanks = 0;
     allocation->setAubWritable(false, static_cast<uint32_t>(maxNBitValue(numTiles)));
@@ -66,7 +70,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourP
     }
 }
 
-HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourPhysicalStoragesWhenEnqueueWriteBufferThenCorrectMemoryIsWrittenToSpecificBank) {
+HWTEST2_F(OneVAFourPhysicalStoragesTest, whenEnqueueWriteBufferThenCorrectMemoryIsWrittenToSpecificBank, SupportsMultiTile) {
     if (is32bit) {
         return;
     }
@@ -79,7 +83,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourP
     buffer->forceDisallowCPUCopy = true;
     auto allocation = buffer->getGraphicsAllocation(rootDeviceIndex);
     EXPECT_EQ(MemoryPool::localMemory, allocation->getMemoryPool());
-    auto gpuAddress = allocation->getGpuAddress();
+    auto gpuAddress = ptrOffset(allocation->getGpuAddress(), buffer->getOffset());
     allocation->storageInfo.cloningOfPageTables = false;
     allocation->storageInfo.memoryBanks = 0;
 
@@ -97,7 +101,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenBufferWithFourP
     }
 }
 
-HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenColouredBufferWhenEnqueueWriteBufferThenCorrectMemoryIsWrittenToSpecificBank) {
+HWTEST2_F(OneVAFourPhysicalStoragesTest, givenColouredBufferWhenEnqueueWriteBufferThenCorrectMemoryIsWrittenToSpecificBank, SupportsMultiTile) {
     if (is32bit) {
         return;
     }
@@ -122,7 +126,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, OneVAFourPhysicalStoragesTest, givenColouredBufferW
 
     commandQueues[0][0]->enqueueWriteBuffer(buffer.get(), CL_TRUE, 0, bufferSize, memoryToWrite, nullptr, 0, nullptr, nullptr);
 
-    auto gpuAddress = allocation->getGpuAddress();
+    auto gpuAddress = ptrOffset(allocation->getGpuAddress(), buffer->getOffset());
     for (uint32_t tile = 0; tile < numTiles; tile++) {
         for (uint32_t offset = 0; offset < bufferSize; offset += MemoryConstants::pageSize64k) {
             expectMemory<FamilyType>(reinterpret_cast<void *>(gpuAddress + offset), ptrOffset(memoryToWrite, offset), MemoryConstants::pageSize64k, tile, 0);

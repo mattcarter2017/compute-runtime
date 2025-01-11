@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,12 +9,18 @@
 
 #include "shared/source/utilities/const_stringref.h"
 
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 class OclocArgHelper;
 namespace Ocloc {
 void printOclocCmdLine(OclocArgHelper &wrapper, const std::vector<std::string> &args);
 void printHelp(OclocArgHelper &wrapper);
+
+const std::string &getOclocCurrentLibName();
+const std::string &getOclocFormerLibName();
 
 namespace CommandNames {
 inline constexpr NEO::ConstStringRef compile = "compile";
@@ -37,5 +43,9 @@ int validate(OclocArgHelper *argHelper, const std::vector<std::string> &args);
 int query(OclocArgHelper *argHelper, const std::vector<std::string> &args);
 int ids(OclocArgHelper *argHelper, const std::vector<std::string> &args);
 int concat(OclocArgHelper *argHelper, const std::vector<std::string> &args);
+std::optional<int> invokeFormerOcloc(const std::string &formerOclocName, unsigned int numArgs, const char *argv[],
+                                     const uint32_t numSources, const uint8_t **dataSources, const uint64_t *lenSources, const char **nameSources,
+                                     const uint32_t numInputHeaders, const uint8_t **dataInputHeaders, const uint64_t *lenInputHeaders, const char **nameInputHeaders,
+                                     uint32_t *numOutputs, uint8_t ***dataOutputs, uint64_t **lenOutputs, char ***nameOutputs);
 } // namespace Commands
 } // namespace Ocloc

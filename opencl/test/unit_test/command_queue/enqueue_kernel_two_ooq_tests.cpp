@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -98,13 +98,12 @@ struct TwoOOQsTwoDependentWalkers : public HelloWorldTest<OOQFixtureFactory>,
         delete e1;
         delete e2;
 
-        typedef typename FamilyType::DefaultWalkerType GPGPU_WALKER;
-        itorWalker1 = find<GPGPU_WALKER *>(cmdList.begin(), cmdList.end());
+        itorWalker1 = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
         ASSERT_NE(cmdList.end(), itorWalker1);
 
         itorWalker2 = itorWalker1;
         ++itorWalker2;
-        itorWalker2 = find<GPGPU_WALKER *>(itorWalker2, cmdList.end());
+        itorWalker2 = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(itorWalker2, cmdList.end());
         ASSERT_NE(cmdList.end(), itorWalker2);
     }
 
@@ -133,7 +132,7 @@ HWTEST2_F(TwoOOQsTwoDependentWalkers, GivenTwoCommandQueuesWhenEnqueuingKernelTh
     EXPECT_EQ(1, numCommands);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TwoOOQsTwoDependentWalkers, GivenTwoCommandQueuesWhenEnqueuingKernelThenThereIsOneVfeState) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, TwoOOQsTwoDependentWalkers, GivenTwoCommandQueuesWhenEnqueuingKernelThenThereIsOneVfeState) {
     using MEDIA_VFE_STATE = typename FamilyType::MEDIA_VFE_STATE;
     parseWalkers<FamilyType>();
 

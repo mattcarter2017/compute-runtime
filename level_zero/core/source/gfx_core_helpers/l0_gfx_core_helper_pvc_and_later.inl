@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,7 +19,7 @@ namespace L0 {
 template <typename Family>
 void L0GfxCoreHelperHw<Family>::getAttentionBitmaskForSingleThreads(const std::vector<EuThread::ThreadId> &threads, const NEO::HardwareInfo &hwInfo, std::unique_ptr<uint8_t[]> &bitmask, size_t &bitmaskSize) const {
     const uint32_t numSubslicesPerSlice = hwInfo.gtSystemInfo.MaxSubSlicesSupported / hwInfo.gtSystemInfo.MaxSlicesSupported;
-    const uint32_t numEuPerSubslice = hwInfo.gtSystemInfo.MaxEuPerSubSlice;
+    const uint32_t numEuPerSubslice = std::min(hwInfo.gtSystemInfo.MaxEuPerSubSlice, 8u);
     const uint32_t numThreadsPerEu = (hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.EUCount);
     const uint32_t bytesPerEu = alignUp(numThreadsPerEu, 8) / 8;
     const uint32_t threadsSizePerSlice = numSubslicesPerSlice * numEuPerSubslice * bytesPerEu;
@@ -60,6 +60,7 @@ std::vector<EuThread::ThreadId> L0GfxCoreHelperHw<Family>::getThreadsFromAttenti
                     return threads;
                 }
 
+                UNRECOVERABLE_IF(!bitmask);
                 for (uint32_t byte = 0; byte < bytesPerEu; byte++) {
                     std::bitset<8> bits(bitmask[offset + byte]);
                     for (uint32_t i = 0; i < 8; i++) {
@@ -100,6 +101,11 @@ void L0GfxCoreHelperHw<Family>::setAdditionalGroupProperty(ze_command_queue_grou
 template <typename Family>
 bool L0GfxCoreHelperHw<Family>::isResumeWARequired() {
     return false;
+}
+
+template <typename Family>
+bool L0GfxCoreHelperHw<Family>::synchronizedDispatchSupported() const {
+    return true;
 }
 
 } // namespace L0

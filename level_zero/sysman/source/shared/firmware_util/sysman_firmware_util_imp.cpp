@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -57,14 +57,27 @@ bool FirmwareUtilImp::loadEntryPoints() {
     return ok;
 }
 
-static void progressFunc(uint32_t done, uint32_t total, void *ctx) {
-    uint32_t percent = (done * 100) / total;
-    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stdout, "Progess: %d/%d:%d/%\n", done, total, percent);
+void firmwareFlashProgressFunc(uint32_t done, uint32_t total, void *ctx) {
+    if (ctx != nullptr) {
+        uint32_t percent = (done * 100) / total;
+        FirmwareUtilImp *pFirmwareUtilImp = static_cast<FirmwareUtilImp *>(ctx);
+        pFirmwareUtilImp->updateFirmwareFlashProgress(percent);
+        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stdout, "Progess: %d/%d:%d/%\n", done, total, percent);
+    }
 }
 
-FirmwareUtilImp::OsLibraryLoadPtr FirmwareUtilImp::osLibraryLoadFunction(NEO::OsLibrary::load);
+void FirmwareUtilImp::updateFirmwareFlashProgress(uint32_t percent) {
+    const std::lock_guard<std::mutex> lock(flashProgress.fwProgressLock);
+    flashProgress.completionPercent = percent;
+}
 
-ze_result_t FirmwareUtilImp::getFirstDevice(igsc_device_info *info) {
+ze_result_t FirmwareUtilImp::getFlashFirmwareProgress(uint32_t *pCompletionPercent) {
+    const std::lock_guard<std::mutex> lock(flashProgress.fwProgressLock);
+    *pCompletionPercent = flashProgress.completionPercent;
+    return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t FirmwareUtilImp::getFirstDevice(IgscDeviceInfo *info) {
     igsc_device_iterator *iter;
     int ret = deviceIteratorCreate(&iter);
     if (ret != IGSC_SUCCESS) {
@@ -93,7 +106,7 @@ ze_result_t FirmwareUtilImp::getFirstDevice(igsc_device_info *info) {
 
 ze_result_t FirmwareUtilImp::fwDeviceInit() {
     int ret;
-    igsc_device_info info;
+    IgscDeviceInfo info;
     ze_result_t result = getFirstDevice(&info);
     if (result != ZE_RESULT_SUCCESS) {
         return result;
@@ -148,7 +161,7 @@ ze_result_t FirmwareUtilImp::opromGetVersion(std::string &fwVersion) {
 
 ze_result_t FirmwareUtilImp::fwFlashGSC(void *pImage, uint32_t size) {
     const std::lock_guard<std::mutex> lock(this->fwLock);
-    int ret = deviceFwUpdate(&fwDeviceHandle, static_cast<const uint8_t *>(pImage), size, progressFunc, nullptr);
+    int ret = deviceFwUpdate(&fwDeviceHandle, static_cast<const uint8_t *>(pImage), size, firmwareFlashProgressFunc, this);
     if (ret != IGSC_SUCCESS) {
         return ZE_RESULT_ERROR_UNINITIALIZED;
     }
@@ -169,10 +182,10 @@ ze_result_t FirmwareUtilImp::fwFlashOprom(void *pImage, uint32_t size) {
         return ZE_RESULT_ERROR_UNINITIALIZED;
     }
     if (opromImgType & IGSC_OPROM_DATA) {
-        retData = deviceOpromUpdate(&fwDeviceHandle, IGSC_OPROM_DATA, opromImg, progressFunc, nullptr);
+        retData = deviceOpromUpdate(&fwDeviceHandle, IGSC_OPROM_DATA, opromImg, firmwareFlashProgressFunc, this);
     }
     if (opromImgType & IGSC_OPROM_CODE) {
-        retCode = deviceOpromUpdate(&fwDeviceHandle, IGSC_OPROM_CODE, opromImg, progressFunc, nullptr);
+        retCode = deviceOpromUpdate(&fwDeviceHandle, IGSC_OPROM_CODE, opromImg, firmwareFlashProgressFunc, this);
     }
     if ((retData != IGSC_SUCCESS) && (retCode != IGSC_SUCCESS)) {
         return ZE_RESULT_ERROR_UNINITIALIZED;
@@ -195,7 +208,9 @@ FirmwareUtilImp::~FirmwareUtilImp() {
 FirmwareUtil *FirmwareUtil::create(uint16_t domain, uint8_t bus, uint8_t device, uint8_t function) {
     FirmwareUtilImp *pFwUtilImp = new FirmwareUtilImp(domain, bus, device, function);
     UNRECOVERABLE_IF(nullptr == pFwUtilImp);
-    pFwUtilImp->libraryHandle = FirmwareUtilImp::osLibraryLoadFunction(FirmwareUtilImp::fwUtilLibraryName);
+    NEO::OsLibraryCreateProperties properties(FirmwareUtilImp::fwUtilLibraryName);
+    properties.customLoadFlags = &FirmwareUtilImp::fwUtilLoadFlags;
+    pFwUtilImp->libraryHandle = NEO::OsLibrary::loadFunc(properties);
     if (pFwUtilImp->libraryHandle == nullptr || pFwUtilImp->loadEntryPoints() == false || pFwUtilImp->fwDeviceInit() != ZE_RESULT_SUCCESS) {
         if (nullptr != pFwUtilImp->libraryHandle) {
             delete pFwUtilImp->libraryHandle;

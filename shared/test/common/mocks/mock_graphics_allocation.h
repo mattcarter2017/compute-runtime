@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,7 @@ inline constexpr DeviceBitfield mockDeviceBitfield(0b1);
 
 class MockGraphicsAllocation : public MemoryAllocation {
   public:
+    using BaseClass = MemoryAllocation;
     using MemoryAllocation::allocationOffset;
     using MemoryAllocation::allocationType;
     using MemoryAllocation::aubInfo;
@@ -33,16 +34,16 @@ class MockGraphicsAllocation : public MemoryAllocation {
     using MemoryAllocation::usageInfos;
 
     MockGraphicsAllocation()
-        : MemoryAllocation(0, AllocationType::unknown, nullptr, 0u, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu) {}
+        : MemoryAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0u, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu) {}
 
     MockGraphicsAllocation(void *buffer, size_t sizeIn)
-        : MemoryAllocation(0, AllocationType::unknown, buffer, castToUint64(buffer), 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
+        : MemoryAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer, castToUint64(buffer), 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
 
     MockGraphicsAllocation(void *buffer, uint64_t gpuAddr, size_t sizeIn)
-        : MemoryAllocation(0, AllocationType::unknown, buffer, gpuAddr, 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
+        : MemoryAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer, gpuAddr, 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
 
     MockGraphicsAllocation(uint32_t rootDeviceIndex, void *buffer, size_t sizeIn)
-        : MemoryAllocation(rootDeviceIndex, AllocationType::unknown, buffer, castToUint64(buffer), 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
+        : MemoryAllocation(rootDeviceIndex, 1u /*num gmms*/, AllocationType::unknown, buffer, castToUint64(buffer), 0llu, sizeIn, MemoryPool::memoryNull, MemoryManager::maxOsContextCount) {}
 
     void resetInspectionIds() {
         for (auto &usageInfo : usageInfos) {
@@ -63,6 +64,8 @@ class MockGraphicsAllocation : public MemoryAllocation {
         MemoryAllocation::updateCompletionDataForAllocationAndFragments(newFenceValue, contextId);
     }
 
+    ADDMETHOD(hasAllocationReadOnlyType, bool, false, false, (), ());
+    ADDMETHOD_VOIDRETURN(setAsReadOnly, false, (), ());
     uint64_t updateCompletionDataForAllocationAndFragmentsCalledtimes = 0;
     int peekInternalHandleResult = 0;
     uint64_t internalHandle = 0;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,28 +16,13 @@
 #include "level_zero/core/test/unit_tests/fixtures/device_fixture.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_built_ins.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_device.h"
-#include "level_zero/include/zet_intel_gpu_debug.h"
 #include "level_zero/tools/source/debug/debug_handlers.h"
+#include "level_zero/tools/test/unit_tests/sources/debug/debug_session_common.h"
 #include "level_zero/tools/test/unit_tests/sources/debug/mock_debug_session.h"
+#include "level_zero/zet_intel_gpu_debug.h"
 
 namespace L0 {
 namespace ult {
-
-struct DebugApiFixture : public DeviceFixture {
-    void setUp() {
-        DeviceFixture::setUp();
-        neoDevice->executionEnvironment->rootDeviceEnvironments[0]->osInterface.reset(new NEO::OSInterface);
-        mockBuiltins = new MockBuiltins();
-        mockBuiltins->stateSaveAreaHeader = MockSipData::createStateSaveAreaHeader(2);
-        neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltins);
-    }
-
-    void tearDown() {
-        DeviceFixture::tearDown();
-    }
-
-    MockBuiltins *mockBuiltins = nullptr;
-};
 
 using DebugApiTest = Test<DebugApiFixture>;
 using MultiTileDebugApiTest = Test<MultipleDevicesWithCustomHwInfo>;
@@ -169,7 +154,7 @@ HWTEST2_F(DebugApiTest, givenDeviceWhenDebugAttachIsAvaialbleThenGetPropertiesRe
     EXPECT_EQ(ZET_DEVICE_DEBUG_PROPERTY_FLAG_ATTACH, debugProperties.flags);
 }
 
-using isDebugNotSupportedProduct = IsNotWithinProducts<IGFX_DG1, IGFX_METEORLAKE>;
+using isDebugNotSupportedProduct = IsAtMostProduct<IGFX_ALDERLAKE_N>;
 HWTEST2_F(DebugApiTest, givenDeviceWhenDebugIsNotSupportedThenGetPropertiesReturnsCorrectFlag, isDebugNotSupportedProduct) {
     zet_device_debug_properties_t debugProperties = {};
     debugProperties.flags = ZET_DEVICE_DEBUG_PROPERTY_FLAG_FORCE_UINT32;
@@ -297,6 +282,13 @@ TEST_F(DebugApiTest, givenZeroCountWhenGetRegisterSetPropertiesCalledThenCorrect
     EXPECT_EQ(13u, count);
 }
 
+TEST_F(DebugApiTest, givenZeroCountWhenGetRegisterSetPropertiesCalledWithV3HeaderThenCorrectCountIsSet) {
+    uint32_t count = 0;
+    setUpV3Header();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
+    EXPECT_EQ(17u, count);
+}
+
 TEST_F(DebugApiTest, givenGetRegisterSetPropertiesCalledAndExtraSpaceIsProvidedThenCorrectPropertiesReturned) {
     uint32_t count = 100;
     std::vector<zet_debug_regset_properties_t> regsetProps(count);
@@ -319,10 +311,19 @@ TEST_F(DebugApiTest, givenNonZeroCountAndNullRegsetPointerWhenGetRegisterSetProp
     EXPECT_EQ(ZE_RESULT_ERROR_INVALID_NULL_POINTER, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
 }
 
+TEST_F(DebugApiTest, givenSsaHeaderVersionGreaterThan3WhenGetRegisterSetPropertiesCalledThenUnknownIsReturned) {
+    auto stateSaveAreaHeader = MockSipData::createStateSaveAreaHeader(3);
+    auto versionHeader = &reinterpret_cast<SIP::StateSaveAreaHeader *>(stateSaveAreaHeader.data())->versionHeader;
+    versionHeader->version.major = 4;
+    mockBuiltins->stateSaveAreaHeader = stateSaveAreaHeader;
+    uint32_t count = 0;
+    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
+}
+
 TEST_F(DebugApiTest, givenSIPHeaderHasZeroSizeMMEThenNotExposedAsRegset) {
     mockBuiltins = new MockBuiltins();
     mockBuiltins->stateSaveAreaHeader = MockSipData::createStateSaveAreaHeader(2, 128, 0);
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltins);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltins);
     uint32_t count = 0;
     EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
     EXPECT_EQ(12u, count);
@@ -351,6 +352,95 @@ TEST_F(DebugApiTest, givenSIPHeaderGRFCountNotEqualTo128ThenGetRegisterSetProper
             break;
         }
     }
+}
+
+TEST_F(DebugApiTest, givenGetRegisterSetPropertiesCalledWithV3HeaderCorrectPropertiesReturned) {
+
+    setUpV3Header();
+    uint32_t count = 0;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
+    EXPECT_EQ(17u, count);
+
+    std::vector<zet_debug_regset_properties_t> regsetProps(count);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, regsetProps.data()));
+
+    EXPECT_EQ(17u, count);
+
+    auto validateRegsetProps = [](const zet_debug_regset_properties_t &regsetProps,
+                                  zet_debug_regset_type_intel_gpu_t type, zet_debug_regset_flags_t flags,
+                                  uint32_t num, uint32_t bits, uint32_t bytes) {
+        EXPECT_EQ(regsetProps.stype, ZET_STRUCTURE_TYPE_DEBUG_REGSET_PROPERTIES);
+        EXPECT_EQ(regsetProps.pNext, nullptr);
+        EXPECT_EQ(regsetProps.type, type);
+        EXPECT_EQ(regsetProps.version, 0u);
+        EXPECT_EQ(regsetProps.generalFlags, flags);
+        EXPECT_EQ(regsetProps.count, num);
+        EXPECT_EQ(regsetProps.bitSize, bits);
+        EXPECT_EQ(regsetProps.byteSize, bytes);
+    };
+
+    validateRegsetProps(regsetProps[0], ZET_DEBUG_REGSET_TYPE_GRF_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 128, 512, 64);
+    validateRegsetProps(regsetProps[1], ZET_DEBUG_REGSET_TYPE_ADDR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 256, 32);
+    validateRegsetProps(regsetProps[2], ZET_DEBUG_REGSET_TYPE_FLAG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 2, 32, 4);
+    validateRegsetProps(regsetProps[3], ZET_DEBUG_REGSET_TYPE_CE_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[4], ZET_DEBUG_REGSET_TYPE_SR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 2, 160, 20);
+    validateRegsetProps(regsetProps[5], ZET_DEBUG_REGSET_TYPE_CR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[6], ZET_DEBUG_REGSET_TYPE_TDR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[7], ZET_DEBUG_REGSET_TYPE_ACC_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 10, 256, 32);
+    validateRegsetProps(regsetProps[8], ZET_DEBUG_REGSET_TYPE_MME_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 256, 32);
+    validateRegsetProps(regsetProps[9], ZET_DEBUG_REGSET_TYPE_SP_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[10], ZET_DEBUG_REGSET_TYPE_DBG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
+    validateRegsetProps(regsetProps[11], ZET_DEBUG_REGSET_TYPE_FC_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[12], ZET_DEBUG_REGSET_TYPE_MSG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
+    validateRegsetProps(regsetProps[13], ZET_DEBUG_REGSET_TYPE_MODE_FLAGS_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[14], ZET_DEBUG_REGSET_TYPE_DEBUG_SCRATCH_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 2, 64, 8);
+    validateRegsetProps(regsetProps[15], ZET_DEBUG_REGSET_TYPE_THREAD_SCRATCH_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 2, 64, 8);
+    validateRegsetProps(regsetProps[16], ZET_DEBUG_REGSET_TYPE_SCALAR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
+}
+
+TEST_F(DebugApiTest, givenGetRegisterSetPropertiesCalledWhenV3HeaderHeaplessThenCorrectPropertiesReturned) {
+
+    setUpV3HeaderHeapless();
+    uint32_t count = 0;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, nullptr));
+    EXPECT_EQ(18u, count);
+
+    std::vector<zet_debug_regset_properties_t> regsetProps(count);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugGetRegisterSetProperties(device->toHandle(), &count, regsetProps.data()));
+
+    EXPECT_EQ(18u, count);
+
+    auto validateRegsetProps = [](const zet_debug_regset_properties_t &regsetProps,
+                                  zet_debug_regset_type_intel_gpu_t type, zet_debug_regset_flags_t flags,
+                                  uint32_t num, uint32_t bits, uint32_t bytes) {
+        EXPECT_EQ(regsetProps.stype, ZET_STRUCTURE_TYPE_DEBUG_REGSET_PROPERTIES);
+        EXPECT_EQ(regsetProps.pNext, nullptr);
+        EXPECT_EQ(regsetProps.type, type);
+        EXPECT_EQ(regsetProps.version, 0u);
+        EXPECT_EQ(regsetProps.generalFlags, flags);
+        EXPECT_EQ(regsetProps.count, num);
+        EXPECT_EQ(regsetProps.bitSize, bits);
+        EXPECT_EQ(regsetProps.byteSize, bytes);
+    };
+
+    validateRegsetProps(regsetProps[0], ZET_DEBUG_REGSET_TYPE_GRF_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 128, 512, 64);
+    validateRegsetProps(regsetProps[1], ZET_DEBUG_REGSET_TYPE_ADDR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 256, 32);
+    validateRegsetProps(regsetProps[2], ZET_DEBUG_REGSET_TYPE_FLAG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 2, 32, 4);
+    validateRegsetProps(regsetProps[3], ZET_DEBUG_REGSET_TYPE_CE_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[4], ZET_DEBUG_REGSET_TYPE_SR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 2, 160, 20);
+    validateRegsetProps(regsetProps[5], ZET_DEBUG_REGSET_TYPE_CR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[6], ZET_DEBUG_REGSET_TYPE_TDR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[7], ZET_DEBUG_REGSET_TYPE_ACC_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 10, 256, 32);
+    validateRegsetProps(regsetProps[8], ZET_DEBUG_REGSET_TYPE_MME_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 256, 32);
+    validateRegsetProps(regsetProps[9], ZET_DEBUG_REGSET_TYPE_SP_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 128, 16);
+    validateRegsetProps(regsetProps[10], ZET_DEBUG_REGSET_TYPE_SBA_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, ZET_DEBUG_SBA_COUNT_INTEL_GPU, 64, 8);
+    validateRegsetProps(regsetProps[11], ZET_DEBUG_REGSET_TYPE_DBG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
+    validateRegsetProps(regsetProps[12], ZET_DEBUG_REGSET_TYPE_FC_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[13], ZET_DEBUG_REGSET_TYPE_MSG_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
+    validateRegsetProps(regsetProps[14], ZET_DEBUG_REGSET_TYPE_MODE_FLAGS_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 1, 32, 4);
+    validateRegsetProps(regsetProps[15], ZET_DEBUG_REGSET_TYPE_DEBUG_SCRATCH_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 2, 64, 8);
+    validateRegsetProps(regsetProps[16], ZET_DEBUG_REGSET_TYPE_THREAD_SCRATCH_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE, 2, 64, 8);
+    validateRegsetProps(regsetProps[17], ZET_DEBUG_REGSET_TYPE_SCALAR_INTEL_GPU, ZET_DEBUG_REGSET_FLAG_READABLE | ZET_DEBUG_REGSET_FLAG_WRITEABLE, 1, 64, 8);
 }
 
 TEST_F(DebugApiTest, givenGetRegisterSetPropertiesCalledCorrectPropertiesReturned) {
@@ -515,6 +605,48 @@ TEST_F(DebugApiTest, givenZeAffinityMaskAndEnabledDebugMessagesWhenDebugAttachCa
 
     std::string output = testing::internal::GetCapturedStdout();
     EXPECT_EQ(std::string("ZE_AFFINITY_MASK is not recommended while using program debug API\n"), output);
+}
+
+TEST_F(DebugApiTest, givenReadDebugScratchRegisterCalledThenSuccessIsReturned) {
+    zet_debug_config_t config = {};
+    config.pid = 0x1234;
+
+    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->osInterface.reset(new OsInterfaceWithDebugAttach);
+
+    L0::DeviceImp *deviceImp = static_cast<DeviceImp *>(device);
+    auto session = new MockDebugSession(config, device, true);
+    session->initialize();
+    deviceImp->setDebugSession(session);
+    SIP::version version = {3, 0, 0};
+    initStateSaveArea(session->stateSaveAreaHeader, version, device);
+    ze_device_thread_t stoppedThread = {0, 0, 0, 0};
+    EuThread::ThreadId stoppedThreadId{0, stoppedThread};
+    session->allThreads[stoppedThreadId]->stopThread(1u);
+    session->allThreads[stoppedThreadId]->reportAsStopped();
+    uint64_t scratch[2];
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugReadRegisters(session->toHandle(), {0, 0, 0, 0}, ZET_DEBUG_REGSET_TYPE_DEBUG_SCRATCH_INTEL_GPU, 0, 2, scratch));
+    EXPECT_EQ(scratch[0], 0u);
+    EXPECT_EQ(scratch[1], 0u);
+}
+
+TEST_F(DebugApiTest, givenReadModeRegisterCalledThenSuccessIsReturned) {
+    zet_debug_config_t config = {};
+    config.pid = 0x1234;
+
+    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->osInterface.reset(new OsInterfaceWithDebugAttach);
+
+    L0::DeviceImp *deviceImp = static_cast<DeviceImp *>(device);
+    auto session = new MockDebugSession(config, device, true);
+    session->initialize();
+    deviceImp->setDebugSession(session);
+    SIP::version version = {3, 0, 0};
+    initStateSaveArea(session->stateSaveAreaHeader, version, device);
+    ze_device_thread_t stoppedThread = {0, 0, 0, 0};
+    EuThread::ThreadId stoppedThreadId{0, stoppedThread};
+    session->allThreads[stoppedThreadId]->stopThread(1u);
+    session->allThreads[stoppedThreadId]->reportAsStopped();
+    uint32_t modeFlags;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, zetDebugReadRegisters(session->toHandle(), {0, 0, 0, 0}, ZET_DEBUG_REGSET_TYPE_MODE_FLAGS_INTEL_GPU, 0, 1, &modeFlags));
 }
 
 } // namespace ult

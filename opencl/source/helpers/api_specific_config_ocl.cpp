@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,11 +20,11 @@ bool ApiSpecificConfig::isStatelessCompressionSupported() {
     return true;
 }
 
-bool ApiSpecificConfig::getGlobalBindlessHeapConfiguration() {
+bool ApiSpecificConfig::getGlobalBindlessHeapConfiguration(const ReleaseHelper *releaseHelper) {
     return false;
 }
 
-bool ApiSpecificConfig::getBindlessMode(const ReleaseHelper *releaseHelper) {
+bool ApiSpecificConfig::getBindlessMode(const Device &device) {
     if (debugManager.flags.UseBindlessMode.get() != -1) {
         return debugManager.flags.UseBindlessMode.get();
     } else {
@@ -33,7 +33,19 @@ bool ApiSpecificConfig::getBindlessMode(const ReleaseHelper *releaseHelper) {
 }
 
 bool ApiSpecificConfig::isDeviceAllocationCacheEnabled() {
-    return false;
+    return true;
+}
+
+bool ApiSpecificConfig::isHostAllocationCacheEnabled() {
+    return true;
+}
+
+bool ApiSpecificConfig::isDeviceUsmPoolingEnabled() {
+    return true;
+}
+
+bool ApiSpecificConfig::isHostUsmPoolingEnabled() {
+    return true;
 }
 
 ApiSpecificConfig::ApiType ApiSpecificConfig::getApiType() {
@@ -64,4 +76,17 @@ const StackVec<const char *, 4> &ApiSpecificConfig::getPrefixStrings() {
 const StackVec<DebugVarPrefix, 4> &ApiSpecificConfig::getPrefixTypes() {
     return validClPrefixTypes;
 }
+
+std::string ApiSpecificConfig::compilerCacheFileExtension() {
+    return ".cl_cache";
+}
+
+int64_t ApiSpecificConfig::compilerCacheDefaultEnabled() {
+    return 1l;
+}
+
+bool ApiSpecificConfig::isGlobalStatelessEnabled(const RootDeviceEnvironment &rootDeviceEnvironment) {
+    return false;
+}
+
 } // namespace NEO

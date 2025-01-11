@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,7 +21,6 @@ template <typename WalkerType>
 inline size_t GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(
     WalkerType *walkerCmd,
     const KernelDescriptor &kernelDescriptor,
-    const size_t globalOffsets[3],
     const size_t startWorkGroups[3],
     const size_t numWorkGroups[3],
     const size_t localWorkSizesIn[3],
@@ -44,8 +43,6 @@ inline size_t GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(
     uint64_t executionMask = maxNBitValue(remainderSimdLanes);
     if (!executionMask)
         executionMask = ~executionMask;
-
-    using SIMD_SIZE = typename DefaultWalkerType::SIMD_SIZE;
 
     walkerCmd->setRightExecutionMask(static_cast<uint32_t>(executionMask));
     walkerCmd->setBottomExecutionMask(static_cast<uint32_t>(0xffffffff));
@@ -82,12 +79,10 @@ template <typename WalkerType>
 size_t EnqueueOperation<GfxFamily>::getSizeRequiredCSKernel(bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const Kernel *pKernel, const DispatchInfo &dispatchInfo) {
     size_t size = sizeof(typename GfxFamily::GPGPU_WALKER) + HardwareCommandsHelper<GfxFamily>::getSizeRequiredCS() +
                   sizeof(PIPE_CONTROL) * (MemorySynchronizationCommands<GfxFamily>::isBarrierWaRequired(commandQueue.getDevice().getRootDeviceEnvironment()) ? 2 : 1);
-    size += PreemptionHelper::getPreemptionWaCsSize<GfxFamily>(commandQueue.getDevice());
     if (reserveProfilingCmdsSpace) {
         size += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
     }
     size += PerformanceCounters::getGpuCommandsSize(commandQueue.getPerfCounters(), commandQueue.getGpgpuEngine().osContext->getEngineType(), reservePerfCounters);
-    size += GpgpuWalkerHelper<GfxFamily>::getSizeForWADisableLSQCROPERFforOCL(pKernel);
     size += GpgpuWalkerHelper<GfxFamily>::getSizeForWaDisableRccRhwoOptimization(pKernel);
 
     return size;
@@ -96,10 +91,6 @@ size_t EnqueueOperation<GfxFamily>::getSizeRequiredCSKernel(bool reserveProfilin
 template <typename GfxFamily>
 size_t EnqueueOperation<GfxFamily>::getSizeRequiredForTimestampPacketWrite() {
     return sizeof(PIPE_CONTROL);
-}
-
-template <typename GfxFamily>
-void GpgpuWalkerHelper<GfxFamily>::adjustMiStoreRegMemMode(MI_STORE_REG_MEM<GfxFamily> *storeCmd) {
 }
 
 template <typename GfxFamily>

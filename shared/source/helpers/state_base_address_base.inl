@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -72,10 +72,7 @@ void StateBaseAddressHelper<GfxFamily>::programStateBaseAddress(
         args.stateBaseAddressCmd->setDynamicStateBaseAddressModifyEnable(true);
         args.stateBaseAddressCmd->setDynamicStateBufferSizeModifyEnable(true);
         args.stateBaseAddressCmd->setDynamicStateBaseAddress(args.globalHeapsBaseAddress);
-        args.stateBaseAddressCmd->setDynamicStateBufferSize(MemoryConstants::pageSize64k);
-
-        args.stateBaseAddressCmd->setSurfaceStateBaseAddressModifyEnable(true);
-        args.stateBaseAddressCmd->setSurfaceStateBaseAddress(args.globalHeapsBaseAddress);
+        args.stateBaseAddressCmd->setDynamicStateBufferSize(MemoryConstants::sizeOf4GBinPageEntities);
 
         args.stateBaseAddressCmd->setBindlessSurfaceStateBaseAddressModifyEnable(true);
         args.stateBaseAddressCmd->setBindlessSurfaceStateBaseAddress(args.globalHeapsBaseAddress);
@@ -87,11 +84,11 @@ void StateBaseAddressHelper<GfxFamily>::programStateBaseAddress(
             args.stateBaseAddressCmd->setDynamicStateBaseAddress(args.dsh->getHeapGpuBase());
             args.stateBaseAddressCmd->setDynamicStateBufferSize(args.dsh->getHeapSizeInPages());
         }
+    }
 
-        if (args.ssh) {
-            args.stateBaseAddressCmd->setSurfaceStateBaseAddressModifyEnable(true);
-            args.stateBaseAddressCmd->setSurfaceStateBaseAddress(args.ssh->getHeapGpuBase());
-        }
+    if (args.ssh) {
+        args.stateBaseAddressCmd->setSurfaceStateBaseAddressModifyEnable(true);
+        args.stateBaseAddressCmd->setSurfaceStateBaseAddress(args.ssh->getHeapGpuBase());
     }
 
     if (args.setInstructionStateBaseAddress) {
@@ -144,6 +141,11 @@ void StateBaseAddressHelper<GfxFamily>::programHeaplessStateBaseAddress(STATE_BA
 template <typename GfxFamily>
 void StateBaseAddressHelper<GfxFamily>::programBindingTableBaseAddress(LinearStream &commandStream, const IndirectHeap &ssh, GmmHelper *gmmHelper) {
     StateBaseAddressHelper<GfxFamily>::programBindingTableBaseAddress(commandStream, ssh.getHeapGpuBase(), ssh.getHeapSizeInPages(), gmmHelper);
+}
+
+template <typename GfxFamily>
+inline size_t StateBaseAddressHelper<GfxFamily>::getSbaCmdSize() {
+    return sizeof(typename GfxFamily::STATE_BASE_ADDRESS);
 }
 
 } // namespace NEO

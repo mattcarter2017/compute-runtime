@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,11 +10,12 @@
 using namespace NEO;
 
 TEST_F(DeviceIdTests, GivenAdlsSupportedDeviceIdThenHardwareInfoIsCorrect) {
-    std::array<DeviceDescriptor, 14> expectedDescriptors = {{
+    std::array<DeviceDescriptor, 16> expectedDescriptors = {{
         {0x4680, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x4682, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x4688, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x468A, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
+        {0x468B, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x4690, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x4692, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0x4693, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
@@ -24,6 +25,7 @@ TEST_F(DeviceIdTests, GivenAdlsSupportedDeviceIdThenHardwareInfoIsCorrect) {
         {0xA783, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0xA788, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0xA789, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
+        {0xA78A, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
         {0xA78B, &AdlsHwConfig::hwInfo, &AdlsHwConfig::setupHardwareInfo},
     }};
 

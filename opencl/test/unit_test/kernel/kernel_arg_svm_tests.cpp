@@ -1,11 +1,12 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "shared/source/helpers/aligned_memory.h"
+#include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
 #include "opencl/source/kernel/kernel.h"
@@ -116,6 +117,61 @@ HWTEST_F(KernelArgSvmTest, GivenSvmPtrStatefulWhenSettingKernelArgThenArgumentsA
     delete[] svmPtr;
 }
 
+HWTEST_F(KernelArgSvmTest, GivenSvmPtrBindlessWhenSettingKernelArgThenArgumentsAreSetCorrectly) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+    auto svmPtr = std::make_unique<char[]>(256);
+
+    const auto &gfxCoreHelper = pKernel->getGfxCoreHelper();
+    const auto surfaceStateSize = gfxCoreHelper.getRenderSurfaceStateSize();
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+    pKernelInfo->kernelDescriptor.initBindlessOffsetToSurfaceState();
+
+    auto retVal = pKernel->setArgSvm(0, 256, svmPtr.get(), nullptr, 0u);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_NE(0u, pKernel->getSurfaceStateHeapSize());
+
+    const auto ssIndex = pKernelInfo->kernelDescriptor.bindlessArgsMap.find(bindlessOffset)->second;
+    const auto ssOffset = ssIndex * surfaceStateSize;
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
+        ptrOffset(pKernel->getSurfaceStateHeap(),
+                  ssOffset));
+
+    void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(svmPtr.get(), surfaceAddress);
+}
+
+HWTEST_F(KernelArgSvmTest, GivenSvmPtrBindlessAndNotInitializedBindlessOffsetToSurfaceStateWhenSettingKernelArgThenSurfaceStateIsNotEncoded) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+    auto svmPtr = std::make_unique<char[]>(256);
+
+    const auto surfaceStateHeap = pKernel->getSurfaceStateHeap();
+    const auto surfaceStateHeapSize = pKernel->getSurfaceStateHeapSize();
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+
+    auto ssHeapDataInitial = std::make_unique<char[]>(surfaceStateHeapSize);
+    std::memcpy(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize);
+
+    pKernelInfo->kernelDescriptor.bindlessArgsMap.clear();
+
+    auto retVal = pKernel->setArgSvm(0, 256, svmPtr.get(), nullptr, 0u);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_EQ(0, std::memcmp(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize));
+}
+
 TEST_F(KernelArgSvmTest, GivenValidSvmAllocWhenSettingKernelArgThenArgumentsAreSetCorrectly) {
     const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
     if (devInfo.svmCapabilities == 0) {
@@ -221,6 +277,100 @@ HWTEST_F(KernelArgSvmTest, givenOffsetedSvmPointerWhenSetArgSvmAllocIsCalledThen
     EXPECT_EQ(offsetedPtr, surfaceAddress);
 }
 
+HWTEST_F(KernelArgSvmTest, GivenValidSvmAllocBindlessWhenSettingKernelArgThenArgumentsAreSetCorrectly) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+
+    const auto &gfxCoreHelper = pKernel->getGfxCoreHelper();
+    const auto surfaceStateSize = gfxCoreHelper.getRenderSurfaceStateSize();
+
+    auto svmPtr = std::make_unique<char[]>(256);
+
+    MockGraphicsAllocation svmAlloc(svmPtr.get(), 256);
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+    pKernelInfo->kernelDescriptor.initBindlessOffsetToSurfaceState();
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr.get(), &svmAlloc, 0u);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_NE(0u, pKernel->getSurfaceStateHeapSize());
+
+    const auto ssIndex = pKernelInfo->kernelDescriptor.bindlessArgsMap.find(bindlessOffset)->second;
+    const auto ssOffset = ssIndex * surfaceStateSize;
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
+        ptrOffset(pKernel->getSurfaceStateHeap(),
+                  ssOffset));
+
+    void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(svmPtr.get(), surfaceAddress);
+}
+
+HWTEST_F(KernelArgSvmTest, givenOffsetedSvmPointerBindlessWhenSetArgSvmAllocIsCalledThenProperSvmAddressIsPatched) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+
+    const auto &gfxCoreHelper = pKernel->getGfxCoreHelper();
+    const auto surfaceStateSize = gfxCoreHelper.getRenderSurfaceStateSize();
+
+    std::unique_ptr<char[]> svmPtr(new char[256]);
+
+    auto offsetedPtr = svmPtr.get() + 4;
+
+    MockGraphicsAllocation svmAlloc(svmPtr.get(), 256);
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+    pKernelInfo->kernelDescriptor.initBindlessOffsetToSurfaceState();
+
+    pKernel->setArgSvmAlloc(0, offsetedPtr, &svmAlloc, 0u);
+
+    const auto ssIndex = pKernelInfo->kernelDescriptor.bindlessArgsMap.find(bindlessOffset)->second;
+    const auto ssOffset = ssIndex * surfaceStateSize;
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
+        ptrOffset(pKernel->getSurfaceStateHeap(),
+                  ssOffset));
+
+    void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(offsetedPtr, surfaceAddress);
+}
+
+HWTEST_F(KernelArgSvmTest, GivenValidSvmAllocBindlessAndNotInitializedBindlessOffsetToSurfaceStateWhenSettingKernelArgThenSurfaceStateIsNotEncoded) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+
+    const auto surfaceStateHeap = pKernel->getSurfaceStateHeap();
+    const auto surfaceStateHeapSize = pKernel->getSurfaceStateHeapSize();
+
+    auto svmPtr = std::make_unique<char[]>(256);
+
+    MockGraphicsAllocation svmAlloc(svmPtr.get(), 256);
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+
+    auto ssHeapDataInitial = std::make_unique<char[]>(surfaceStateHeapSize);
+    std::memcpy(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize);
+
+    pKernelInfo->kernelDescriptor.bindlessArgsMap.clear();
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr.get(), &svmAlloc, 0u);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_EQ(0, std::memcmp(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize));
+}
+
 HWTEST_F(KernelArgSvmTest, givenDeviceSupportingSharedSystemAllocationsWhenSetArgSvmIsCalledWithSurfaceStateThenSizeIsMaxAndAddressIsProgrammed) {
     const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
     if (devInfo.svmCapabilities == 0) {
@@ -240,6 +390,42 @@ HWTEST_F(KernelArgSvmTest, givenDeviceSupportingSharedSystemAllocationsWhenSetAr
                   pKernelInfo->argAsPtr(0).bindful));
 
     void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(systemPointer, surfaceAddress);
+    EXPECT_EQ(128u, surfaceState->getWidth());
+    EXPECT_EQ(2048u, surfaceState->getDepth());
+    EXPECT_EQ(16384u, surfaceState->getHeight());
+}
+
+HWTEST_F(KernelArgSvmTest, givenBindlessArgAndDeviceSupportingSharedSystemAllocationsWhenSetArgSvmIsCalledWithSurfaceStateThenSizeIsMaxAndAddressIsProgrammed) {
+    const ClDeviceInfo &devInfo = pClDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities == 0) {
+        GTEST_SKIP();
+    }
+
+    const auto &gfxCoreHelper = pKernel->getGfxCoreHelper();
+    const auto surfaceStateSize = gfxCoreHelper.getRenderSurfaceStateSize();
+
+    this->pClDevice->deviceInfo.sharedSystemMemCapabilities = CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL;
+
+    auto systemPointer = reinterpret_cast<void *>(0xfeedbac);
+
+    const auto bindlessOffset = 0x10;
+    pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
+    pKernelInfo->kernelDescriptor.initBindlessOffsetToSurfaceState();
+
+    pKernel->setArgSvmAlloc(0, systemPointer, nullptr, 0u);
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    const auto ssIndex = pKernelInfo->kernelDescriptor.bindlessArgsMap.find(bindlessOffset)->second;
+    const auto ssOffset = ssIndex * surfaceStateSize;
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
+        ptrOffset(pKernel->getSurfaceStateHeap(),
+                  ssOffset));
+
+    void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
+
     EXPECT_EQ(systemPointer, surfaceAddress);
     EXPECT_EQ(128u, surfaceState->getWidth());
     EXPECT_EQ(2048u, surfaceState->getDepth());
@@ -296,7 +482,7 @@ HWTEST_F(KernelArgSvmTest, WhenPatchingWithImplicitSurfaceThenPatchIsApplied) {
             void *addressToPatch = svmAlloc.getUnderlyingBuffer();
             size_t sizeToPatch = svmAlloc.getUnderlyingBufferSize();
             Buffer::setSurfaceState(pDevice, &expectedSurfaceState, false, false,
-                                    sizeToPatch, addressToPatch, 0, &svmAlloc, 0, 0, false, false);
+                                    sizeToPatch, addressToPatch, 0, &svmAlloc, 0, 0, false);
         }
 
         // verify ssh was properly patched
@@ -402,7 +588,7 @@ struct SetArgHandlerSetArgBuffer {
 
 using SetArgHandlers = ::testing::Types<SetArgHandlerSetArgSvm, SetArgHandlerSetArgSvmAlloc, SetArgHandlerSetArgBuffer>;
 
-TYPED_TEST_CASE(KernelArgSvmTestTyped, SetArgHandlers);
+TYPED_TEST_SUITE(KernelArgSvmTestTyped, SetArgHandlers);
 HWTEST_TYPED_TEST(KernelArgSvmTestTyped, GivenBufferKernelArgWhenBufferOffsetIsNeededThenSetArgSetsIt) {
     const ClDeviceInfo &devInfo = KernelArgSvmFixture::pClDevice->getDeviceInfo();
     if (devInfo.svmCapabilities == 0) {
@@ -458,7 +644,7 @@ HWTEST_TYPED_TEST(KernelArgSvmTestTyped, GivenBufferKernelArgWhenBufferOffsetIsN
         }
 
         Buffer::setSurfaceState(device.get(), &expectedSurfaceState, false, false, svmAlloc.getUnderlyingBufferSize(),
-                                svmAlloc.getUnderlyingBuffer(), 0, &svmAlloc, 0, 0, false, false);
+                                svmAlloc.getUnderlyingBuffer(), 0, &svmAlloc, 0, 0, false);
 
         // verify ssh was properly patched
         int32_t cmpResult = memcmp(&expectedSurfaceState, surfState, rendSurfSize);

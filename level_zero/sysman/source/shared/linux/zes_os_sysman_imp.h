@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 
 #include "level_zero/sysman/source/device/os_sysman.h"
 #include "level_zero/sysman/source/device/sysman_device_imp.h"
+#include "level_zero/sysman/source/shared/linux/pmt/sysman_pmt.h"
 #include "level_zero/sysman/source/shared/linux/sysman_hw_device_id_linux.h"
 #include "level_zero/sysman/source/sysman_const.h"
 
@@ -27,7 +28,6 @@ namespace L0 {
 namespace Sysman {
 
 class SysmanProductHelper;
-class PlatformMonitoringTech;
 class PmuInterface;
 class FirmwareUtil;
 class SysmanKmdInterface;
@@ -54,11 +54,9 @@ class LinuxSysmanImp : public OsSysman, NEO::NonCopyableOrMovableClass {
     std::string getPciCardBusDirectoryPath(std::string realPciPath);
     uint32_t getMemoryType();
     static std::string getPciRootPortDirectoryPath(std::string realPciPath);
-    PlatformMonitoringTech *getPlatformMonitoringTechAccess(uint32_t subDeviceId);
     PRODUCT_FAMILY getProductFamily() const { return pParentSysmanDeviceImp->getProductFamily(); }
     SysmanHwDeviceIdDrm::SingleInstance getSysmanHwDeviceIdInstance();
     NEO::Drm *getDrm();
-    void releasePmtObject();
     MOCKABLE_VIRTUAL void releaseSysmanDeviceResources();
     MOCKABLE_VIRTUAL ze_result_t reInitSysmanDeviceResources();
     MOCKABLE_VIRTUAL void getPidFdsForOpenDevice(const ::pid_t, std::vector<int> &);
@@ -68,9 +66,8 @@ class LinuxSysmanImp : public OsSysman, NEO::NonCopyableOrMovableClass {
     std::string getAddressFromPath(std::string &rootPortPath);
     decltype(&NEO::SysCalls::pread) preadFunction = NEO::SysCalls::pread;
     decltype(&NEO::SysCalls::pwrite) pwriteFunction = NEO::SysCalls::pwrite;
-    ze_result_t createPmtHandles();
     SysmanDeviceImp *getParentSysmanDeviceImp() { return pParentSysmanDeviceImp; }
-    std::string &getPciRootPath();
+    std::string &getPciRootPath() { return rootPath; }
     std::string &getDeviceName();
     std::string devicePciBdf = "";
     NEO::ExecutionEnvironment *executionEnvironment = nullptr;
@@ -79,6 +76,8 @@ class LinuxSysmanImp : public OsSysman, NEO::NonCopyableOrMovableClass {
     bool isMemoryDiagnostics = false;
     std::string gtDevicePath;
     SysmanKmdInterface *getSysmanKmdInterface() { return pSysmanKmdInterface.get(); }
+    static ze_result_t getResult(int err);
+    bool getTelemData(uint32_t subDeviceId, std::string &telemDir, std::string &guid, uint64_t &telemOffset);
 
   protected:
     std::unique_ptr<SysmanProductHelper> pSysmanProductHelper;
@@ -86,13 +85,15 @@ class LinuxSysmanImp : public OsSysman, NEO::NonCopyableOrMovableClass {
     FsAccessInterface *pFsAccess = nullptr;
     ProcFsAccessInterface *pProcfsAccess = nullptr;
     SysFsAccessInterface *pSysfsAccess = nullptr;
-    std::map<uint32_t, L0::Sysman::PlatformMonitoringTech *> mapOfSubDeviceIdToPmtObject;
     uint32_t subDeviceCount = 0;
     FirmwareUtil *pFwUtilInterface = nullptr;
     PmuInterface *pPmuInterface = nullptr;
     std::string rootPath;
     void releaseFwUtilInterface();
     uint32_t memType = unknownMemoryType;
+    std::map<uint32_t, std::unique_ptr<PlatformMonitoringTech::TelemData>> mapOfSubDeviceIdToTelemData;
+    std::map<uint32_t, std::string> telemNodesInPciPath;
+    std::unique_ptr<PlatformMonitoringTech::TelemData> pTelemData = nullptr;
 
   private:
     LinuxSysmanImp() = delete;

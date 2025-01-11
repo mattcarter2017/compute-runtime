@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,7 +23,7 @@
 namespace NEO {
 template <typename T>
 class D3DAuxTests : public D3DTests<T> {};
-TYPED_TEST_CASE_P(D3DAuxTests);
+TYPED_TEST_SUITE_P(D3DAuxTests);
 
 TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetAsCompressed) {
     this->mockSharingFcns->mockTexture2dDesc.MiscFlags = D3DResourceFlags::MISC_SHARED;
@@ -43,7 +43,7 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithUnifiedAuxFlagsWhenCreatingT
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_TRUE(this->gmm->isCompressionEnabled);
+    EXPECT_TRUE(this->gmm->isCompressionEnabled());
 
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture2dDescCalled);
 }
@@ -67,7 +67,7 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithUnifiedAuxFlagsWhenFailOnAux
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_EQ(!productHelper.isPageTableManagerSupported(hwInfo), this->gmm->isCompressionEnabled);
+    EXPECT_EQ(!productHelper.isPageTableManagerSupported(hwInfo), this->gmm->isCompressionEnabled());
 
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture2dDescCalled);
 }
@@ -86,7 +86,7 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithoutUnifiedAuxFlagsWhenCreati
     ASSERT_NE(nullptr, image.get());
 
     EXPECT_EQ(0u, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_FALSE(this->gmm->isCompressionEnabled);
+    EXPECT_FALSE(this->gmm->isCompressionEnabled());
 
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture2dDescCalled);
 }
@@ -106,7 +106,7 @@ TYPED_TEST_P(D3DAuxTests, given2dNonSharableTextureWithUnifiedAuxFlagsWhenCreati
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_TRUE(this->gmm->isCompressionEnabled);
+    EXPECT_TRUE(this->gmm->isCompressionEnabled());
 
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture2dDescCalled);
 }
@@ -127,7 +127,7 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithUnifiedAuxFlagsWhenCreatingT
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_TRUE(this->gmm->isCompressionEnabled);
+    EXPECT_TRUE(this->gmm->isCompressionEnabled());
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture3dDescCalled);
 }
 
@@ -148,7 +148,7 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithUnifiedAuxFlagsWhenFailOnAux
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_EQ(!productHelper.isPageTableManagerSupported(hwInfo), this->gmm->isCompressionEnabled);
+    EXPECT_EQ(!productHelper.isPageTableManagerSupported(hwInfo), this->gmm->isCompressionEnabled());
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture3dDescCalled);
 }
 
@@ -164,7 +164,7 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithoutUnifiedAuxFlagsWhenCreati
     ASSERT_NE(nullptr, image.get());
 
     EXPECT_EQ(0u, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_FALSE(this->gmm->isCompressionEnabled);
+    EXPECT_FALSE(this->gmm->isCompressionEnabled());
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture3dDescCalled);
 }
 
@@ -183,20 +183,20 @@ TYPED_TEST_P(D3DAuxTests, given3dNonSharableTextureWithUnifiedAuxFlagsWhenCreati
     uint32_t expectedMapAuxGpuVaCalls = productHelper.isPageTableManagerSupported(hwInfo) ? 1 : 0;
 
     EXPECT_EQ(expectedMapAuxGpuVaCalls, this->mockMM->mapAuxGpuVACalled);
-    EXPECT_TRUE(this->gmm->isCompressionEnabled);
+    EXPECT_TRUE(this->gmm->isCompressionEnabled());
     EXPECT_EQ(1u, this->mockSharingFcns->getTexture3dDescCalled);
 }
 
-REGISTER_TYPED_TEST_CASE_P(D3DAuxTests,
-                           given2dSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetAsCompressed,
-                           given2dSharableTextureWithUnifiedAuxFlagsWhenFailOnAuxMappingThenDontSetAsCompressed,
-                           given2dSharableTextureWithoutUnifiedAuxFlagsWhenCreatingThenDontMapAuxTable,
-                           given2dNonSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetCompressed,
-                           given3dSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetAsCompressed,
-                           given3dSharableTextureWithUnifiedAuxFlagsWhenFailOnAuxMappingThenDontSetAsCompressed,
-                           given3dSharableTextureWithoutUnifiedAuxFlagsWhenCreatingThenDontMapAuxTable,
-                           given3dNonSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetCompressed);
+REGISTER_TYPED_TEST_SUITE_P(D3DAuxTests,
+                            given2dSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetAsCompressed,
+                            given2dSharableTextureWithUnifiedAuxFlagsWhenFailOnAuxMappingThenDontSetAsCompressed,
+                            given2dSharableTextureWithoutUnifiedAuxFlagsWhenCreatingThenDontMapAuxTable,
+                            given2dNonSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetCompressed,
+                            given3dSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetAsCompressed,
+                            given3dSharableTextureWithUnifiedAuxFlagsWhenFailOnAuxMappingThenDontSetAsCompressed,
+                            given3dSharableTextureWithoutUnifiedAuxFlagsWhenCreatingThenDontMapAuxTable,
+                            given3dNonSharableTextureWithUnifiedAuxFlagsWhenCreatingThenMapAuxTableAndSetCompressed);
 
-INSTANTIATE_TYPED_TEST_CASE_P(D3DSharingTests, D3DAuxTests, D3DTypes);
+INSTANTIATE_TYPED_TEST_SUITE_P(D3DSharingTests, D3DAuxTests, D3DTypes);
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,6 +32,11 @@ UltDeviceFactory::UltDeviceFactory(uint32_t rootDevicesCount, uint32_t subDevice
     debugManager.flags.CreateMultipleRootDevices.set(rootDevicesCount);
     debugManager.flags.CreateMultipleSubDevices.set(subDevicesCount);
     createRootDeviceFuncBackup = [](ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex) -> std::unique_ptr<Device> {
+        for (auto i = 0u; i < executionEnvironment.rootDeviceEnvironments.size(); i++) {
+            UnitTestSetter::setRcsExposure(*executionEnvironment.rootDeviceEnvironments[i]);
+            UnitTestSetter::setCcsExposure(*executionEnvironment.rootDeviceEnvironments[i]);
+        }
+        executionEnvironment.calculateMaxOsContextCount();
         return std::unique_ptr<Device>(MockDevice::create<MockDevice>(&executionEnvironment, rootDeviceIndex));
     };
     createMemoryManagerFuncBackup = UltDeviceFactory::initializeMemoryManager;
@@ -64,6 +69,7 @@ void UltDeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &execution
              executionEnvironment.rootDeviceEnvironments[i]->getHardwareInfo()->platform.eRenderCoreFamily == IGFX_UNKNOWN_CORE)) {
             executionEnvironment.rootDeviceEnvironments[i]->setHwInfoAndInitHelpers(defaultHwInfo.get());
         }
+        executionEnvironment.rootDeviceEnvironments[i]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
     }
     executionEnvironment.parseAffinityMask();
     executionEnvironment.calculateMaxOsContextCount();

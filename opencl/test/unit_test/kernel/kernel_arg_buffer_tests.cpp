@@ -355,6 +355,7 @@ TEST_F(KernelArgBufferTest, givenKernelExecInfoWithIndirectStatelessAccessWhenHa
         return;
     }
     pContext->getHostMemAllocPool().cleanup();
+    svmAllocationsManager->trimUSMHostAllocCache();
 
     mockKernel.unifiedMemoryControls.indirectHostAllocationsAllowed = true;
     EXPECT_FALSE(mockKernel.hasIndirectStatelessAccessToHostMemory());
@@ -573,7 +574,7 @@ TEST_F(KernelArgBufferTest, givenSetUnifiedMemoryExecInfoOnKernelWithIndirectSta
         gfxAllocation.setAllocationType(type.allocationType);
 
         pKernel->setUnifiedMemoryExecInfo(&gfxAllocation);
-        gmm->isCompressionEnabled = type.compressed;
+        gmm->setCompressionEnabled(type.compressed);
 
         auto kernelObjsForAuxTranslation = pKernel->fillWithKernelObjsForAuxTranslation();
 
@@ -619,7 +620,7 @@ TEST_F(KernelArgBufferTest, givenSVMAllocsManagerWithCompressedSVMAllocationsWhe
     for (const auto type : allocationTypes) {
         gfxAllocation.setAllocationType(type.allocationType);
 
-        gmm->isCompressionEnabled = type.compressed;
+        gmm->setCompressionEnabled(type.compressed);
 
         pContext->getSVMAllocsManager()->insertSVMAlloc(allocData);
 
@@ -651,6 +652,8 @@ class KernelArgBufferFixtureBindless : public KernelArgBufferFixture {
         pKernelInfo->argAsPtr(0).bindless = bindlessOffset;
         pKernelInfo->argAsPtr(0).stateless = undefined<CrossThreadDataOffset>;
         pKernelInfo->argAsPtr(0).bindful = undefined<SurfaceStateHeapOffset>;
+
+        pKernelInfo->kernelDescriptor.initBindlessOffsetToSurfaceState();
     }
     void tearDown() {
         delete pBuffer;
@@ -664,7 +667,6 @@ class KernelArgBufferFixtureBindless : public KernelArgBufferFixture {
 typedef Test<KernelArgBufferFixtureBindless> KernelArgBufferTestBindless;
 
 HWTEST_F(KernelArgBufferTestBindless, givenUsedBindlessBuffersWhenSettingKernelArgThenOffsetInCrossThreadDataIsNotPatched) {
-    using DataPortBindlessSurfaceExtendedMessageDescriptor = typename FamilyType::DataPortBindlessSurfaceExtendedMessageDescriptor;
     auto patchLocation = reinterpret_cast<uint32_t *>(ptrOffset(pKernel->getCrossThreadData(), bindlessOffset));
     *patchLocation = 0xdead;
 
@@ -674,14 +676,47 @@ HWTEST_F(KernelArgBufferTestBindless, givenUsedBindlessBuffersWhenSettingKernelA
     EXPECT_EQ(0xdeadu, *patchLocation);
 }
 
+HWTEST_F(KernelArgBufferTestBindless, givenBindlessArgBufferWhenSettingKernelArgThenSurfaceStateIsEncodedAtProperOffset) {
+    const auto &gfxCoreHelper = pKernel->getGfxCoreHelper();
+    const auto surfaceStateSize = gfxCoreHelper.getRenderSurfaceStateSize();
+    const auto surfaceStateHeapSize = pKernel->getSurfaceStateHeapSize();
+
+    EXPECT_EQ(pKernelInfo->kernelDescriptor.kernelAttributes.numArgsStateful * surfaceStateSize, surfaceStateHeapSize);
+
+    cl_mem memObj = pBuffer;
+    retVal = pKernel->setArg(0, sizeof(memObj), &memObj);
+
+    const auto ssIndex = pKernelInfo->kernelDescriptor.bindlessArgsMap.find(bindlessOffset)->second;
+    const auto ssOffset = ssIndex * surfaceStateSize;
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    const auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(ptrOffset(pKernel->getSurfaceStateHeap(), ssOffset));
+    const auto surfaceAddress = surfaceState->getSurfaceBaseAddress();
+
+    const auto bufferAddress = pBuffer->getGraphicsAllocation(pDevice->getRootDeviceIndex())->getGpuAddress();
+    EXPECT_EQ(bufferAddress, surfaceAddress);
+}
+
+HWTEST_F(KernelArgBufferTestBindless, givenBindlessArgBufferAndNotInitializedBindlessOffsetToSurfaceStateWhenSettingKernelArgThenSurfaceStateIsNotEncoded) {
+    const auto surfaceStateHeap = pKernel->getSurfaceStateHeap();
+    const auto surfaceStateHeapSize = pKernel->getSurfaceStateHeapSize();
+
+    auto ssHeapDataInitial = std::make_unique<char[]>(surfaceStateHeapSize);
+    std::memcpy(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize);
+
+    pKernelInfo->kernelDescriptor.bindlessArgsMap.clear();
+
+    cl_mem memObj = pBuffer;
+    retVal = pKernel->setArg(0, sizeof(memObj), &memObj);
+
+    EXPECT_EQ(0, std::memcmp(ssHeapDataInitial.get(), surfaceStateHeap, surfaceStateHeapSize));
+}
+
 HWTEST_F(KernelArgBufferTestBindless, givenBindlessBuffersWhenPatchBindlessOffsetCalledThenBindlessOffsetToSurfaceStateWrittenInCrossThreadData) {
 
-    pClDevice->getExecutionEnvironment()->rootDeviceEnvironments[pClDevice->getRootDeviceIndex()]->createBindlessHeapsHelper(pClDevice->getMemoryManager(),
-                                                                                                                             pClDevice->getNumGenericSubDevices() > 1,
-                                                                                                                             pClDevice->getRootDeviceIndex(),
-                                                                                                                             pClDevice->getDeviceBitfield());
+    pClDevice->getExecutionEnvironment()->rootDeviceEnvironments[pClDevice->getRootDeviceIndex()]->createBindlessHeapsHelper(pDevice,
+                                                                                                                             pClDevice->getNumGenericSubDevices() > 1);
 
-    using DataPortBindlessSurfaceExtendedMessageDescriptor = typename FamilyType::DataPortBindlessSurfaceExtendedMessageDescriptor;
     auto patchLocation = reinterpret_cast<uint32_t *>(ptrOffset(pKernel->getCrossThreadData(), bindlessOffset));
     *patchLocation = 0xdead;
 

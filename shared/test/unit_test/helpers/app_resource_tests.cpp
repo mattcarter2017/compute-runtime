@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,7 +32,7 @@ struct AppResourceTests : public MockExecutionEnvironmentTagTest {
 };
 
 TEST_F(AppResourceTests, givenIncorrectGraphicsAllocationTypeWhenGettingResourceTagThenNOTFOUNDIsReturned) {
-    auto tag = AppResourceHelper::getResourceTagStr(static_cast<AllocationType>(999));
+    auto tag = AppResourceHelper::getResourceTagStr(static_cast<AllocationType>(999)); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
     EXPECT_STREQ(tag, "NOTFOUND");
 }
 
@@ -87,6 +87,7 @@ AllocationTypeTagTestCase allocationTypeTagValues[static_cast<int>(AllocationTyp
     {AllocationType::svmCpu, "SVM_CPU"},
     {AllocationType::svmGpu, "SVM_GPU"},
     {AllocationType::svmZeroCopy, "SVM0COPY"},
+    {AllocationType::syncBuffer, "SYNCBUFF"},
     {AllocationType::tagBuffer, "TAGBUFER"},
     {AllocationType::globalFence, "GLBLFENC"},
     {AllocationType::timestampPacketTagBuffer, "TSPKTGBF"},
@@ -101,7 +102,8 @@ AllocationTypeTagTestCase allocationTypeTagValues[static_cast<int>(AllocationTyp
     {AllocationType::gpuTimestampDeviceBuffer, "GPUTSDBF"},
     {AllocationType::swTagBuffer, "SWTAGBF"},
     {AllocationType::deferredTasksList, "TSKLIST"},
-    {AllocationType::assertBuffer, "ASSRTBUF"}};
+    {AllocationType::assertBuffer, "ASSRTBUF"},
+    {AllocationType::syncDispatchToken, "SYNCTOK"}};
 class AllocationTypeTagString : public ::testing::TestWithParam<AllocationTypeTagTestCase> {};
 
 TEST_P(AllocationTypeTagString, givenGraphicsAllocationTypeWhenCopyTagToStorageInfoThenCorrectTagIsReturned) {
@@ -115,4 +117,4 @@ TEST_P(AllocationTypeTagString, givenGraphicsAllocationTypeWhenCopyTagToStorageI
     EXPECT_STREQ(storageInfo.resourceTag, input.str);
 }
 
-INSTANTIATE_TEST_CASE_P(AllAllocationTypesTag, AllocationTypeTagString, ::testing::ValuesIn(allocationTypeTagValues));
+INSTANTIATE_TEST_SUITE_P(AllAllocationTypesTag, AllocationTypeTagString, ::testing::ValuesIn(allocationTypeTagValues));

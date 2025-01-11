@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,7 +24,6 @@ using GfxCoreHelperDg2AndLaterTest = ::testing::Test;
 
 HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenUseL1CacheAsTrueWhenCallSetL1CachePolicyThenL1CachePolicyL1CacheControlIsSetProperly, IsAtLeastXeHpgCore) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
@@ -33,7 +32,7 @@ HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenUseL1CacheAsTrueWhenCallSetL1CacheP
     RENDER_SURFACE_STATE surfaceState = FamilyType::cmdInitRenderSurfaceState;
     bool useL1Cache = true;
     helper.setL1CachePolicy(useL1Cache, &surfaceState, defaultHwInfo.get());
-    EXPECT_EQ(RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB, surfaceState.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB, surfaceState.getL1CacheControlCachePolicy());
 }
 
 HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenOverrideL1CacheControlInSurfaceStateForScratchSpaceWhenCallSetL1CachePolicyThenL1CachePolicyL1CacheControlIsSetProperly, IsAtLeastXeHpgCore) {
@@ -41,7 +40,6 @@ HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenOverrideL1CacheControlInSurfaceStat
     debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.set(1);
 
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
     auto &helper = reinterpret_cast<GfxCoreHelperHw<FamilyType> &>(gfxCoreHelper);
@@ -49,19 +47,18 @@ HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenOverrideL1CacheControlInSurfaceStat
     RENDER_SURFACE_STATE surfaceState = FamilyType::cmdInitRenderSurfaceState;
     bool useL1Cache = true;
     helper.setL1CachePolicy(useL1Cache, &surfaceState, defaultHwInfo.get());
-    EXPECT_EQ(RENDER_SURFACE_STATE::L1_CACHE_POLICY_UC, surfaceState.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(RENDER_SURFACE_STATE::L1_CACHE_CONTROL_UC, surfaceState.getL1CacheControlCachePolicy());
 }
 
 HWTEST2_F(GfxCoreHelperDg2AndLaterTest, GivenUseL1CacheAsFalseWhenCallSetL1CachePolicyThenL1CachePolicyL1CacheControlIsNotSet, IsAtLeastXeHpgCore) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
     auto &helper = reinterpret_cast<GfxCoreHelperHw<FamilyType> &>(gfxCoreHelper);
     RENDER_SURFACE_STATE surfaceState = FamilyType::cmdInitRenderSurfaceState;
     bool useL1Cache = false;
     helper.setL1CachePolicy(useL1Cache, &surfaceState, defaultHwInfo.get());
-    EXPECT_NE(RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB, surfaceState.getL1CachePolicyL1CacheControl());
+    EXPECT_NE(RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB, surfaceState.getL1CacheControlCachePolicy());
 }
 
 using GfxCoreHelperWithLargeGrf = ::testing::Test;
@@ -131,6 +128,7 @@ HWTEST2_F(PipeControlHelperTestsDg2AndLater, WhenAddingPipeControlWAThenCorrectC
                                                                     false,
                                                                     true,
                                                                     false,
+                                                                    false,
                                                                     false);
                 auto pMiSemaphoreWait = genCmdCast<MI_SEMAPHORE_WAIT *>(*(++it));
                 ASSERT_NE(nullptr, pMiSemaphoreWait);
@@ -141,7 +139,6 @@ HWTEST2_F(PipeControlHelperTestsDg2AndLater, WhenAddingPipeControlWAThenCorrectC
 }
 
 HWTEST2_F(PipeControlHelperTestsDg2AndLater, WhenSettingExtraPipeControlPropertiesThenCorrectValuesAreSet, IsAtLeastXeHpgCore) {
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     PipeControlArgs args{};
     MemorySynchronizationCommands<FamilyType>::setPostSyncExtraProperties(args);
 
@@ -223,6 +220,26 @@ HWTEST2_F(GfxCoreHelperDg2AndLaterTest, givenGfxCoreHelperWhenCheckIsUpdateTaskC
     auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
 
     EXPECT_TRUE(gfxCoreHelper.isUpdateTaskCountFromWaitSupported());
+}
+
+HWTEST2_F(GfxCoreHelperDg2AndLaterTest, givenGfxCoreHelperWhenCheckMakeResidentBeforeLockNeededThenReturnsTrue, IsAtLeastXeHpgCore) {
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
+
+    EXPECT_TRUE(gfxCoreHelper.makeResidentBeforeLockNeeded(false));
+}
+
+HWTEST2_F(GfxCoreHelperDg2AndLaterTest, givenGfxCoreHelperWhenFlagSetAndCallGetAmountOfAllocationsToFillThenReturnCorrectValue, IsXeHpcOrXeHpgCore) {
+    DebugManagerStateRestore restorer;
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    auto &gfxCoreHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
+    EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 1u);
+
+    debugManager.flags.SetAmountOfReusableAllocations.set(0);
+    EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 0u);
+
+    debugManager.flags.SetAmountOfReusableAllocations.set(1);
+    EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 1u);
 }
 
 using ProductHelperTestDg2AndLater = ::testing::Test;

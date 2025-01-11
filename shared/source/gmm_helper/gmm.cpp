@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -42,7 +42,14 @@ Gmm::Gmm(GmmHelper *gmmHelper, const void *alignedPtr, size_t alignedSize, size_
 
     this->preferNoCpuAccess = CacheSettingsHelper::preferNoCpuAccess(gmmResourceUsage, gmmHelper->getRootDeviceEnvironment());
     bool cacheable = !this->preferNoCpuAccess && !CacheSettingsHelper::isUncachedType(gmmResourceUsage);
+
+    gmmRequirements.overriderPreferNoCpuAccess.doOverride(this->preferNoCpuAccess);
     gmmRequirements.overriderCacheable.doOverride(cacheable);
+
+    if (NEO::debugManager.flags.OverrideGmmCacheableField.get() != -1) {
+        cacheable = !!NEO::debugManager.flags.OverrideGmmCacheableField.get();
+    }
+
     resourceParams.Flags.Info.Cacheable = cacheable;
 
     resourceParams.Flags.Gpu.Texture = 1;
@@ -62,6 +69,7 @@ Gmm::Gmm(GmmHelper *gmmHelper, const void *alignedPtr, size_t alignedSize, size_
     applyAuxFlagsForBuffer(gmmRequirements.preferCompressed && !storageInfo.isLockable);
     applyMemoryFlags(storageInfo);
     applyAppResource(storageInfo);
+    applyExtraInitFlag();
     applyDebugOverrides();
 
     gmmResourceInfo.reset(GmmResourceInfo::create(gmmHelper->getClientContext(), &resourceParams));
@@ -123,6 +131,32 @@ void Gmm::setupImageResourceParams(ImageInfo &imgInfo, bool preferCompressed) {
 
     resourceParams.Flags.Info.Linear = imgInfo.linearStorage;
 
+    switch (imgInfo.forceTiling) {
+    case ImageTilingMode::tiledW:
+        resourceParams.Flags.Info.TiledW = true;
+        break;
+    case ImageTilingMode::tiledX:
+        resourceParams.Flags.Info.TiledX = true;
+        break;
+    case ImageTilingMode::tiledY:
+        resourceParams.Flags.Info.TiledY = true;
+        break;
+    case ImageTilingMode::tiledYf:
+        resourceParams.Flags.Info.TiledYf = true;
+        break;
+    case ImageTilingMode::tiledYs:
+        resourceParams.Flags.Info.TiledYs = true;
+        break;
+    case ImageTilingMode::tiled4:
+        resourceParams.Flags.Info.Tile4 = true;
+        break;
+    case ImageTilingMode::tiled64:
+        resourceParams.Flags.Info.Tile64 = true;
+        break;
+    default:
+        break;
+    }
+
     auto &gfxCoreHelper = gmmHelper->getRootDeviceEnvironment().getHelper<GfxCoreHelper>();
     auto &productHelper = gmmHelper->getRootDeviceEnvironment().getHelper<ProductHelper>();
     resourceParams.NoGfxMemory = 1; // dont allocate, only query for params
@@ -152,7 +186,7 @@ void Gmm::applyAuxFlagsForBuffer(bool preferCompression) {
         gfxCoreHelper.applyRenderCompressionFlag(*this, 1);
         resourceParams.Flags.Gpu.CCS = 1;
         resourceParams.Flags.Gpu.UnifiedAuxSurface = 1;
-        isCompressionEnabled = true;
+        compressionEnabled = true;
     }
 
     if (debugManager.flags.PrintGmmCompressionParams.get()) {
@@ -160,7 +194,7 @@ void Gmm::applyAuxFlagsForBuffer(bool preferCompression) {
                resourceParams.Flags.Gpu.CCS, resourceParams.Flags.Gpu.UnifiedAuxSurface, resourceParams.Flags.Info.RenderCompressed);
     }
 
-    gfxCoreHelper.applyAdditionalCompressionSettings(*this, !isCompressionEnabled);
+    gfxCoreHelper.applyAdditionalCompressionSettings(*this, !compressionEnabled);
 }
 
 void Gmm::applyAuxFlagsForImage(ImageInfo &imgInfo, bool preferCompressed) {
@@ -199,7 +233,7 @@ void Gmm::applyAuxFlagsForImage(ImageInfo &imgInfo, bool preferCompressed) {
             this->resourceParams.Flags.Gpu.CCS = 1;
             this->resourceParams.Flags.Gpu.UnifiedAuxSurface = 1;
             this->resourceParams.Flags.Gpu.IndirectClearColor = 1;
-            this->isCompressionEnabled = true;
+            this->compressionEnabled = true;
         }
     }
 
@@ -208,7 +242,7 @@ void Gmm::applyAuxFlagsForImage(ImageInfo &imgInfo, bool preferCompressed) {
                resourceParams.Flags.Gpu.CCS, resourceParams.Flags.Gpu.UnifiedAuxSurface, resourceParams.Flags.Info.RenderCompressed);
     }
 
-    gfxCoreHelper.applyAdditionalCompressionSettings(*this, !isCompressionEnabled);
+    gfxCoreHelper.applyAdditionalCompressionSettings(*this, !compressionEnabled);
 }
 
 void Gmm::queryImageParams(ImageInfo &imgInfo) {
@@ -267,9 +301,6 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
 }
 
 uint32_t Gmm::queryQPitch(GMM_RESOURCE_TYPE resType) {
-    if (gmmHelper->getHardwareInfo()->platform.eRenderCoreFamily == IGFX_GEN8_CORE && resType == GMM_RESOURCE_TYPE::RESOURCE_3D) {
-        return 0;
-    }
     return gmmResourceInfo->getQPitch();
 }
 
@@ -371,7 +402,7 @@ void Gmm::applyMemoryFlags(const StorageInfo &storageInfo) {
             if (extraMemoryFlagsRequired()) {
                 applyExtraMemoryFlags(storageInfo);
             } else if (!storageInfo.isLockable) {
-                if (isCompressionEnabled || storageInfo.localOnlyRequired) {
+                if (storageInfo.localOnlyRequired) {
                     resourceParams.Flags.Info.LocalOnly = 1;
                 }
             }
@@ -411,6 +442,29 @@ void Gmm::applyDebugOverrides() {
 
     if (true == (debugManager.flags.ForceAllResourcesUncached.get())) {
         resourceParams.Usage = GMM_RESOURCE_USAGE_SURFACE_UNCACHED;
+    }
+}
+
+const char *Gmm::getUsageTypeString() {
+    switch (resourceParams.Usage) {
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER_CACHELINE_MISALIGNED:
+        return "GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER_CACHELINE_MISALIGNED";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED:
+        return "GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER:
+        return "GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_BUFFER_CSR_UC:
+        return "GMM_RESOURCE_USAGE_OCL_BUFFER_CSR_UC";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_BUFFER_CONST:
+        return "GMM_RESOURCE_USAGE_OCL_BUFFER_CONST";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_STATE_HEAP_BUFFER:
+        return "GMM_RESOURCE_USAGE_OCL_STATE_HEAP_BUFFER";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_BUFFER:
+        return "GMM_RESOURCE_USAGE_OCL_BUFFER";
+    case GMM_RESOURCE_USAGE_TYPE_ENUM::GMM_RESOURCE_USAGE_OCL_IMAGE:
+        return "GMM_RESOURCE_USAGE_OCL_IMAGE";
+    default:
+        return "UNKNOWN GMM USAGE TYPE";
     }
 }
 } // namespace NEO

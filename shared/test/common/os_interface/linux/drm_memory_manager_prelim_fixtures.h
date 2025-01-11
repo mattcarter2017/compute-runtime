@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -102,7 +102,8 @@ class DrmMemoryManagerLocalMemoryWithCustomPrelimMockTest : public ::testing::Te
         executionEnvironment->prepareRootDeviceEnvironments(1);
         executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
 
-        mock = new DrmMockCustomPrelim(*executionEnvironment->rootDeviceEnvironments[0]);
+        mock = DrmMockCustomPrelim::create(*executionEnvironment->rootDeviceEnvironments[0]).release();
+        mock->memoryInfo.reset(new MockMemoryInfo{*mock});
         executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
         executionEnvironment->rootDeviceEnvironments[0]->osInterface->setDriverModel(std::unique_ptr<DriverModel>(mock));
 
@@ -126,7 +127,7 @@ class DrmMemoryManagerFixturePrelim : public DrmMemoryManagerFixture {
 
         MemoryManagementFixture::setUp();
         executionEnvironment = MockDevice::prepareExecutionEnvironment(defaultHwInfo.get(), numRootDevices - 1);
-        mock = new DrmMockCustomPrelim(*executionEnvironment->rootDeviceEnvironments[0]);
+        mock = DrmMockCustomPrelim::create(*executionEnvironment->rootDeviceEnvironments[0]).release();
         mock->memoryInfo.reset(new MemoryInfo(regionInfo, *mock));
 
         DrmMemoryManagerFixture::setUp(mock, true);

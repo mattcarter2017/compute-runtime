@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,6 +15,8 @@
 #include "shared/test/common/device_binary_format/patchtokens_tests.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/gtest_helpers.h"
+#include "shared/test/common/mocks/mock_bindless_heaps_helper.h"
+#include "shared/test/common/mocks/mock_compiler_product_helper.h"
 #include "shared/test/common/mocks/mock_csr.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
@@ -324,6 +326,116 @@ TEST_F(ProgramDataTest, whenGlobalVariablesAreNotExportedThenAllocateSurfacesAsN
     EXPECT_EQ(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getGlobalSurface(pContext->getDevice(0)->getRootDeviceIndex())->getGpuAddress())));
 }
 
+using ProgramDataBindlessTest = ProgramDataTest;
+
+TEST_F(ProgramDataBindlessTest, givenBindlessKernelAndConstantsAndVariablesMemorySurfaceWhenProcessProgramInfoThenConstantsAndVariablesSurfaceBindlessSlotIsAllocated) {
+    auto &neoDevice = pClDevice->getDevice();
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->memoryOperationsInterface =
+        std::make_unique<NEO::MockMemoryOperations>();
+
+    auto bindlessHeapHelper = new MockBindlesHeapsHelper(&neoDevice, false);
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->bindlessHeapsHelper.reset(bindlessHeapHelper);
+
+    ProgramInfo programInfo;
+
+    char globalConstantsData[128] = {};
+    programInfo.globalConstants.initData = globalConstantsData;
+    programInfo.globalConstants.size = sizeof(globalConstantsData);
+
+    char globalVariablesData[128] = {};
+    programInfo.globalVariables.initData = globalVariablesData;
+    programInfo.globalVariables.size = sizeof(globalVariablesData);
+
+    auto kernelInfo1 = std::make_unique<KernelInfo>();
+    kernelInfo1->kernelDescriptor.kernelAttributes.bufferAddressingMode = KernelDescriptor::Bindful;
+    auto kernelInfo2 = std::make_unique<KernelInfo>();
+    kernelInfo1->kernelDescriptor.kernelAttributes.bufferAddressingMode = KernelDescriptor::BindlessAndStateless;
+
+    programInfo.kernelInfos.push_back(kernelInfo1.release());
+    programInfo.kernelInfos.push_back(kernelInfo2.release());
+
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    programInfo.linkerInput = std::move(mockLinkerInput);
+    this->pProgram->processProgramInfo(programInfo, *pClDevice);
+
+    ASSERT_NE(nullptr, pProgram->getConstantSurface(pContext->getDevice(0)->getRootDeviceIndex()));
+    ASSERT_NE(nullptr, pProgram->getGlobalSurface(pContext->getDevice(0)->getRootDeviceIndex()));
+
+    auto globalConstantsAlloc = pProgram->getConstantSurface(pContext->getDevice(0)->getRootDeviceIndex());
+    auto &ssInHeap1 = globalConstantsAlloc->getBindlessInfo();
+
+    EXPECT_NE(nullptr, ssInHeap1.heapAllocation);
+
+    auto globalVariablesAlloc = pProgram->getGlobalSurface(pContext->getDevice(0)->getRootDeviceIndex());
+    auto &ssInHeap2 = globalVariablesAlloc->getBindlessInfo();
+
+    EXPECT_NE(nullptr, ssInHeap2.heapAllocation);
+}
+
+TEST_F(ProgramDataBindlessTest, givenBindlessKernelAndGlobalConstantsMemorySurfaceWhenProcessProgramInfoAndSSAllocationFailsThenGlobalConstantsSurfaceBindlessSlotIsNotAllocatedAndReturnOutOfHostMemory) {
+    auto &neoDevice = pClDevice->getDevice();
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->memoryOperationsInterface =
+        std::make_unique<NEO::MockMemoryOperations>();
+
+    auto bindlessHeapHelper = new MockBindlesHeapsHelper(&neoDevice, false);
+    bindlessHeapHelper->failAllocateSS = true;
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->bindlessHeapsHelper.reset(bindlessHeapHelper);
+
+    ProgramInfo programInfo;
+
+    char globalConstantsData[128] = {};
+    programInfo.globalConstants.initData = globalConstantsData;
+    programInfo.globalConstants.size = sizeof(globalConstantsData);
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    kernelInfo->kernelDescriptor.kernelAttributes.bufferAddressingMode = KernelDescriptor::BindlessAndStateless;
+
+    programInfo.kernelInfos.push_back(kernelInfo.release());
+
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    programInfo.linkerInput = std::move(mockLinkerInput);
+    auto ret = this->pProgram->processProgramInfo(programInfo, *pClDevice);
+    EXPECT_EQ(ret, CL_OUT_OF_HOST_MEMORY);
+
+    auto globalConstantsAlloc = pProgram->getConstantSurface(pContext->getDevice(0)->getRootDeviceIndex());
+    ASSERT_NE(nullptr, globalConstantsAlloc);
+
+    auto &ssInHeap = globalConstantsAlloc->getBindlessInfo();
+    EXPECT_EQ(nullptr, ssInHeap.heapAllocation);
+}
+
+TEST_F(ProgramDataBindlessTest, givenBindlessKernelAndGlobalVariablesMemorySurfaceWhenProcessProgramInfoAndSSAllocationFailsThenGlobalVariablesSurfaceBindlessSlotIsNotAllocatedAndReturnOutOfHostMemory) {
+    auto &neoDevice = pClDevice->getDevice();
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->memoryOperationsInterface =
+        std::make_unique<NEO::MockMemoryOperations>();
+
+    auto bindlessHeapHelper = new MockBindlesHeapsHelper(&neoDevice, false);
+    bindlessHeapHelper->failAllocateSS = true;
+    neoDevice.getExecutionEnvironment()->rootDeviceEnvironments[neoDevice.getRootDeviceIndex()]->bindlessHeapsHelper.reset(bindlessHeapHelper);
+
+    ProgramInfo programInfo;
+
+    char globalVariablesData[128] = {};
+    programInfo.globalVariables.initData = globalVariablesData;
+    programInfo.globalVariables.size = sizeof(globalVariablesData);
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    kernelInfo->kernelDescriptor.kernelAttributes.bufferAddressingMode = KernelDescriptor::BindlessAndStateless;
+
+    programInfo.kernelInfos.push_back(kernelInfo.release());
+
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    programInfo.linkerInput = std::move(mockLinkerInput);
+    auto ret = this->pProgram->processProgramInfo(programInfo, *pClDevice);
+    EXPECT_EQ(ret, CL_OUT_OF_HOST_MEMORY);
+
+    auto globalVariablesAlloc = pProgram->getGlobalSurface(pContext->getDevice(0)->getRootDeviceIndex());
+    ASSERT_NE(nullptr, globalVariablesAlloc);
+
+    auto &ssInHeap = globalVariablesAlloc->getBindlessInfo();
+    EXPECT_EQ(nullptr, ssInHeap.heapAllocation);
+}
+
 TEST_F(ProgramDataTest, givenConstantAllocationThatIsInUseByGpuWhenProgramIsBeingDestroyedThenItIsAddedToTemporaryAllocationList) {
 
     setupConstantAllocation();
@@ -594,59 +706,69 @@ TEST(ProgramLinkBinaryTest, whenLinkerUnresolvedExternalThenLinkFailedAndBuildLo
     device->getMemoryManager()->freeGraphicsMemory(kernelInfo.getGraphicsAllocation());
 }
 
-TEST_F(ProgramDataTest, whenLinkerInputValidThenIsaIsProperlyPatched) {
-    auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
-    linkerInput->symbols["A"] = NEO::SymbolInfo{4U, 4U, NEO::SegmentType::globalVariables, std::numeric_limits<uint32_t>::max(), true};
-    linkerInput->symbols["B"] = NEO::SymbolInfo{8U, 4U, NEO::SegmentType::globalConstants, std::numeric_limits<uint32_t>::max(), true};
-    linkerInput->symbols["C"] = NEO::SymbolInfo{16U, 4U, NEO::SegmentType::instructions, std::numeric_limits<uint32_t>::max(), true};
+HWTEST2_F(ProgramDataTest, whenLinkerInputValidThenIsaIsProperlyPatched, MatchAny) {
 
-    auto relocationType = NEO::LinkerInput::RelocationInfo::Type::address;
-    linkerInput->textRelocations.push_back({NEO::LinkerInput::RelocationInfo{"A", 8U, relocationType},
-                                            NEO::LinkerInput::RelocationInfo{"B", 16U, relocationType},
-                                            NEO::LinkerInput::RelocationInfo{"C", 24U, relocationType}});
-    linkerInput->traits.requiresPatchingOfInstructionSegments = true;
-    linkerInput->exportedFunctionsSegmentId = 0;
-    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get()));
-    MockProgram program{nullptr, false, toClDeviceVector(*device)};
-    auto &buildInfo = program.buildInfos[device->getRootDeviceIndex()];
-    KernelInfo kernelInfo = {};
-    kernelInfo.kernelDescriptor.kernelMetadata.kernelName = "onlyKernel";
-    std::vector<char> kernelHeap;
-    kernelHeap.resize(32, 7);
-    kernelInfo.heapInfo.pKernelHeap = kernelHeap.data();
-    kernelInfo.heapInfo.kernelHeapSize = static_cast<uint32_t>(kernelHeap.size());
-    MockGraphicsAllocation kernelIsa(kernelHeap.data(), kernelHeap.size());
-    kernelInfo.kernelAllocation = &kernelIsa;
-    program.getKernelInfoArray(rootDeviceIndex).push_back(&kernelInfo);
-    program.setLinkerInput(device->getRootDeviceIndex(), std::move(linkerInput));
+    for (bool heaplessModeEnabled : {false, true}) {
 
-    buildInfo.exportedFunctionsSurface = kernelInfo.kernelAllocation;
-    std::vector<char> globalVariablesBuffer;
-    globalVariablesBuffer.resize(32, 7);
-    std::vector<char> globalConstantsBuffer;
-    globalConstantsBuffer.resize(32, 7);
-    std::vector<char> globalVariablesInitData{32, 0};
-    std::vector<char> globalConstantsInitData{32, 0};
-    buildInfo.globalSurface = new MockGraphicsAllocation(globalVariablesBuffer.data(), globalVariablesBuffer.size());
-    buildInfo.constantSurface = new MockGraphicsAllocation(globalConstantsBuffer.data(), globalConstantsBuffer.size());
+        auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get()));
+        auto backup = std::unique_ptr<CompilerProductHelper>(new MockCompilerProductHelperHeaplessHw<productFamily>(heaplessModeEnabled));
+        device->device.getRootDeviceEnvironmentRef().compilerProductHelper.swap(backup);
 
-    auto ret = program.linkBinary(&pClDevice->getDevice(), globalConstantsInitData.data(), globalConstantsInitData.size(), globalVariablesInitData.data(), globalVariablesInitData.size(), {}, program.externalFunctions);
-    EXPECT_EQ(CL_SUCCESS, ret);
+        auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
+        linkerInput->symbols["A"] = NEO::SymbolInfo{4U, 4U, NEO::SegmentType::globalVariables, std::numeric_limits<uint32_t>::max(), true};
+        linkerInput->symbols["B"] = NEO::SymbolInfo{8U, 4U, NEO::SegmentType::globalConstants, std::numeric_limits<uint32_t>::max(), true};
+        linkerInput->symbols["C"] = NEO::SymbolInfo{16U, 4U, NEO::SegmentType::instructions, std::numeric_limits<uint32_t>::max(), true};
 
-    linkerInput.reset(static_cast<WhiteBox<LinkerInput> *>(buildInfo.linkerInput.release()));
+        auto relocationType = NEO::LinkerInput::RelocationInfo::Type::address;
+        linkerInput->textRelocations.push_back({NEO::LinkerInput::RelocationInfo{"A", 8U, relocationType},
+                                                NEO::LinkerInput::RelocationInfo{"B", 16U, relocationType},
+                                                NEO::LinkerInput::RelocationInfo{"C", 24U, relocationType}});
+        linkerInput->traits.requiresPatchingOfInstructionSegments = true;
+        linkerInput->exportedFunctionsSegmentId = 0;
 
-    for (size_t i = 0; i < linkerInput->textRelocations.size(); ++i) {
-        auto expectedPatch = buildInfo.globalSurface->getGpuAddress() + linkerInput->symbols[linkerInput->textRelocations[0][0].symbolName].offset;
-        auto relocationAddress = kernelHeap.data() + linkerInput->textRelocations[0][0].offset;
+        MockProgram program{nullptr, false, toClDeviceVector(*device)};
+        auto &buildInfo = program.buildInfos[device->getRootDeviceIndex()];
+        KernelInfo kernelInfo = {};
+        kernelInfo.kernelDescriptor.kernelMetadata.kernelName = "onlyKernel";
+        std::vector<char> kernelHeap;
+        kernelHeap.resize(32, 7);
+        kernelInfo.heapInfo.pKernelHeap = kernelHeap.data();
+        kernelInfo.heapInfo.kernelHeapSize = static_cast<uint32_t>(kernelHeap.size());
+        MockGraphicsAllocation kernelIsa(kernelHeap.data(), kernelHeap.size());
+        kernelInfo.kernelAllocation = &kernelIsa;
+        program.getKernelInfoArray(rootDeviceIndex).push_back(&kernelInfo);
+        program.setLinkerInput(device->getRootDeviceIndex(), std::move(linkerInput));
 
-        EXPECT_EQ(static_cast<uintptr_t>(expectedPatch), *reinterpret_cast<uintptr_t *>(relocationAddress)) << i;
+        buildInfo.exportedFunctionsSurface = kernelInfo.kernelAllocation;
+        std::vector<char> globalVariablesBuffer;
+        globalVariablesBuffer.resize(32, 7);
+        std::vector<char> globalConstantsBuffer;
+        globalConstantsBuffer.resize(32, 7);
+        std::vector<char> globalVariablesInitData{32, 0};
+        std::vector<char> globalConstantsInitData{32, 0};
+        auto globalSurface = std::make_unique<MockGraphicsAllocation>(globalVariablesBuffer.data(), globalVariablesBuffer.size());
+        auto constantSurface = std::make_unique<MockGraphicsAllocation>(globalConstantsBuffer.data(), globalConstantsBuffer.size());
+
+        buildInfo.globalSurface = globalSurface.get();
+        buildInfo.constantSurface = constantSurface.get();
+
+        auto ret = program.linkBinary(&pClDevice->getDevice(), globalConstantsInitData.data(), globalConstantsInitData.size(), globalVariablesInitData.data(), globalVariablesInitData.size(), {}, program.externalFunctions);
+        EXPECT_EQ(CL_SUCCESS, ret);
+
+        linkerInput.reset(static_cast<WhiteBox<LinkerInput> *>(buildInfo.linkerInput.release()));
+
+        for (size_t i = 0; i < linkerInput->textRelocations.size(); ++i) {
+            auto expectedPatch = buildInfo.globalSurface->getGpuAddress() + linkerInput->symbols[linkerInput->textRelocations[0][0].symbolName].offset;
+            auto relocationAddress = kernelHeap.data() + linkerInput->textRelocations[0][0].offset;
+
+            EXPECT_EQ(static_cast<uintptr_t>(expectedPatch), *reinterpret_cast<uintptr_t *>(relocationAddress)) << i;
+        }
+
+        program.getKernelInfoArray(rootDeviceIndex).clear();
+        buildInfo.globalSurface = nullptr;
+        buildInfo.constantSurface = nullptr;
+        device->device.getRootDeviceEnvironmentRef().compilerProductHelper.swap(backup);
     }
-
-    program.getKernelInfoArray(rootDeviceIndex).clear();
-    delete buildInfo.globalSurface;
-    buildInfo.globalSurface = nullptr;
-    delete buildInfo.constantSurface;
-    buildInfo.constantSurface = nullptr;
 }
 
 TEST_F(ProgramDataTest, whenRelocationsAreNotNeededThenIsaIsPreserved) {

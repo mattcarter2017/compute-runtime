@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -147,9 +147,6 @@ HWTEST_F(BufferSetArgTest, givenSetKernelArgOnReadOnlyBufferThatIsMisalingedWhen
 }
 
 HWTEST_F(BufferSetArgTest, givenSetArgBufferWithNullArgStatelessThenDontProgramNullSurfaceState) {
-    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_FORMAT = typename RENDER_SURFACE_STATE::SURFACE_FORMAT;
-
     char sshOriginal[sizeof(surfaceStateHeap)];
     memcpy(sshOriginal, surfaceStateHeap, sizeof(surfaceStateHeap));
 
@@ -172,7 +169,7 @@ HWTEST_F(BufferSetArgTest, givenNonPureStatefulArgWhenCompressedBufferIsSetThenS
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     graphicsAllocation->setDefaultGmm(new Gmm(pDevice->getGmmHelper(), graphicsAllocation->getUnderlyingBuffer(), buffer->getSize(), 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    graphicsAllocation->getDefaultGmm()->isCompressionEnabled = true;
+    graphicsAllocation->getDefaultGmm()->setCompressionEnabled(true);
     cl_mem clMem = buffer;
 
     cl_int ret = pKernel->setArgBuffer(0, sizeof(cl_mem), &clMem);

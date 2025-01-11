@@ -8,6 +8,7 @@
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/gfx_core_helper.h"
+#include "shared/source/helpers/local_id_gen.h"
 #include "shared/source/helpers/simd_helper.h"
 #include "shared/test/common/helpers/raii_gfx_core_helper.h"
 #include "shared/test/common/mocks/mock_bindless_heaps_helper.h"
@@ -82,6 +83,9 @@ TEST_F(KernelImpTest, givenExecutionMaskWithoutReminderWhenProgrammingItsValueTh
     kernel.module = &module;
 
     const std::array<uint32_t, 4> testedSimd = {{1, 8, 16, 32}};
+    kernel.groupSize[0] = 0;
+    kernel.groupSize[1] = 0;
+    kernel.groupSize[2] = 0;
 
     for (auto simd : testedSimd) {
         descriptor.kernelAttributes.simdSize = simd;
@@ -227,8 +231,8 @@ class KernelImpSuggestGroupSize : public DeviceFixture, public ::testing::TestWi
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, KernelImpSuggestGroupSize,
-                        ::testing::Values(4, 7, 8, 16, 32, 192, 1024, 4097, 16000));
+INSTANTIATE_TEST_SUITE_P(, KernelImpSuggestGroupSize,
+                         ::testing::Values(4, 7, 8, 16, 32, 192, 1024, 4097, 16000));
 
 TEST_P(KernelImpSuggestGroupSize, WhenSuggestingGroupThenProperGroupSizeChosen) {
     DebugManagerStateRestore restorer;
@@ -407,7 +411,7 @@ HWTEST_F(KernelImpTest, givenSurfaceStateHeapWhenPatchWithImplicitSurfaceCalledT
         patchWithImplicitSurface(crossThreadDataArrayRef, surfaceStateHeapArrayRef,
                                  ptrToPatchInCrossThreadData,
                                  globalBuffer, ptr,
-                                 *neoDevice, false, false);
+                                 *neoDevice, false);
         EXPECT_EQ(encodeBufferSurfaceStateCalled, 0u);
     }
     {
@@ -415,7 +419,7 @@ HWTEST_F(KernelImpTest, givenSurfaceStateHeapWhenPatchWithImplicitSurfaceCalledT
         patchWithImplicitSurface(crossThreadDataArrayRef, surfaceStateHeapArrayRef,
                                  ptrToPatchInCrossThreadData,
                                  globalBuffer, ptr,
-                                 *neoDevice, false, false);
+                                 *neoDevice, false);
         ASSERT_EQ(encodeBufferSurfaceStateCalled, 1u);
         EXPECT_FALSE(savedSurfaceStateArgs.isDebuggerActive);
     }
@@ -424,7 +428,7 @@ HWTEST_F(KernelImpTest, givenSurfaceStateHeapWhenPatchWithImplicitSurfaceCalledT
         patchWithImplicitSurface(crossThreadDataArrayRef, surfaceStateHeapArrayRef,
                                  ptrToPatchInCrossThreadData,
                                  globalBuffer, ptr,
-                                 *neoDevice, false, false);
+                                 *neoDevice, false);
         ASSERT_EQ(encodeBufferSurfaceStateCalled, 2u);
         EXPECT_TRUE(savedSurfaceStateArgs.isDebuggerActive);
     }
@@ -445,6 +449,26 @@ HWTEST_F(KernelImpSuggestMaxCooperativeGroupCountTests, GivenNoBarriersOrSlmUsed
     auto workGroupSize = lws[0] * lws[1] * lws[2];
     auto expected = availableThreadCount / Math::divideAndRoundUp(workGroupSize, simd);
     EXPECT_EQ(expected, getMaxWorkGroupCount());
+}
+
+HWTEST_F(KernelImpSuggestMaxCooperativeGroupCountTests, GivenMultiTileWhenCalculatingMaxCooperativeGroupCountThenResultIsCalculatedWithSimd) {
+    DebugManagerStateRestore restore;
+
+    neoDevice->deviceBitfield = 0b1;
+    auto baseCount = getMaxWorkGroupCount();
+
+    debugManager.flags.EnableImplicitScaling.set(1);
+    neoDevice->deviceBitfield = 0b11;
+
+    auto countWithSubDevices = getMaxWorkGroupCount();
+
+    auto &helper = neoDevice->getGfxCoreHelper();
+
+    if (helper.singleTileExecImplicitScalingRequired(true)) {
+        EXPECT_EQ(baseCount, countWithSubDevices);
+    } else {
+        EXPECT_EQ(baseCount * 2, countWithSubDevices);
+    }
 }
 
 HWTEST_F(KernelImpSuggestMaxCooperativeGroupCountTests, GivenBarriersWhenCalculatingMaxCooperativeGroupCountThenResultIsCalculatedWithRegardToBarriersCount) {
@@ -495,6 +519,7 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalConstBufferAndBindlessExpl
     HardwareInfo hwInfo = *defaultHwInfo;
 
     auto device = std::unique_ptr<NEO::MockDevice>(NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(&hwInfo, 0));
+    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->bindlessHeapsHelper.reset();
 
     static EncodeSurfaceStateArgs savedSurfaceStateArgs{};
     static size_t encodeBufferSurfaceStateCalled{};
@@ -563,6 +588,7 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
     HardwareInfo hwInfo = *defaultHwInfo;
 
     auto device = std::unique_ptr<NEO::MockDevice>(NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(&hwInfo, 0));
+    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->bindlessHeapsHelper.reset();
 
     static EncodeSurfaceStateArgs savedSurfaceStateArgs{};
     static size_t encodeBufferSurfaceStateCalled{};
@@ -572,6 +598,7 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
         void encodeBufferSurfaceState(EncodeSurfaceStateArgs &args) const override {
             savedSurfaceStateArgs = args;
             ++encodeBufferSurfaceStateCalled;
+            NEO::GfxCoreHelperHw<FamilyType>::encodeBufferSurfaceState(args);
         }
     };
 
@@ -628,13 +655,13 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
 }
 
 HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalConstBufferAndBindlessExplicitAndImplicitArgsAndBindlessHeapsHelperWhenInitializeKernelImmutableDataThenSurfaceStateIsSetAndImplicitArgBindlessOffsetIsPatched, IsAtLeastXeHpgCore) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     HardwareInfo hwInfo = *defaultHwInfo;
 
     auto device = std::unique_ptr<NEO::MockDevice>(NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(&hwInfo, 0));
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(device->getMemoryManager(),
-                                                               device->getNumGenericSubDevices() > 1,
-                                                               device->getRootDeviceIndex(),
-                                                               device->getDeviceBitfield());
+    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(device.get(),
+                                                               device->getNumGenericSubDevices() > 1);
     device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
 
     static EncodeSurfaceStateArgs savedSurfaceStateArgs{};
@@ -645,6 +672,7 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalConstBufferAndBindlessExpl
         void encodeBufferSurfaceState(EncodeSurfaceStateArgs &args) const override {
             savedSurfaceStateArgs = args;
             ++encodeBufferSurfaceStateCalled;
+            NEO::GfxCoreHelperHw<FamilyType>::encodeBufferSurfaceState(args);
         }
     };
 
@@ -688,9 +716,9 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalConstBufferAndBindlessExpl
         EXPECT_EQ(surfaceStateSize * kernelInfo->kernelDescriptor.kernelAttributes.numArgsStateful, kernelImmutableData->getSurfaceStateHeapSize());
 
         auto &residencyContainer = kernelImmutableData->getResidencyContainer();
-        EXPECT_EQ(2u, residencyContainer.size());
+        EXPECT_EQ(1u, residencyContainer.size());
         EXPECT_EQ(1, std::count(residencyContainer.begin(), residencyContainer.end(), &globalConstBuffer));
-        EXPECT_EQ(1, std::count(residencyContainer.begin(), residencyContainer.end(), globalConstBuffer.getBindlessInfo().heapAllocation));
+        EXPECT_EQ(0, std::count(residencyContainer.begin(), residencyContainer.end(), globalConstBuffer.getBindlessInfo().heapAllocation));
 
         auto crossThreadData = kernelImmutableData->getCrossThreadDataTemplate();
         auto patchLocation = reinterpret_cast<const uint32_t *>(ptrOffset(crossThreadData, globalConstSurfaceAddressBindlessOffset));
@@ -702,19 +730,23 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalConstBufferAndBindlessExpl
         EXPECT_EQ(allocSize, savedSurfaceStateArgs.size);
         EXPECT_EQ(gpuAddress, savedSurfaceStateArgs.graphicsAddress);
 
-        EXPECT_EQ(globalConstBuffer.getBindlessInfo().ssPtr, savedSurfaceStateArgs.outMemory);
+        EXPECT_NE(globalConstBuffer.getBindlessInfo().ssPtr, savedSurfaceStateArgs.outMemory);
+
+        const auto surfState = reinterpret_cast<RENDER_SURFACE_STATE *>(globalConstBuffer.getBindlessInfo().ssPtr);
+        ASSERT_NE(nullptr, surfState);
+        EXPECT_EQ(gpuAddress, surfState->getSurfaceBaseAddress());
         EXPECT_EQ(&globalConstBuffer, savedSurfaceStateArgs.allocation);
     }
 }
 
 HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplicitAndImplicitArgsAndBindlessHeapsHelperWhenInitializeKernelImmutableDataThenSurfaceStateIsSetAndImplicitArgBindlessOffsetIsPatched, IsAtLeastXeHpgCore) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     HardwareInfo hwInfo = *defaultHwInfo;
 
     auto device = std::unique_ptr<NEO::MockDevice>(NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(&hwInfo, 0));
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(device->getMemoryManager(),
-                                                               device->getNumGenericSubDevices() > 1,
-                                                               device->getRootDeviceIndex(),
-                                                               device->getDeviceBitfield());
+    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(device.get(),
+                                                               device->getNumGenericSubDevices() > 1);
     device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
 
     static EncodeSurfaceStateArgs savedSurfaceStateArgs{};
@@ -725,6 +757,7 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
         void encodeBufferSurfaceState(EncodeSurfaceStateArgs &args) const override {
             savedSurfaceStateArgs = args;
             ++encodeBufferSurfaceStateCalled;
+            NEO::GfxCoreHelperHw<FamilyType>::encodeBufferSurfaceState(args);
         }
     };
 
@@ -768,9 +801,9 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
         EXPECT_EQ(surfaceStateSize * kernelInfo->kernelDescriptor.kernelAttributes.numArgsStateful, kernelImmutableData->getSurfaceStateHeapSize());
 
         auto &residencyContainer = kernelImmutableData->getResidencyContainer();
-        EXPECT_EQ(2u, residencyContainer.size());
+        EXPECT_EQ(1u, residencyContainer.size());
         EXPECT_EQ(1, std::count(residencyContainer.begin(), residencyContainer.end(), &globalVarBuffer));
-        EXPECT_EQ(1, std::count(residencyContainer.begin(), residencyContainer.end(), globalVarBuffer.getBindlessInfo().heapAllocation));
+        EXPECT_EQ(0, std::count(residencyContainer.begin(), residencyContainer.end(), globalVarBuffer.getBindlessInfo().heapAllocation));
 
         auto crossThreadData = kernelImmutableData->getCrossThreadDataTemplate();
         auto patchLocation = reinterpret_cast<const uint32_t *>(ptrOffset(crossThreadData, globalVariablesSurfaceAddressBindlessOffset));
@@ -782,9 +815,139 @@ HWTEST2_F(KernelImmutableDataBindlessTest, givenGlobalVarBufferAndBindlessExplic
         EXPECT_EQ(allocSize, savedSurfaceStateArgs.size);
         EXPECT_EQ(gpuAddress, savedSurfaceStateArgs.graphicsAddress);
 
-        EXPECT_EQ(globalVarBuffer.getBindlessInfo().ssPtr, savedSurfaceStateArgs.outMemory);
+        EXPECT_NE(globalVarBuffer.getBindlessInfo().ssPtr, savedSurfaceStateArgs.outMemory);
+
+        const auto surfState = reinterpret_cast<RENDER_SURFACE_STATE *>(globalVarBuffer.getBindlessInfo().ssPtr);
+        ASSERT_NE(nullptr, surfState);
+        EXPECT_EQ(gpuAddress, surfState->getSurfaceBaseAddress());
         EXPECT_EQ(&globalVarBuffer, savedSurfaceStateArgs.allocation);
     }
+}
+
+TEST_F(KernelImpTest, GivenGroupSizeRequiresSwLocalIdsGenerationWhenNextGroupSizeDoesNotRequireSwLocalIdsGenerationThenResetPerThreadDataSizes) {
+    Mock<Module> module(device, nullptr);
+    Mock<::L0::KernelImp> kernel;
+    kernel.module = &module;
+
+    WhiteBox<::L0::KernelImmutableData> kernelInfo = {};
+    NEO::KernelDescriptor descriptor;
+    kernelInfo.kernelDescriptor = &descriptor;
+    kernelInfo.kernelDescriptor->kernelAttributes.numLocalIdChannels = 3;
+    kernel.kernelImmData = &kernelInfo;
+
+    kernel.enableForcingOfGenerateLocalIdByHw = true;
+    kernel.forceGenerateLocalIdByHw = false;
+
+    kernel.KernelImp::setGroupSize(11, 11, 1);
+
+    EXPECT_NE(0u, kernel.getPerThreadDataSizeForWholeThreadGroup());
+    EXPECT_NE(0u, kernel.getPerThreadDataSize());
+
+    kernel.forceGenerateLocalIdByHw = true;
+    kernel.KernelImp::setGroupSize(8, 1, 1);
+
+    EXPECT_EQ(0u, kernel.getPerThreadDataSizeForWholeThreadGroup());
+    EXPECT_EQ(0u, kernel.getPerThreadDataSize());
+}
+
+TEST_F(KernelImpTest, GivenGroupSizeRequiresSwLocalIdsGenerationWhenKernelSpecifiesRequiredWalkOrderThenUseCorrectOrderToGenerateLocalIds) {
+    Mock<Module> module(device, nullptr);
+    Mock<::L0::KernelImp> kernel;
+    kernel.module = &module;
+
+    auto grfSize = device->getHwInfo().capabilityTable.grfSize;
+
+    WhiteBox<::L0::KernelImmutableData> kernelInfo = {};
+    NEO::KernelDescriptor descriptor;
+    kernelInfo.kernelDescriptor = &descriptor;
+    kernelInfo.kernelDescriptor->kernelAttributes.numLocalIdChannels = 3;
+    kernelInfo.kernelDescriptor->kernelAttributes.numGrfRequired = GrfConfig::defaultGrfNumber;
+    kernelInfo.kernelDescriptor->kernelAttributes.flags.requiresWorkgroupWalkOrder = true;
+    kernelInfo.kernelDescriptor->kernelAttributes.workgroupWalkOrder[0] = 2;
+    kernelInfo.kernelDescriptor->kernelAttributes.workgroupWalkOrder[1] = 1;
+    kernelInfo.kernelDescriptor->kernelAttributes.workgroupWalkOrder[2] = 0;
+    kernelInfo.kernelDescriptor->kernelAttributes.simdSize = 32;
+
+    kernel.kernelImmData = &kernelInfo;
+
+    kernel.enableForcingOfGenerateLocalIdByHw = true;
+    kernel.forceGenerateLocalIdByHw = false;
+
+    kernel.KernelImp::setGroupSize(12, 12, 1);
+
+    uint32_t perThreadSizeNeeded = kernel.getPerThreadDataSizeForWholeThreadGroup();
+    auto testPerThreadDataBuffer = static_cast<uint8_t *>(alignedMalloc(perThreadSizeNeeded, 32));
+
+    std::array<uint8_t, 3> walkOrder{2, 1, 0};
+
+    NEO::generateLocalIDs(
+        testPerThreadDataBuffer,
+        static_cast<uint16_t>(32),
+        std::array<uint16_t, 3>{{static_cast<uint16_t>(12),
+                                 static_cast<uint16_t>(12),
+                                 static_cast<uint16_t>(1)}},
+        walkOrder,
+        false, grfSize, GrfConfig::defaultGrfNumber, device->getNEODevice()->getRootDeviceEnvironment());
+
+    EXPECT_EQ(0, memcmp(testPerThreadDataBuffer, kernel.KernelImp::getPerThreadData(), perThreadSizeNeeded));
+
+    alignedFree(testPerThreadDataBuffer);
+}
+
+TEST_F(KernelImpTest, givenHeaplessAndLocalDispatchEnabledWheSettingGroupSizeThenGetMaxWgCountPerTileCalculated) {
+    Mock<Module> module(device, nullptr);
+    Mock<::L0::KernelImp> kernel;
+    kernel.module = &module;
+
+    kernel.heaplessEnabled = false;
+    kernel.localDispatchSupport = false;
+    kernel.setGroupSize(128, 1, 1);
+
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileRcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCooperative);
+
+    kernel.heaplessEnabled = true;
+    kernel.setGroupSize(64, 2, 1);
+
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileRcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCooperative);
+
+    kernel.localDispatchSupport = true;
+    kernel.setGroupSize(32, 4, 1);
+
+    EXPECT_NE(0u, kernel.maxWgCountPerTileCcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileRcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCooperative);
+
+    kernel.rcsAvailable = true;
+    kernel.setGroupSize(16, 8, 1);
+
+    EXPECT_NE(0u, kernel.maxWgCountPerTileCcs);
+    EXPECT_NE(0u, kernel.maxWgCountPerTileRcs);
+    EXPECT_EQ(0u, kernel.maxWgCountPerTileCooperative);
+
+    kernel.cooperativeSupport = true;
+    kernel.setGroupSize(8, 8, 2);
+
+    EXPECT_NE(0u, kernel.maxWgCountPerTileCcs);
+    EXPECT_NE(0u, kernel.maxWgCountPerTileRcs);
+    EXPECT_NE(0u, kernel.maxWgCountPerTileCooperative);
+}
+
+TEST_F(KernelImpTest, givenCorrectEngineTypeWhenGettingMaxWgCountPerTileThenReturnActualValue) {
+    Mock<Module> module(device, nullptr);
+    Mock<::L0::KernelImp> kernel;
+    kernel.module = &module;
+
+    kernel.maxWgCountPerTileCcs = 4;
+    kernel.maxWgCountPerTileRcs = 2;
+    kernel.maxWgCountPerTileCooperative = 100;
+
+    EXPECT_EQ(4u, kernel.getMaxWgCountPerTile(NEO::EngineGroupType::compute));
+    EXPECT_EQ(2u, kernel.getMaxWgCountPerTile(NEO::EngineGroupType::renderCompute));
+    EXPECT_EQ(100u, kernel.getMaxWgCountPerTile(NEO::EngineGroupType::cooperativeCompute));
 }
 
 } // namespace ult

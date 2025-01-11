@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,7 +16,7 @@ constexpr uint64_t convertToNs = 100;
 class MockDeviceTime : public DeviceTime {
   public:
     ~MockDeviceTime() override = default;
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
         if (gpuTimeStampResult) {
             pGpuCpuTime->gpuTimeStamp = *gpuTimeStampResult;
         } else {
@@ -27,15 +27,15 @@ class MockDeviceTime : public DeviceTime {
         } else {
             pGpuCpuTime->cpuTimeinNS = perfTicks * convertToNs;
         }
-        return true;
+        return TimeQueryStatus::success;
     }
 
-    double getDynamicDeviceTimerResolution(HardwareInfo const &hwInfo) const override {
-        return OSTime::getDeviceTimerResolution(hwInfo);
+    double getDynamicDeviceTimerResolution() const override {
+        return OSTime::getDeviceTimerResolution();
     }
 
-    uint64_t getDynamicDeviceTimerClock(HardwareInfo const &hwInfo) const override {
-        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution(hwInfo));
+    uint64_t getDynamicDeviceTimerClock() const override {
+        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution());
     }
     std::optional<uint64_t> gpuTimeStampResult{};
     std::optional<uint64_t> cpuTimeResult{};
@@ -75,18 +75,18 @@ class MockDeviceTimeWithConstTimestamp : public DeviceTime {
     static constexpr uint64_t cpuTimeInNs = 1u;
     static constexpr uint64_t gpuTimestamp = 2u;
 
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
         pGpuCpuTime->gpuTimeStamp = gpuTimestamp;
         pGpuCpuTime->cpuTimeinNS = cpuTimeInNs;
-        return true;
+        return TimeQueryStatus::success;
     }
 
-    double getDynamicDeviceTimerResolution(HardwareInfo const &hwInfo) const override {
+    double getDynamicDeviceTimerResolution() const override {
         return 1.0;
     }
 
-    uint64_t getDynamicDeviceTimerClock(HardwareInfo const &hwInfo) const override {
-        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution(hwInfo));
+    uint64_t getDynamicDeviceTimerClock() const override {
+        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution());
     }
 };
 

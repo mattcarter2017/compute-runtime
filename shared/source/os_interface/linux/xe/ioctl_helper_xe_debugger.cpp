@@ -1,24 +1,23 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/linux/xe/ioctl_helper_xe.h"
-
-#include "uapi-eudebug/drm/xe_drm.h"
-#include "uapi-eudebug/drm/xe_drm_tmp.h"
-
-#define STRINGIFY_ME(X) return #X
-#define RETURN_ME(X) return X
 
 namespace NEO {
 
 unsigned int IoctlHelperXe::getIoctlRequestValueDebugger(DrmIoctl ioctlRequest) const {
     switch (ioctlRequest) {
     case DrmIoctl::debuggerOpen:
-        RETURN_ME(DRM_IOCTL_XE_EUDEBUG_CONNECT);
+        return euDebugInterface->getParamValue(EuDebugParam::connect);
+    case DrmIoctl::metadataCreate:
+        return euDebugInterface->getParamValue(EuDebugParam::metadataCreate);
+    case DrmIoctl::metadataDestroy:
+        return euDebugInterface->getParamValue(EuDebugParam::metadataDestroy);
 
     default:
         UNRECOVERABLE_IF(true);
@@ -26,86 +25,104 @@ unsigned int IoctlHelperXe::getIoctlRequestValueDebugger(DrmIoctl ioctlRequest) 
     }
 }
 
-void *IoctlHelperXe::allocateDebugMetadata() {
-    drm_xe_ext_vm_set_debug_metadata *prev = nullptr;
-    drm_xe_ext_vm_set_debug_metadata *xeMetadataRoot = nullptr;
+int IoctlHelperXe::debuggerOpenIoctl(DrmIoctl request, void *arg) {
+    EuDebugConnect *connect = static_cast<EuDebugConnect *>(arg);
+    auto ret = IoctlHelper::ioctl(request, arg);
+    xeLog(" -> IoctlHelperXe::ioctl debuggerOpen pid=%llu r=%d\n",
+          connect->pid, ret);
+    return ret;
+}
 
-    for (auto &metadata : debugMetadata) {
-        auto *xeMetadata = new drm_xe_ext_vm_set_debug_metadata();
-        if (!xeMetadataRoot) {
-            xeMetadataRoot = xeMetadata;
-        }
-        xeMetadata->base.name = DRM_XE_VM_EXTENSION_SET_DEBUG_METADATA;
-        xeMetadata->offset = metadata.offset;
-        xeMetadata->len = metadata.size;
-        if (metadata.isCookie) {
-            xeMetadata->type = DRM_XE_VM_DEBUG_METADATA_COOKIE;
-        } else {
+int IoctlHelperXe::debuggerMetadataCreateIoctl(DrmIoctl request, void *arg) {
+    DebugMetadataCreate *metadata = static_cast<DebugMetadataCreate *>(arg);
+    auto ret = IoctlHelper::ioctl(request, arg);
+    xeLog(" -> IoctlHelperXe::ioctl metadataCreate type=%llu user_addr=%uul len=%uul\n id=%uul ret=%d, errno=%d\n",
+          metadata->type, metadata->userAddr, metadata->len, metadata->metadataId, ret, errno);
+    return ret;
+}
 
-            switch (metadata.type) {
-            case DrmResourceClass::contextSaveArea:
-                xeMetadata->type = DRM_XE_VM_DEBUG_METADATA_SIP_AREA;
-                break;
-            case DrmResourceClass::sbaTrackingBuffer:
-                xeMetadata->type = DRM_XE_VM_DEBUG_METADATA_SBA_AREA;
-                break;
-            case DrmResourceClass::moduleHeapDebugArea:
-                xeMetadata->type = DRM_XE_VM_DEBUG_METADATA_MODULE_AREA;
-                break;
-            default:
-                UNRECOVERABLE_IF(true);
-            }
-        }
-        PRINT_DEBUGGER_INFO_LOG("drm_xe_ext_vm_set_debug_metadata: type = %ul, offset = %ul, len = %ul\n", xeMetadata->type, xeMetadata->offset, xeMetadata->len);
-        if (prev) {
-            prev->base.next_extension = reinterpret_cast<unsigned long long>(xeMetadata);
-        }
-        prev = xeMetadata;
+int IoctlHelperXe::debuggerMetadataDestroyIoctl(DrmIoctl request, void *arg) {
+    DebugMetadataDestroy *metadata = static_cast<DebugMetadataDestroy *>(arg);
+    auto ret = IoctlHelper::ioctl(request, arg);
+    xeLog(" -> IoctlHelperXe::ioctl metadataDestroy id=%llu r=%d\n",
+          metadata->metadataId, ret);
+    return ret;
+}
+
+int IoctlHelperXe::getEudebugExtProperty() {
+    return euDebugInterface->getParamValue(EuDebugParam::execQueueSetPropertyEuDebug);
+}
+
+int IoctlHelperXe::getEuDebugSysFsEnable() {
+    return euDebugInterface != nullptr ? 1 : 0;
+}
+
+uint32_t IoctlHelperXe::registerResource(DrmResourceClass classType, const void *data, size_t size) {
+    DebugMetadataCreate metadata = {};
+    if (classType == DrmResourceClass::elf) {
+        metadata.type = euDebugInterface->getParamValue(EuDebugParam::metadataElfBinary);
+        metadata.userAddr = reinterpret_cast<uintptr_t>(data);
+        metadata.len = size;
+    } else if (classType == DrmResourceClass::l0ZebinModule) {
+        metadata.type = euDebugInterface->getParamValue(EuDebugParam::metadataProgramModule);
+        metadata.userAddr = reinterpret_cast<uintptr_t>(data);
+        metadata.len = size;
+    } else if (classType == DrmResourceClass::contextSaveArea) {
+        metadata.type = euDebugInterface->getParamValue(EuDebugParam::metadataSipArea);
+        metadata.userAddr = reinterpret_cast<uintptr_t>(data);
+        metadata.len = size;
+    } else if (classType == DrmResourceClass::sbaTrackingBuffer) {
+        metadata.type = euDebugInterface->getParamValue(EuDebugParam::metadataSbaArea);
+        metadata.userAddr = reinterpret_cast<uintptr_t>(data);
+        metadata.len = size;
+    } else if (classType == DrmResourceClass::moduleHeapDebugArea) {
+        metadata.type = euDebugInterface->getParamValue(EuDebugParam::metadataModuleArea);
+        metadata.userAddr = reinterpret_cast<uintptr_t>(data);
+        metadata.len = size;
+    } else {
+        UNRECOVERABLE_IF(true);
     }
-    return xeMetadataRoot;
+    [[maybe_unused]] auto retVal = IoctlHelperXe::ioctl(DrmIoctl::metadataCreate, &metadata);
+    PRINT_DEBUGGER_INFO_LOG("DRM_XE_DEBUG_METADATA_CREATE: type=%llu user_addr=%llu len=%llu id=%llu\n",
+                            metadata.type, metadata.userAddr, metadata.len, metadata.metadataId);
+    DEBUG_BREAK_IF(retVal != 0);
+    return metadata.metadataId;
 }
 
-void *IoctlHelperXe::freeDebugMetadata(void *metadata) {
-    xe_user_extension *ext = static_cast<xe_user_extension *>(metadata);
-    xe_user_extension *prev = nullptr;
-    xe_user_extension *newRoot = nullptr;
-    while (ext) {
-        xe_user_extension *temp = reinterpret_cast<xe_user_extension *>(ext->next_extension);
-        if (ext->name == DRM_XE_VM_EXTENSION_SET_DEBUG_METADATA) {
-            if (prev) {
-                prev->next_extension = ext->next_extension;
-            }
-            delete ext;
-        } else {
-            if (!newRoot) {
-                newRoot = ext;
-            }
-            prev = ext;
-        }
-        ext = temp;
+void IoctlHelperXe::unregisterResource(uint32_t handle) {
+    DebugMetadataDestroy metadata = {};
+    metadata.metadataId = handle;
+    [[maybe_unused]] auto retVal = IoctlHelperXe::ioctl(DrmIoctl::metadataDestroy, &metadata);
+    DEBUG_BREAK_IF(retVal != 0);
+    PRINT_DEBUGGER_INFO_LOG("DRM_XE_DEBUG_METADATA_DESTROY: id=%llu\n", metadata.metadataId);
+}
+
+std::unique_ptr<uint8_t[]> IoctlHelperXe::prepareVmBindExt(const StackVec<uint32_t, 2> &bindExtHandles, uint64_t cookie) {
+
+    static_assert(std::is_trivially_destructible_v<VmBindOpExtAttachDebug>,
+                  "Storage must be allowed to be reused without calling the destructor!");
+
+    static_assert(alignof(VmBindOpExtAttachDebug) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "Alignment of a buffer returned via new[] operator must allow storing the required type!");
+
+    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
+    const auto bufferSize{sizeof(VmBindOpExtAttachDebug) * bindExtHandles.size()};
+    std::unique_ptr<uint8_t[]> extensionsBuffer{new uint8_t[bufferSize]};
+
+    auto extensions = new (extensionsBuffer.get()) VmBindOpExtAttachDebug[bindExtHandles.size()];
+    std::memset(extensionsBuffer.get(), 0, bufferSize);
+
+    extensions[0].metadataId = bindExtHandles[0];
+    extensions[0].base.name = euDebugInterface->getParamValue(EuDebugParam::vmBindOpExtensionsAttachDebug);
+    extensions[0].cookie = cookie;
+
+    for (size_t i = 1; i < bindExtHandles.size(); i++) {
+        extensions[i - 1].base.nextExtension = reinterpret_cast<uint64_t>(&extensions[i]);
+        extensions[i].metadataId = bindExtHandles[i];
+        extensions[i].base.name = euDebugInterface->getParamValue(EuDebugParam::vmBindOpExtensionsAttachDebug);
+        extensions[i].cookie = cookie;
     }
-    return newRoot;
-}
-
-void IoctlHelperXe::addDebugMetadataCookie(uint64_t cookie) {
-
-    DebugMetadata metadata = {DrmResourceClass::cookie, cookie, 0, true};
-    debugMetadata.push_back(metadata);
-    return;
-}
-
-void IoctlHelperXe::addDebugMetadata(DrmResourceClass type, uint64_t *offset, uint64_t size) {
-
-    if (type != DrmResourceClass::moduleHeapDebugArea && type != DrmResourceClass::contextSaveArea && type != DrmResourceClass::sbaTrackingBuffer) {
-        return;
-    }
-    DebugMetadata metadata = {type, reinterpret_cast<unsigned long long>(offset), size, false};
-    debugMetadata.push_back(metadata);
-    return;
-}
-
-int IoctlHelperXe::getRunaloneExtProperty() {
-    return DRM_XE_EXEC_QUEUE_SET_PROPERTY_RUNALONE;
+    return extensionsBuffer;
 }
 
 } // namespace NEO

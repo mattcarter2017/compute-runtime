@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,11 +26,6 @@ uint32_t UnitTestHelper<GfxFamily>::getAppropriateThreadArbitrationPolicy(int32_
 }
 
 template <typename GfxFamily>
-void UnitTestHelper<GfxFamily>::setExtraMidThreadPreemptionFlag(HardwareInfo &hwInfo, bool value) {
-    hwInfo.featureTable.flags.ftrGpGpuMidThreadLevelPreempt = value;
-}
-
-template <typename GfxFamily>
 bool UnitTestHelper<GfxFamily>::isAdditionalMiSemaphoreWaitRequired(const RootDeviceEnvironment &rootDeviceEnvironment) {
     return false;
 }
@@ -47,7 +42,7 @@ bool UnitTestHelper<GfxFamily>::isAdditionalSynchronizationRequired() {
 
 template <typename GfxFamily>
 bool UnitTestHelper<GfxFamily>::requiresTimestampPacketsInSystemMemory(HardwareInfo &hwInfo) {
-    return true;
+    return !hwInfo.featureTable.flags.ftrLocalMemory;
 }
 
 template <typename GfxFamily>
@@ -131,7 +126,7 @@ inline bool UnitTestHelper<GfxFamily>::getWorkloadPartitionForStoreRegisterMemCm
 }
 
 template <typename GfxFamily>
-GenCmdList::iterator UnitTestHelper<GfxFamily>::findMidThreadPreemptionAllocationCommand(GenCmdList::iterator begin, GenCmdList::iterator end) {
+GenCmdList::iterator UnitTestHelper<GfxFamily>::findCsrBaseAddressCommand(GenCmdList::iterator begin, GenCmdList::iterator end) {
     return find<typename GfxFamily::GPGPU_CSR_BASE_ADDRESS *>(begin, end);
 }
 
@@ -148,6 +143,37 @@ bool UnitTestHelper<GfxFamily>::getSystolicFlagValueFromPipelineSelectCommand(co
 template <typename GfxFamily>
 size_t UnitTestHelper<GfxFamily>::getAdditionalDshSize(uint32_t iddCount) {
     return iddCount * sizeof(typename GfxFamily::INTERFACE_DESCRIPTOR_DATA);
+}
+
+template <typename GfxFamily>
+void UnitTestHelper<GfxFamily>::verifyDummyBlitWa(const RootDeviceEnvironment *rootDeviceEnvironment, GenCmdList::iterator &cmdIterator) {
+}
+
+template <typename GfxFamily>
+GenCmdList::iterator UnitTestHelper<GfxFamily>::findWalkerTypeCmd(GenCmdList::iterator begin, GenCmdList::iterator end) {
+    return find<typename GfxFamily::GPGPU_WALKER *>(begin, end);
+}
+template <typename GfxFamily>
+std::vector<GenCmdList::iterator> UnitTestHelper<GfxFamily>::findAllWalkerTypeCmds(GenCmdList::iterator begin, GenCmdList::iterator end) {
+    return findAll<typename GfxFamily::GPGPU_WALKER *>(begin, end);
+}
+
+template <typename GfxFamily>
+uint64_t UnitTestHelper<GfxFamily>::getWalkerPartitionEstimateSpaceRequiredInCommandBuffer(bool isHeaplessEnabled, WalkerPartition::WalkerPartitionArgs &testArgs) {
+    UNRECOVERABLE_IF(true);
+    return 0u;
+}
+
+template <typename GfxFamily>
+void UnitTestHelper<GfxFamily>::getSpaceAndInitWalkerCmd(LinearStream &stream, bool heapless) {
+    using GPGPU_WALKER = typename GfxFamily::GPGPU_WALKER;
+    *stream.getSpaceForCmd<GPGPU_WALKER>() = GfxFamily::template getInitGpuWalker<GPGPU_WALKER>();
+}
+
+template <typename GfxFamily>
+void *UnitTestHelper<GfxFamily>::getInitWalkerCmd(bool heapless) {
+    using GPGPU_WALKER = typename GfxFamily::GPGPU_WALKER;
+    return new GPGPU_WALKER;
 }
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,6 +28,20 @@ CompletionStamp MockCommandStreamReceiver::flushTask(
     return stamp;
 }
 
+CompletionStamp MockCommandStreamReceiver::flushTaskStateless(
+    LinearStream &commandStream,
+    size_t commandStreamStart,
+    const IndirectHeap *dsh,
+    const IndirectHeap *ioh,
+    const IndirectHeap *ssh,
+    TaskCountType taskLevel,
+    DispatchFlags &dispatchFlags,
+    Device &device) {
+    ++taskCount;
+    CompletionStamp stamp = {taskCount, taskLevel, flushStamp->peekStamp()};
+    return stamp;
+}
+
 CompletionStamp MockCommandStreamReceiver::flushBcsTask(LinearStream &commandStreamTask, size_t commandStreamTaskStart,
                                                         const DispatchBcsFlags &dispatchBcsFlags, const HardwareInfo &hwInfo) {
     ++taskCount;
@@ -36,6 +50,16 @@ CompletionStamp MockCommandStreamReceiver::flushBcsTask(LinearStream &commandStr
 }
 
 CompletionStamp MockCommandStreamReceiver::flushImmediateTask(
+    LinearStream &immediateCommandStream,
+    size_t immediateCommandStreamStart,
+    ImmediateDispatchFlags &dispatchFlags,
+    Device &device) {
+    ++taskCount;
+    CompletionStamp stamp = {taskCount, taskLevel, flushStamp->peekStamp()};
+    return stamp;
+}
+
+CompletionStamp MockCommandStreamReceiver::flushImmediateTaskStateless(
     LinearStream &immediateCommandStream,
     size_t immediateCommandStreamStart,
     ImmediateDispatchFlags &dispatchFlags,

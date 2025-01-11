@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,9 +11,10 @@
 
 #include <csignal>
 #include <functional>
+#include <vector>
 
 namespace NEO {
-class PageFaultManagerLinux : public PageFaultManager {
+class PageFaultManagerLinux : public virtual CpuPageFaultManager {
   public:
     PageFaultManagerLinux();
     ~PageFaultManagerLinux() override;
@@ -23,9 +24,10 @@ class PageFaultManagerLinux : public PageFaultManager {
   protected:
     void allowCPUMemoryAccess(void *ptr, size_t size) override;
     void protectCPUMemoryAccess(void *ptr, size_t size) override;
+    void protectCpuMemoryFromWrites(void *ptr, size_t size) override;
 
     void evictMemoryAfterImplCopy(GraphicsAllocation *allocation, Device *device) override;
-    void allowCPUMemoryEvictionImpl(void *ptr, CommandStreamReceiver &csr, OSInterface *osInterface) override;
+    void allowCPUMemoryEvictionImpl(bool evict, void *ptr, CommandStreamReceiver &csr, OSInterface *osInterface) override;
 
     bool checkFaultHandlerFromPageFaultManager() override;
     void registerFaultHandler() override;
@@ -35,8 +37,12 @@ class PageFaultManagerLinux : public PageFaultManager {
 
     static std::function<void(int signal, siginfo_t *info, void *context)> pageFaultHandler;
 
-    struct sigaction previousPageFaultHandler = {};
+    std::vector<struct sigaction> previousPageFaultHandlers;
 
     bool evictMemoryAfterCopy = false;
+    int handlerIndex = 0;
 };
+
+class CpuPageFaultManagerLinux final : public PageFaultManagerLinux {};
+
 } // namespace NEO

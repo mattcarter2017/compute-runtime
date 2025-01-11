@@ -11,8 +11,7 @@
 #include "shared/source/memory_manager/allocation_type.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/source/os_interface/product_helper.inl"
-#include "shared/source/os_interface/product_helper_dg2_and_later.inl"
-#include "shared/source/os_interface/product_helper_xehp_and_later.inl"
+#include "shared/source/os_interface/product_helper_xe_hpg_and_xe_hpc.inl"
 
 #include "aubstream/product_family.h"
 #include "platforms.h"
@@ -40,23 +39,13 @@ bool ProductHelperHw<gfxProduct>::isInitBuiltinAsyncSupported(const HardwareInfo
 }
 
 template <>
-bool ProductHelperHw<gfxProduct>::isEvictionIfNecessaryFlagSupported() const {
-    return true;
-}
-
-template <>
-bool ProductHelperHw<gfxProduct>::blitEnqueueAllowed() const {
+bool ProductHelperHw<gfxProduct>::blitEnqueuePreferred(bool isWriteToImageFromBuffer) const {
     return false;
 }
 
 template <>
 std::optional<aub_stream::ProductFamily> ProductHelperHw<gfxProduct>::getAubStreamProductFamily() const {
     return aub_stream::ProductFamily::Mtl;
-};
-
-template <>
-bool ProductHelperHw<gfxProduct>::isDummyBlitWaRequired() const {
-    return true;
 }
 
 template <>
@@ -79,15 +68,6 @@ bool ProductHelperHw<gfxProduct>::isUsmPoolAllocatorSupported() const {
 }
 
 template <>
-uint64_t ProductHelperHw<gfxProduct>::overridePatIndex(bool isUncachedType, uint64_t patIndex) const {
-    if (isUncachedType) {
-        constexpr uint64_t uncached = 2u;
-        return uncached;
-    }
-    return patIndex;
-}
-
-template <>
 bool ProductHelperHw<gfxProduct>::overrideAllocationCacheable(const AllocationData &allocationData) const {
     return allocationData.type == AllocationType::commandBuffer;
 }
@@ -98,11 +78,42 @@ uint32_t ProductHelperHw<gfxProduct>::getCommandBuffersPreallocatedPerCommandQue
 }
 
 template <>
-uint32_t ProductHelperHw<gfxProduct>::getInternalHeapsPreallocated() const {
-    if (debugManager.flags.SetAmountOfInternalHeapsToPreallocate.get() != -1) {
-        return debugManager.flags.SetAmountOfInternalHeapsToPreallocate.get();
+std::optional<GfxMemoryAllocationMethod> ProductHelperHw<gfxProduct>::getPreferredAllocationMethod(AllocationType allocationType) const {
+    switch (allocationType) {
+    case AllocationType::tagBuffer:
+    case AllocationType::timestampPacketTagBuffer:
+        return {};
+    default:
+        return GfxMemoryAllocationMethod::allocateByKmd;
     }
-    return 1u;
 }
 
+template <>
+bool ProductHelperHw<gfxProduct>::isCachingOnCpuAvailable() const {
+    return false;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::isNewCoherencyModelSupported() const {
+    return true;
+}
+
+template <>
+std::optional<bool> ProductHelperHw<gfxProduct>::isCoherentAllocation(uint64_t patIndex) const {
+    std::array<uint64_t, 2> listOfCoherentPatIndexes = {3, 4};
+    if (std::find(listOfCoherentPatIndexes.begin(), listOfCoherentPatIndexes.end(), patIndex) != listOfCoherentPatIndexes.end()) {
+        return true;
+    }
+    return false;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::isDeviceUsmAllocationReuseSupported() const {
+    return true;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::isHostUsmAllocationReuseSupported() const {
+    return true;
+}
 } // namespace NEO

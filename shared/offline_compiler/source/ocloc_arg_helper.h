@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -63,6 +63,8 @@ class OclocArgHelper {
         outputs.push_back(std::make_unique<Output>(filename, data, size));
     }
 
+    bool verbose = false;
+
   public:
     OclocArgHelper();
     OclocArgHelper(const uint32_t numSources, const uint8_t **dataSources,
@@ -82,6 +84,7 @@ class OclocArgHelper {
     MOCKABLE_VIRTUAL std::vector<char> readBinaryFile(const std::string &filename);
     MOCKABLE_VIRTUAL std::unique_ptr<char[]> loadDataFromFile(const std::string &filename, size_t &retSize);
 
+    void dontSetupOutputs() { hasOutput = false; }
     bool outputEnabled() const {
         return hasOutput;
     }
@@ -92,8 +95,15 @@ class OclocArgHelper {
         return headers;
     }
 
+    bool isVerbose() const {
+        return verbose;
+    }
+
+    void setVerbose(bool verbose) {
+        this->verbose = verbose;
+    }
+
     MOCKABLE_VIRTUAL void saveOutput(const std::string &filename, const void *pData, const size_t &dataSize);
-    void saveOutput(const std::string &filename, const std::ostream &stream);
 
     MessagePrinter &getPrinterRef() { return messagePrinter; }
     void printf(const char *message) {

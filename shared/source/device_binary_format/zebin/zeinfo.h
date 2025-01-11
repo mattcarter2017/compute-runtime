@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "shared/source/device_binary_format/yaml/yaml_parser.h"
 #include "shared/source/utilities/const_stringref.h"
 
 #include <array>
@@ -59,12 +60,15 @@ inline constexpr ConstStringRef subgroupIndependentForwardProgress("subgroup_ind
 inline constexpr ConstStringRef workGroupWalkOrderDimensions("work_group_walk_order_dimensions");
 inline constexpr ConstStringRef threadSchedulingMode("thread_scheduling_mode");
 inline constexpr ConstStringRef hasSample("has_sample");
+inline constexpr ConstStringRef actualKernelStartOffset("actual_kernel_start_offset");
 namespace ThreadSchedulingMode {
 inline constexpr ConstStringRef ageBased("age_based");
 inline constexpr ConstStringRef roundRobin("round_robin");
 inline constexpr ConstStringRef roundRobinStall("round_robin_stall");
 } // namespace ThreadSchedulingMode
 inline constexpr ConstStringRef indirectStatelessCount("indirect_stateless_count");
+inline constexpr ConstStringRef privateSize("private_size");
+inline constexpr ConstStringRef spillSize("spill_size");
 } // namespace ExecutionEnv
 
 namespace Attributes {
@@ -79,6 +83,7 @@ inline constexpr ConstStringRef hintSuffix("_hint");
 
 namespace DebugEnv {
 inline constexpr ConstStringRef debugSurfaceBTI("sip_surface_bti");
+inline constexpr ConstStringRef debugSurfaceOffset("sip_surface_offset");
 } // namespace DebugEnv
 
 namespace PayloadArgument {
@@ -126,6 +131,8 @@ inline constexpr ConstStringRef scratchPointer("scratch_pointer");
 inline constexpr ConstStringRef regionGroupSize("region_group_size");
 inline constexpr ConstStringRef regionGroupDimension("region_group_dimension");
 inline constexpr ConstStringRef regionGroupWgCount("region_group_wg_count");
+inline constexpr ConstStringRef regionGroupBarrierBuffer("region_group_barrier_buffer");
+inline constexpr ConstStringRef inlineSampler("inline_sampler");
 
 namespace Image {
 inline constexpr ConstStringRef width("image_width");
@@ -342,6 +349,11 @@ using WorkgroupWalkOrderDimensionsT = int32_t[3];
 using ThreadSchedulingModeT = ThreadSchedulingMode;
 using IndirectStatelessCountT = int32_t;
 using HasSampleT = bool;
+using PrivateSizeT = int32_t;
+using SpillSizeT = int32_t;
+using LocalRegionSizeT = int32_t;
+using WalkOrderT = int32_t;
+using PartitionDimT = int32_t;
 
 namespace Defaults {
 inline constexpr BarrierCountT barrierCount = 0;
@@ -371,6 +383,11 @@ inline constexpr WorkgroupWalkOrderDimensionsT workgroupWalkOrderDimensions = {0
 inline constexpr ThreadSchedulingModeT threadSchedulingMode = ThreadSchedulingModeUnknown;
 inline constexpr IndirectStatelessCountT indirectStatelessCount = 0;
 inline constexpr HasSampleT hasSample = false;
+inline constexpr PrivateSizeT privateSize = 0;
+inline constexpr SpillSizeT spillSize = 0;
+inline constexpr LocalRegionSizeT localRegionSize = -1;
+inline constexpr WalkOrderT dispatchWalkOrder = -1;
+inline constexpr PartitionDimT partitionDim = -1;
 } // namespace Defaults
 
 inline constexpr ConstStringRef required[] = {
@@ -404,6 +421,11 @@ struct ExecutionEnvBaseT {
     ThreadSchedulingModeT threadSchedulingMode = Defaults::threadSchedulingMode;
     IndirectStatelessCountT indirectStatelessCount = Defaults::indirectStatelessCount;
     HasSampleT hasSample = Defaults::hasSample;
+    PrivateSizeT privateSize = Defaults::privateSize;
+    SpillSizeT spillSize = Defaults::spillSize;
+    LocalRegionSizeT localRegionSize = Defaults::localRegionSize;
+    WalkOrderT dispatchWalkOrder = Defaults::dispatchWalkOrder;
+    PartitionDimT partitionDim = Defaults::partitionDim;
 };
 
 struct ExperimentalPropertiesBaseT {
@@ -442,13 +464,16 @@ struct AttributesBaseT {
 
 namespace DebugEnv {
 using DebugSurfaceBTIT = int32_t;
+using DebugSurfaceOffset = int32_t;
 
 namespace Defaults {
 inline constexpr DebugSurfaceBTIT debugSurfaceBTI = -1;
+inline constexpr DebugSurfaceOffset debugSurfaceOffset = -1;
 } // namespace Defaults
 
 struct DebugEnvBaseT {
     DebugSurfaceBTIT debugSurfaceBTI = Defaults::debugSurfaceBTI;
+    DebugSurfaceOffset debugSurfaceOffset = Defaults::debugSurfaceOffset;
 };
 } // namespace DebugEnv
 
@@ -498,6 +523,8 @@ enum ArgType : uint8_t {
     argTypeRegionGroupSize,
     argTypeRegionGroupDimension,
     argTypeRegionGroupWgCount,
+    argTypeRegionGroupBarrierBuffer,
+    argTypeInlineSampler,
     argTypeMax
 };
 
@@ -607,12 +634,12 @@ inline constexpr BtiValueT btiValue = -1;
 } // namespace Defaults
 
 struct PayloadArgumentBaseT {
-    ArgTypeT argType = argTypeUnknown;
     OffsetT offset = Defaults::offset;
     SourceOffseT sourceOffset = Defaults::sourceOffset;
     SizeT size = 0;
     ArgIndexT argIndex = Defaults::argIndex;
     BtiValueT btiValue = Defaults::btiValue;
+    ArgTypeT argType = argTypeUnknown;
     AddrmodeT addrmode = memoryAddressingModeUnknown;
     AddrspaceT addrspace = addressSpaceUnknown;
     AccessTypeT accessType = accessTypeUnknown;
@@ -665,9 +692,9 @@ inline constexpr Slot slot = 0U;
 } // namespace Defaults
 
 struct PerThreadMemoryBufferBaseT {
+    SizeT size = 0U;
     AllocationType allocationType = AllocationTypeUnknown;
     MemoryUsageT memoryUsage = MemoryUsageUnknown;
-    SizeT size = 0U;
     IsSimtThreadT isSimtThread = Defaults::isSimtThread;
     Slot slot = Defaults::slot;
 };
@@ -705,8 +732,8 @@ inline constexpr NormalizedT normalized = false;
 
 struct InlineSamplerBaseT {
     SamplerIndexT samplerIndex = Defaults::samplerIndex;
-    AddrModeT addrMode = Defaults::addrMode;
     FilterModeT filterMode = Defaults::filterMode;
+    AddrModeT addrMode = Defaults::addrMode;
     NormalizedT normalized = Defaults::normalized;
 };
 } // namespace InlineSamplers

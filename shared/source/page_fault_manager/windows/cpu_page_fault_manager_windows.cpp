@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,21 +8,27 @@
 #include "shared/source/page_fault_manager/windows/cpu_page_fault_manager_windows.h"
 
 #include "shared/source/command_stream/command_stream_receiver.h"
+#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/device/device.h"
-#include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/memory_manager/unified_memory_manager.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/source/os_interface/windows/os_context_win.h"
+#include "shared/source/page_fault_manager/windows/tbx_page_fault_manager_windows.h"
 
 namespace NEO {
-std::unique_ptr<PageFaultManager> PageFaultManager::create() {
-    auto pageFaultManager = std::make_unique<PageFaultManagerWindows>();
+std::unique_ptr<CpuPageFaultManager> CpuPageFaultManager::create() {
+    auto pageFaultManager = [&]() -> std::unique_ptr<CpuPageFaultManager> {
+        if (debugManager.isTbxPageFaultManagerEnabled()) {
+            return TbxPageFaultManager::create();
+        }
+        return std::make_unique<CpuPageFaultManagerWindows>();
+    }();
 
     pageFaultManager->selectGpuDomainHandler();
     return pageFaultManager;
 }
 
-std::function<LONG(struct _EXCEPTION_POINTERS *exceptionInfo)> PageFaultManagerWindows::pageFaultHandler;
+std::function<LONG(struct _EXCEPTION_POINTERS *exceptionInfo)> PageFaultManagerWindows::pageFaultHandler = nullptr;
 
 PageFaultManagerWindows::PageFaultManagerWindows() {
     PageFaultManagerWindows::registerFaultHandler();
@@ -39,7 +45,7 @@ bool PageFaultManagerWindows::checkFaultHandlerFromPageFaultManager() {
 void PageFaultManagerWindows::registerFaultHandler() {
     pageFaultHandler = [this](struct _EXCEPTION_POINTERS *exceptionInfo) {
         if (static_cast<long>(exceptionInfo->ExceptionRecord->ExceptionCode) == EXCEPTION_ACCESS_VIOLATION) {
-            if (this->verifyPageFault(reinterpret_cast<void *>(exceptionInfo->ExceptionRecord->ExceptionInformation[1]))) {
+            if (this->verifyAndHandlePageFault(reinterpret_cast<void *>(exceptionInfo->ExceptionRecord->ExceptionInformation[1]), true)) {
                 // this is our fault that we serviced, continue app execution
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
@@ -67,17 +73,30 @@ void PageFaultManagerWindows::protectCPUMemoryAccess(void *ptr, size_t size) {
     UNRECOVERABLE_IF(!retVal);
 }
 
+void PageFaultManagerWindows::protectCpuMemoryFromWrites(void *ptr, size_t size) {
+    DWORD previousState;
+    auto retVal = VirtualProtect(ptr, size, PAGE_READONLY, &previousState);
+    UNRECOVERABLE_IF(!retVal);
+}
+
 void PageFaultManagerWindows::evictMemoryAfterImplCopy(GraphicsAllocation *allocation, Device *device) {}
 
-void PageFaultManagerWindows::allowCPUMemoryEvictionImpl(void *ptr, CommandStreamReceiver &csr, OSInterface *osInterface) {
-    NEO::SvmAllocationData *allocData = memoryData[ptr].unifiedMemoryManager->getSVMAlloc(ptr);
+void PageFaultManagerWindows::allowCPUMemoryEvictionImpl(bool evict, void *ptr, CommandStreamReceiver &csr, OSInterface *osInterface) {
+    NEO::SvmAllocationData *allocData = this->memoryData[ptr].unifiedMemoryManager->getSVMAlloc(ptr);
     UNRECOVERABLE_IF(allocData == nullptr);
 
     if (osInterface) {
         auto &residencyController = static_cast<OsContextWin *>(&csr.getOsContext())->getResidencyController();
 
         auto lock = residencyController.acquireLock();
-        residencyController.addToTrimCandidateList(allocData->cpuAllocation);
+        auto &evictContainer = csr.getEvictionAllocations();
+        auto iter = std::find(evictContainer.begin(), evictContainer.end(), allocData->cpuAllocation);
+        auto allocInEvictionList = iter != evictContainer.end();
+        if (evict && !allocInEvictionList) {
+            evictContainer.push_back(allocData->cpuAllocation);
+        } else if (!evict && allocInEvictionList) {
+            evictContainer.erase(iter);
+        }
     }
 }
 

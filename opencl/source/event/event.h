@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -243,7 +243,7 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
         return cmdQueue;
     }
 
-    cl_command_type getCommandType() {
+    cl_command_type getCommandType() const {
         return cmdType;
     }
 
@@ -312,6 +312,8 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
 
     static void getBoundaryTimestampValues(TimestampPacketContainer *timestampContainer, uint64_t &globalStartTS, uint64_t &globalEndTS);
 
+    void copyTimestamps(Event &srcEvent);
+
   protected:
     Event(Context *ctx, CommandQueue *cmdQueue, cl_command_type cmdType,
           TaskCountType taskLevel, TaskCountType taskCount);
@@ -359,6 +361,9 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
 
     bool isWaitForTimestampsEnabled() const;
     bool areTimestampsCompleted();
+
+    void updateTimestamp(ProfilingInfo &timestamp, uint64_t newGpuTimestamp) const;
+    void addOverflowToTimestamp(uint64_t &timestamp, uint64_t timestampWithOverflow) const;
 
     bool currentCmdQVirtualEvent = false;
     std::atomic<Command *> cmdToSubmit{nullptr};

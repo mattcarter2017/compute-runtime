@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -124,6 +124,13 @@ TEST_F(clEventTests, GivenValidEventWhenSettingStatusMultipleTimesThenClInvalidO
     clReleaseEvent(event);
 }
 
+TEST_F(clEventTests, GivenInvalidEventWhenTerdownWasCalledThenSuccessReturned) {
+    wasPlatformTeardownCalled = true;
+    auto retVal = clReleaseEvent(nullptr);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    wasPlatformTeardownCalled = false;
+}
+
 typedef EventFixture<::testing::TestWithParam<std::tuple<int32_t, int32_t>>> clEventStatusTests;
 
 TEST_P(clEventStatusTests, GivenExecutionStatusWhenSettingUserEventStatusThenSuccessOrCorrectErrorIsReturned) {
@@ -144,15 +151,15 @@ cl_int expectValidStatus[] = {CL_SUCCESS};
 cl_int invalidStatus[] = {CL_QUEUED, CL_SUBMITTED, 12};
 cl_int expectInvalidStatus[] = {CL_INVALID_VALUE};
 
-INSTANTIATE_TEST_CASE_P(SetValidStatus,
-                        clEventStatusTests,
-                        ::testing::Combine(
-                            ::testing::ValuesIn(validStatus),
-                            ::testing::ValuesIn(expectValidStatus)));
+INSTANTIATE_TEST_SUITE_P(SetValidStatus,
+                         clEventStatusTests,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(validStatus),
+                             ::testing::ValuesIn(expectValidStatus)));
 
-INSTANTIATE_TEST_CASE_P(SetInvalidStatus,
-                        clEventStatusTests,
-                        ::testing::Combine(
-                            ::testing::ValuesIn(invalidStatus),
-                            ::testing::ValuesIn(expectInvalidStatus)));
+INSTANTIATE_TEST_SUITE_P(SetInvalidStatus,
+                         clEventStatusTests,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(invalidStatus),
+                             ::testing::ValuesIn(expectInvalidStatus)));
 } // namespace ClReleaseEventTests

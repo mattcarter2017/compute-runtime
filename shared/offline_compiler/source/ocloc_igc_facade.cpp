@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,6 +12,7 @@
 #include "shared/source/compiler_interface/igc_platform_helper.h"
 #include "shared/source/compiler_interface/os_compiler_cache_helper.h"
 #include "shared/source/helpers/compiler_product_helper.h"
+#include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/string.h"
@@ -37,9 +38,10 @@ int OclocIgcFacade::initialize(const HardwareInfo &hwInfo) {
         return OCLOC_SUCCESS;
     }
 
-    igcLib = loadIgcLibrary();
+    auto compilerProductHelper = NEO::CompilerProductHelper::create(hwInfo.platform.eProductFamily);
+    igcLib = loadIgcLibrary(compilerProductHelper ? compilerProductHelper->getCustomIgcLibraryName() : nullptr);
     if (!igcLib) {
-        argHelper->printf("Error! Loading of IGC library has failed! Filename: %s\n", Os::igcDllName);
+        argHelper->printf("Error! Loading of IGC library has failed! Filename: %s\n", (compilerProductHelper && compilerProductHelper->getCustomIgcLibraryName()) ? compilerProductHelper->getCustomIgcLibraryName() : Os::igcDllName);
         return OCLOC_OUT_OF_HOST_MEMORY;
     }
 
@@ -90,7 +92,7 @@ int OclocIgcFacade::initialize(const HardwareInfo &hwInfo) {
         return OCLOC_OUT_OF_HOST_MEMORY;
     }
 
-    igcDeviceCtx->SetProfilingTimerResolution(static_cast<float>(hwInfo.capabilityTable.defaultProfilingTimerResolution));
+    igcDeviceCtx->SetProfilingTimerResolution(static_cast<float>(CommonConstants::defaultProfilingTimerResolution));
 
     const auto igcPlatform = getIgcPlatformHandle();
     const auto igcGtSystemInfo = getGTSystemInfoHandle();
@@ -100,7 +102,6 @@ int OclocIgcFacade::initialize(const HardwareInfo &hwInfo) {
         argHelper->printf("Error! IGC device context has not been properly created!\n");
         return OCLOC_OUT_OF_HOST_MEMORY;
     }
-    auto compilerProductHelper = NEO::CompilerProductHelper::create(hwInfo.platform.eProductFamily);
 
     populateIgcPlatform(*igcPlatform, hwInfo);
     IGC::GtSysInfoHelper::PopulateInterfaceWith(*igcGtSystemInfo.get(), hwInfo.gtSystemInfo);
@@ -111,8 +112,9 @@ int OclocIgcFacade::initialize(const HardwareInfo &hwInfo) {
     return OCLOC_SUCCESS;
 }
 
-std::unique_ptr<OsLibrary> OclocIgcFacade::loadIgcLibrary() const {
-    return std::unique_ptr<OsLibrary>{OsLibrary::load(Os::igcDllName)};
+std::unique_ptr<OsLibrary> OclocIgcFacade::loadIgcLibrary(const char *libName) const {
+    auto effectiveLibName = libName ? libName : Os::igcDllName;
+    return std::unique_ptr<OsLibrary>{OsLibrary::loadFunc({effectiveLibName})};
 }
 
 CIF::CreateCIFMainFunc_t OclocIgcFacade::loadCreateIgcMainFunction() const {

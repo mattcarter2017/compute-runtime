@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,10 +11,9 @@
 #include "shared/source/device/device.h"
 #include "shared/source/helpers/hw_info.h"
 
-#include "level_zero/sysman/source/shared/linux/pmt/sysman_pmt.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/zes_os_sysman_imp.h"
 
 #include "igfxfmid.h"
@@ -23,7 +22,6 @@
 
 namespace L0 {
 namespace Sysman {
-const bool LinuxFrequencyImp::canControl = true; // canControl is true on i915 (GEN9 Hardcode)
 
 ze_result_t LinuxFrequencyImp::osFrequencyGetProperties(zes_freq_properties_t &properties) {
     properties.pNext = nullptr;
@@ -72,6 +70,10 @@ ze_result_t LinuxFrequencyImp::osFrequencySetRange(const zes_freq_range_t *pLimi
     double newMin = round(pLimits->min);
     double newMax = round(pLimits->max);
 
+    if (!canControl) {
+        return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    }
+
     if (pSysmanKmdInterface->isDefaultFrequencyAvailable()) {
         if (newMax == -1 && newMin == -1) {
             double maxDefault = 0, minDefault = 0;
@@ -117,6 +119,7 @@ ze_result_t LinuxFrequencyImp::osFrequencySetRange(const zes_freq_range_t *pLimi
     }
     return setMax(newMax);
 }
+
 bool LinuxFrequencyImp::getThrottleReasonStatus(void) {
     uint32_t val = 0;
     auto result = pSysfsAccess->read(throttleReasonStatusFile, val);
@@ -398,7 +401,7 @@ ze_result_t LinuxFrequencyImp::getMinVal(double &minVal) {
 }
 
 void LinuxFrequencyImp::getCurrentVoltage(double &voltage) {
-    pSysmanProductHelper->getCurrentVoltage(pPmt, voltage);
+    voltage = -1.0;
 }
 
 void LinuxFrequencyImp::init() {
@@ -422,6 +425,7 @@ void LinuxFrequencyImp::init() {
     throttleReasonPL2File = pSysmanKmdInterface->getSysfsFilePath(SysfsName::sysfsNameThrottleReasonPL2, subdeviceId, baseDirectoryExists);
     throttleReasonPL4File = pSysmanKmdInterface->getSysfsFilePath(SysfsName::sysfsNameThrottleReasonPL4, subdeviceId, baseDirectoryExists);
     throttleReasonThermalFile = pSysmanKmdInterface->getSysfsFilePath(SysfsName::sysfsNameThrottleReasonThermal, subdeviceId, baseDirectoryExists);
+    canControl = pSysmanProductHelper->isFrequencySetRangeSupported();
 
     if (pSysmanKmdInterface->isDefaultFrequencyAvailable()) {
         minDefaultFreqFile = pSysmanKmdInterface->getSysfsFilePath(SysfsName::sysfsNameMinDefaultFrequency, subdeviceId, baseDirectoryExists);
@@ -442,7 +446,6 @@ LinuxFrequencyImp::LinuxFrequencyImp(OsSysman *pOsSysman, ze_bool_t onSubdevice,
     pSysfsAccess = &pLinuxSysmanImp->getSysfsAccess();
     pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
     pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
-    pPmt = pLinuxSysmanImp->getPlatformMonitoringTechAccess(subdeviceId);
     init();
 }
 
@@ -453,13 +456,11 @@ OsFrequency *OsFrequency::create(OsSysman *pOsSysman, ze_bool_t onSubdevice, uin
 
 std::vector<zes_freq_domain_t> OsFrequency::getNumberOfFreqDomainsSupported(OsSysman *pOsSysman) {
     LinuxSysmanImp *pLinuxSysmanImp = static_cast<LinuxSysmanImp *>(pOsSysman);
-    auto &productHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHelper<NEO::ProductHelper>();
-    auto releaseHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getReleaseHelper();
+    auto areImagesSupported = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHardwareInfo()->capabilityTable.supportsImages;
     std::vector<zes_freq_domain_t> freqDomains = {};
-    uint32_t mediaFreqTileIndex;
-    if (productHelper.getMediaFrequencyTileIndex(releaseHelper, mediaFreqTileIndex) == true) {
+    if (areImagesSupported) {
         auto pSysfsAccess = &pLinuxSysmanImp->getSysfsAccess();
-        const std::string baseDir = "gt/gt" + std::to_string(mediaFreqTileIndex) + "/";
+        const std::string baseDir = "gt/gt1/";
         if (pSysfsAccess->directoryExists(baseDir)) {
             freqDomains.push_back(ZES_FREQ_DOMAIN_MEDIA);
         }

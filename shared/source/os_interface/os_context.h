@@ -25,7 +25,7 @@ class OsContext : public ReferenceTrackedObject<OsContext> {
 
     bool isImmediateContextInitializationEnabled(bool isDefaultEngine) const;
     bool isInitialized() const { return contextInitialized; }
-    bool ensureContextInitialized();
+    bool ensureContextInitialized(bool allocateInterrupt);
 
     uint32_t getContextId() const { return contextId; }
     virtual uint64_t getOfflineDumpContextId(uint32_t deviceIndex) const { return 0; };
@@ -34,13 +34,14 @@ class OsContext : public ReferenceTrackedObject<OsContext> {
     PreemptionMode getPreemptionMode() const { return preemptionMode; }
     const aub_stream::EngineType &getEngineType() const { return engineType; }
     EngineUsage getEngineUsage() { return engineUsage; }
+    void overrideEngineUsage(EngineUsage usage) { engineUsage = usage; }
+
     bool isRegular() const { return engineUsage == EngineUsage::regular; }
     bool isLowPriority() const { return engineUsage == EngineUsage::lowPriority; }
     bool isHighPriority() const { return engineUsage == EngineUsage::highPriority; }
     bool isInternalEngine() const { return engineUsage == EngineUsage::internal; }
     bool isCooperativeEngine() const { return engineUsage == EngineUsage::cooperative; }
     bool isRootDevice() const { return rootDevice; }
-    bool isEngineInstanced() const { return engineInstancedDevice; }
     virtual bool isDirectSubmissionSupported() const { return false; }
     bool isDefaultContext() const { return defaultContext; }
     void setDefaultContext(bool value) { defaultContext = value; }
@@ -79,15 +80,27 @@ class OsContext : public ReferenceTrackedObject<OsContext> {
     const OsContext *getPrimaryContext() const {
         return primaryContext;
     }
+    void setIsPrimaryEngine(const bool isPrimaryEngine) {
+        this->isPrimaryEngine = isPrimaryEngine;
+    }
+    bool getIsPrimaryEngine() const {
+        return this->isPrimaryEngine;
+    }
+    void setIsDefaultEngine(const bool isDefaultEngine) {
+        this->isDefaultEngine = isDefaultEngine;
+    }
+    bool getIsDefaultEngine() const {
+        return this->isDefaultEngine;
+    }
     void setContextGroup(bool value) {
         isContextGroup = value;
     }
-    bool isPartOfContextGroup() {
+    bool isPartOfContextGroup() const {
         return isContextGroup;
     }
 
   protected:
-    virtual bool initializeContext() { return true; }
+    virtual bool initializeContext(bool allocateInterrupt) { return true; }
 
     std::atomic<uint32_t> tlbFlushCounter{0};
     std::atomic<uint32_t> lastFlushedTlbFlushCounter{0};
@@ -98,17 +111,18 @@ class OsContext : public ReferenceTrackedObject<OsContext> {
     const PreemptionMode preemptionMode;
     const uint32_t numSupportedDevices;
     aub_stream::EngineType engineType = aub_stream::ENGINE_RCS;
-    const EngineUsage engineUsage;
+    EngineUsage engineUsage;
     const bool rootDevice = false;
     bool defaultContext = false;
     bool directSubmissionActive = false;
     std::once_flag contextInitializedFlag = {};
     bool contextInitialized = false;
     bool debuggableContext = false;
-    bool engineInstancedDevice = false;
     uint8_t powerHintValue = 0;
 
     bool isContextGroup = false;
     const OsContext *primaryContext = nullptr;
+    bool isPrimaryEngine = false;
+    bool isDefaultEngine = false;
 };
 } // namespace NEO

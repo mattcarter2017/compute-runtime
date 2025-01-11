@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,13 +11,14 @@
 #include "shared/test/common/os_interface/linux/sys_calls_linux_ult.h"
 #include "shared/test/common/test_macros/test.h"
 
+#include "level_zero/sysman/source/driver/sysman_driver.h"
 #include "level_zero/tools/source/sysman/diagnostics/linux/os_diagnostics_imp.h"
 #include "level_zero/tools/source/sysman/events/linux/os_events_imp.h"
 #include "level_zero/tools/source/sysman/firmware/linux/os_firmware_imp.h"
 #include "level_zero/tools/source/sysman/ras/ras_imp.h"
 #include "level_zero/tools/test/unit_tests/sources/sysman/linux/mock_sysman_fixture.h"
 
-#include "drm/drm.h"
+#include "drm.h"
 
 namespace NEO {
 namespace SysCalls {
@@ -216,6 +217,16 @@ TEST_F(SysmanDeviceFixture, GivenValidDeviceHandleButSysmanInitFailsThenValidNul
     EXPECT_EQ(pSysmanDevice, nullptr);
 }
 
+TEST_F(SysmanDeviceFixture, GivenValidDeviceHandleWithSysmanOnlyInitSetAsTrueThenSysmanInitFailsAndValidNullptrReceived) {
+    ze_device_handle_t hSysman = device->toHandle();
+    L0::Sysman::sysmanOnlyInit = true;
+    L0::sysmanInitFromCore = false;
+    auto pSysmanDevice = L0::SysmanDeviceHandleContext::init(hSysman);
+    EXPECT_EQ(pSysmanDevice, nullptr);
+    EXPECT_FALSE(L0::sysmanInitFromCore);
+    L0::Sysman::sysmanOnlyInit = false;
+}
+
 TEST_F(SysmanDeviceFixture, GivenSetValidDrmHandleForDeviceWhenDoingOsSysmanDeviceInitThenSameDrmHandleIsRetrieved) {
     EXPECT_EQ(&pLinuxSysmanImp->getDrm(), device->getOsInterface().getDriverModel()->as<Drm>());
 }
@@ -228,6 +239,13 @@ TEST_F(SysmanDeviceFixture, GivenCreateFsAccessHandleWhenCallinggetFsAccessThenC
     }
     pLinuxSysmanImp->pFsAccess = FsAccess::create();
     EXPECT_EQ(&pLinuxSysmanImp->getFsAccess(), pLinuxSysmanImp->pFsAccess);
+}
+
+std::string getcwd(char buf[], size_t size) {
+    auto cwd = ::getcwd(buf, size);
+    if (cwd)
+        return cwd;
+    return "";
 }
 
 TEST_F(SysmanDeviceFixture, GivenPublicFsAccessClassWhenCallingDirectoryExistsWithValidAndInvalidPathThenSuccessAndFailureAreReturnedRespectively) {
@@ -1015,6 +1033,11 @@ TEST_F(SysmanDeviceFixture, GivenValidLinuxSysmanImpWhenDrmVersionIsi915ThenTrue
         return 0;
     });
     EXPECT_EQ(true, pLinuxSysmanImp->isDriverModelSupported());
+}
+
+TEST_F(SysmanDeviceFixture, GivenValidLinuxSysmanImpWhenCallingInitDeviceAfterReleasingDeviceResourcesThenSuccessIsReturned) {
+    pLinuxSysmanImp->releaseDeviceResources();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, pLinuxSysmanImp->initDevice());
 }
 
 } // namespace ult

@@ -103,7 +103,8 @@ ze_result_t zeKernelSuggestGroupSize(
 ze_result_t zeKernelSuggestMaxCooperativeGroupCount(
     ze_kernel_handle_t hKernel,
     uint32_t *totalGroupCount) {
-    return L0::Kernel::fromHandle(hKernel)->suggestMaxCooperativeGroupCount(totalGroupCount, NEO::EngineGroupType::compute, false);
+    *totalGroupCount = L0::Kernel::fromHandle(hKernel)->suggestMaxCooperativeGroupCount(NEO::EngineGroupType::compute, false);
+    return ZE_RESULT_SUCCESS;
 }
 
 ze_result_t zeKernelSetArgumentValue(
@@ -162,7 +163,11 @@ ze_result_t zeCommandListAppendLaunchCooperativeKernel(
     ze_event_handle_t hSignalEvent,
     uint32_t numWaitEvents,
     ze_event_handle_t *phWaitEvents) {
-    return L0::CommandList::fromHandle(hCommandList)->appendLaunchCooperativeKernel(kernelHandle, *launchKernelArgs, hSignalEvent, numWaitEvents, phWaitEvents, false);
+
+    L0::CmdListKernelLaunchParams launchParams = {};
+    launchParams.isCooperative = true;
+
+    return L0::CommandList::fromHandle(hCommandList)->appendLaunchKernel(kernelHandle, *launchKernelArgs, hSignalEvent, numWaitEvents, phWaitEvents, launchParams, false);
 }
 
 ze_result_t zeCommandListAppendLaunchKernelIndirect(

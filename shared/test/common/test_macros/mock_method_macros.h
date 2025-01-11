@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,7 +20,9 @@
 
 #define ADDMETHOD_CONST_NOBASE(funcName, retType, defaultReturn, funcParams) \
     retType funcName##Result = defaultReturn;                                \
+    mutable uint32_t funcName##Called = 0u;                                  \
     retType funcName funcParams const override {                             \
+        funcName##Called++;                                                  \
         return funcName##Result;                                             \
     }
 
@@ -28,6 +30,10 @@
     uint32_t funcName##Called = 0u;                       \
     void funcName funcParams override {                   \
         funcName##Called++;                               \
+    }
+
+#define ADDMETHOD_CONST_NOBASE_VOIDRETURN(funcName, funcParams) \
+    void funcName funcParams const override {                   \
     }
 
 #define ADDMETHOD_NOBASE_REFRETURN(funcName, retType, funcParams)        \

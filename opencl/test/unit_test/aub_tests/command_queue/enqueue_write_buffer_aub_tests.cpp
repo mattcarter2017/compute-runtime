@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -75,7 +75,7 @@ HWTEST_P(AUBWriteBuffer, WhenWritingBufferThenExpectationsAreMet) {
         eventWaitList,
         event);
 
-    auto pDestMemory = reinterpret_cast<decltype(destMemory)>((dstBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress()));
+    auto pDestMemory = reinterpret_cast<decltype(destMemory)>(ptrOffset(dstBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress(), dstBuffer->getOffset()));
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -103,13 +103,13 @@ HWTEST_P(AUBWriteBuffer, WhenWritingBufferThenExpectationsAreMet) {
     delete[] zeroMemory;
 }
 
-INSTANTIATE_TEST_CASE_P(AUBWriteBuffer_simple,
-                        AUBWriteBuffer,
-                        ::testing::Values(
-                            0 * sizeof(cl_float),
-                            1 * sizeof(cl_float),
-                            2 * sizeof(cl_float),
-                            3 * sizeof(cl_float)));
+INSTANTIATE_TEST_SUITE_P(AUBWriteBuffer_simple,
+                         AUBWriteBuffer,
+                         ::testing::Values(
+                             0 * sizeof(cl_float),
+                             1 * sizeof(cl_float),
+                             2 * sizeof(cl_float),
+                             3 * sizeof(cl_float)));
 
 struct AUBWriteBufferUnaligned
     : public CommandEnqueueAUBFixture,
@@ -157,7 +157,7 @@ struct AUBWriteBufferUnaligned
         EXPECT_EQ(CL_SUCCESS, retVal);
 
         // Check the memory
-        auto bufferGPUPtr = reinterpret_cast<char *>((buffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress()));
+        auto bufferGPUPtr = reinterpret_cast<char *>(ptrOffset(buffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress(), buffer->getOffset()));
         expectMemory<FamilyType>(ptrOffset(bufferGPUPtr, offset), ptrOffset(srcMemory, offset), size);
     }
 };

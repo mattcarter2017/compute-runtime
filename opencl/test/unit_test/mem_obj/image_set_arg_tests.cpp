@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -124,7 +124,7 @@ HWTEST_F(ImageSetArgTest, WhenSettingKernelArgImageThenSurfaceBaseAddressIsSetCo
         ptrOffset(pKernel->getSurfaceStateHeap(),
                   pKernelInfo->argAsImg(0).bindful));
 
-    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex());
 
     auto surfaceAddress = surfaceState->getSurfaceBaseAddress();
     EXPECT_EQ(srcAllocation->getGpuAddress(), surfaceAddress);
@@ -139,7 +139,7 @@ HWTEST_F(ImageSetArgTest, GivenMediaBlockImageWhenSettingImageArgThenCorrectValu
 
     RENDER_SURFACE_STATE surfaceState;
 
-    srcImage->setImageArg(&surfaceState, true, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(&surfaceState, true, 0, pClDevice->getRootDeviceIndex());
 
     auto computedWidth = surfaceState.getWidth();
     auto expectedWidth = (srcImage->getImageDesc().image_width * srcImage->getSurfaceFormatInfo().surfaceFormat.imageElementSizeInBytes) / sizeof(uint32_t);
@@ -152,20 +152,16 @@ HWTEST_F(ImageSetArgTest, GivenNormalImageWhenSettingImageArgThenCorrectValueIsS
 
     RENDER_SURFACE_STATE surfaceState;
 
-    srcImage->setImageArg(&surfaceState, true, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(&surfaceState, true, 0, pClDevice->getRootDeviceIndex());
 
     auto computedWidth = surfaceState.getWidth();
 
     EXPECT_EQ(srcImage->getImageDesc().image_width, computedWidth);
-    EXPECT_EQ(0u, surfaceState.getMipCountLod());
+    EXPECT_EQ(0u, surfaceState.getMIPCountLOD());
 }
 
 HWTEST_F(ImageSetArgTest, givenImageWhenSettingMipTailStartLodThenProgramValueFromGmmResourceinfo) {
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
-
-    if (pDevice->getHardwareInfo().platform.eRenderCoreFamily == IGFX_GEN8_CORE) {
-        GTEST_SKIP();
-    }
 
     RENDER_SURFACE_STATE surfaceState = {};
     const uint32_t mipTailStartLod = 4;
@@ -174,17 +170,17 @@ HWTEST_F(ImageSetArgTest, givenImageWhenSettingMipTailStartLodThenProgramValueFr
     EXPECT_NE(nullptr, gmm);
     auto mockGmmResourceInfo = static_cast<MockGmmResourceInfo *>(gmm->gmmResourceInfo.get());
 
-    mockGmmResourceInfo->setMipTailStartLod(mipTailStartLod);
+    mockGmmResourceInfo->setMipTailStartLOD(mipTailStartLod);
 
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
-    EXPECT_EQ(mipTailStartLod, surfaceState.getMipTailStartLod());
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
+    EXPECT_EQ(mipTailStartLod, surfaceState.getMipTailStartLOD());
 
     // default value
     delete gmm;
     srcAllocation->setDefaultGmm(nullptr);
 
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
-    EXPECT_EQ(0u, surfaceState.getMipTailStartLod());
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
+    EXPECT_EQ(0u, surfaceState.getMipTailStartLOD());
 }
 
 HWTEST_F(ImageSetArgTest, givenCubeMapIndexWhenSetKernelArgImageIsCalledThenModifySurfaceState) {
@@ -199,7 +195,7 @@ HWTEST_F(ImageSetArgTest, givenCubeMapIndexWhenSetKernelArgImageIsCalledThenModi
         ptrOffset(pKernel->getSurfaceStateHeap(),
                   pKernelInfo->argAsImg(0).bindful));
 
-    src2dImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex(), false);
+    src2dImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex());
 
     auto renderTargetViewExtent = surfaceState->getRenderTargetViewExtent();
     auto minimumArrayElement = surfaceState->getMinimumArrayElement();
@@ -226,7 +222,7 @@ struct ImageSetArgSurfaceArrayTest : ImageSetArgTest {
         std::unique_ptr<Image> image{Image2dHelper<>::create(context, &imageDesc)};
         image->setCubeFaceIndex(__GMM_NO_CUBE_MAP);
 
-        image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+        image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
         EXPECT_EQ(expectedSurfaceArray, surfaceState.getSurfaceArray());
     }
 };
@@ -292,7 +288,7 @@ HWTEST_F(ImageSetArgTest, givenImageArraySizeGreaterThanOneButTypeIsNotImageArra
     image->setCubeFaceIndex(__GMM_NO_CUBE_MAP);
 
     typename FamilyType::RENDER_SURFACE_STATE surfaceState{};
-    image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
     EXPECT_FALSE(surfaceState.getSurfaceArray());
 }
 
@@ -304,7 +300,7 @@ HWTEST_F(ImageSetArgTest, givenNonCubeMapIndexWhenSetKernelArgImageIsCalledThenD
                   pKernelInfo->argAsImg(0).bindful));
 
     EXPECT_EQ(srcImage->getCubeFaceIndex(), __GMM_NO_CUBE_MAP);
-    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex());
 
     auto renderTargetViewExtent = surfaceState->getRenderTargetViewExtent();
     auto minimumArrayElement = surfaceState->getMinimumArrayElement();
@@ -335,7 +331,7 @@ HWTEST_F(ImageSetArgTest, givenOffsetedBufferWhenSetKernelArgImageIscalledThenFu
     auto graphicsAllocation = srcAllocation;
     graphicsAllocation->setGpuBaseAddress(12345u);
 
-    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(const_cast<RENDER_SURFACE_STATE *>(surfaceState), false, 0, pClDevice->getRootDeviceIndex());
 
     auto surfaceAddress = surfaceState->getSurfaceBaseAddress();
     EXPECT_EQ(srcAllocation->getGpuAddress(), surfaceAddress);
@@ -345,7 +341,7 @@ HWTEST_F(ImageSetArgTest, givenOffsetedBufferWhenSetKernelArgImageIscalledThenFu
     EXPECT_EQ(0u, surfaces.size());
 }
 
-HWTEST_F(ImageSetArgTest, WhenSettingKernelArgThenPropertiesAreSetCorrectly) {
+HWTEST2_F(ImageSetArgTest, WhenSettingKernelArgThenPropertiesAreSetCorrectly, MatchAny) {
     auto gmmHelper = pDevice->getGmmHelper();
     auto imageMocs = gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_IMAGE);
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
@@ -373,7 +369,7 @@ HWTEST_F(ImageSetArgTest, WhenSettingKernelArgThenPropertiesAreSetCorrectly) {
     EXPECT_EQ(srcImage->getImageDesc().image_depth, surfaceState->getDepth());
     EXPECT_EQ(srcImage->getImageDesc().image_depth, surfaceState->getRenderTargetViewExtent());
     EXPECT_EQ(rPitch, surfaceState->getSurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch() % 4);
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch() % 4);
     EXPECT_EQ(srcImage->getSurfaceFormatInfo().surfaceFormat.genxSurfaceFormat, (SurfaceFormat)surfaceState->getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_3D, surfaceState->getSurfaceType());
     EXPECT_EQ(expectedChannelRed, surfaceState->getShaderChannelSelectRed());
@@ -381,7 +377,9 @@ HWTEST_F(ImageSetArgTest, WhenSettingKernelArgThenPropertiesAreSetCorrectly) {
     EXPECT_EQ(expectedChannelBlue, surfaceState->getShaderChannelSelectBlue());
     EXPECT_EQ(RENDER_SURFACE_STATE::SHADER_CHANNEL_SELECT_ALPHA, surfaceState->getShaderChannelSelectAlpha());
     EXPECT_EQ(imageMocs, surfaceState->getMemoryObjectControlState());
-    EXPECT_EQ(0u, surfaceState->getCoherencyType());
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(0u, surfaceState->getCoherencyType());
+    }
 
     std::vector<Surface *> surfaces;
     pKernel->getResidency(surfaces);
@@ -412,8 +410,8 @@ HWTEST_F(ImageSetArgTest, givenImage2DWithMipMapsWhenSetKernelArgIsCalledThenMip
     auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
         ptrOffset(pKernel->getSurfaceStateHeap(),
                   pKernelInfo->argAsImg(0).bindful));
-    EXPECT_EQ((uint32_t)mipLevel, surfaceState->getSurfaceMinLod());
-    EXPECT_EQ((uint32_t)mipCount, surfaceState->getMipCountLod() + 1);
+    EXPECT_EQ((uint32_t)mipLevel, surfaceState->getSurfaceMinLOD());
+    EXPECT_EQ((uint32_t)mipCount, surfaceState->getMIPCountLOD() + 1);
 }
 
 HWTEST_F(ImageSetArgTest, Given2dArrayWhenSettingKernelArgThenPropertiesAreSetCorrectly) {
@@ -445,7 +443,7 @@ HWTEST_F(ImageSetArgTest, Given2dArrayWhenSettingKernelArgThenPropertiesAreSetCo
     EXPECT_EQ(image2Darray->getImageDesc().image_array_size, surfaceState->getDepth());
     EXPECT_EQ(image2Darray->getImageDesc().image_array_size, surfaceState->getRenderTargetViewExtent());
     EXPECT_EQ(rPitch, surfaceState->getSurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch() % 4);
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch() % 4);
     EXPECT_EQ(image2Darray->getSurfaceFormatInfo().surfaceFormat.genxSurfaceFormat, (SurfaceFormat)surfaceState->getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_2D, surfaceState->getSurfaceType());
     EXPECT_TRUE((SurfaceFormat)surfaceState->getSurfaceArray());
@@ -491,8 +489,8 @@ HWTEST_F(ImageSetArgTest, Given1dArrayWhenSettingKernelArgThenPropertiesAreSetCo
     EXPECT_EQ(image1Darray->getImageDesc().image_array_size, surfaceState->getDepth());
     EXPECT_EQ(image1Darray->getImageDesc().image_array_size, surfaceState->getRenderTargetViewExtent());
     EXPECT_EQ(image1Darray->getImageDesc().image_row_pitch, surfaceState->getSurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch() % 4);
-    EXPECT_EQ(graphicsAllocation->getDefaultGmm()->queryQPitch(GMM_RESOURCE_TYPE::RESOURCE_1D), surfaceState->getSurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch() % 4);
+    EXPECT_EQ(graphicsAllocation->getDefaultGmm()->queryQPitch(GMM_RESOURCE_TYPE::RESOURCE_1D), surfaceState->getSurfaceQPitch());
 
     EXPECT_EQ(image1Darray->getSurfaceFormatInfo().surfaceFormat.genxSurfaceFormat, (SurfaceFormat)surfaceState->getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_1D, surfaceState->getSurfaceType());
@@ -546,7 +544,7 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithoutUnifiedAuxC
                 RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_MSS);
     EXPECT_TRUE(surfaceState->getAuxiliarySurfaceMode() == (typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE)1);
     EXPECT_EQ(msi.pitch, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(msi.qPitch, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(msi.qPitch, surfaceState->getAuxiliarySurfaceQPitch());
     EXPECT_EQ(msi.multisampleCount, static_cast<uint32_t>(surfaceState->getNumberOfMultisamples()));
     EXPECT_EQ(mcsAlloc->getGpuAddress(), surfaceState->getAuxiliarySurfaceBaseAddress());
 
@@ -582,7 +580,7 @@ HWTEST_F(ImageSetArgTest, givenDepthFormatWhenSetArgIsCalledThenProgramAuxFields
                 RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_DEPTH_STENCIL);
     EXPECT_TRUE(surfaceState->getAuxiliarySurfaceMode() == AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
     EXPECT_EQ(1u, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQPitch());
     EXPECT_EQ(msi.multisampleCount, static_cast<uint32_t>(surfaceState->getNumberOfMultisamples()));
     EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceBaseAddress());
 
@@ -627,7 +625,7 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationAndCompressionWhenSetArgOnMultisampl
 
     auto image = std::unique_ptr<Image>(Image2dHelper<>::create(context, &imgDesc));
     auto graphicsAllocation = image->getGraphicsAllocation(pClDevice->getRootDeviceIndex());
-    graphicsAllocation->getDefaultGmm()->isCompressionEnabled = true;
+    graphicsAllocation->getDefaultGmm()->setCompressionEnabled(true);
     image->setMcsSurfaceInfo(msi);
     image->setMcsAllocation(mcsAlloc);
     cl_mem memObj = image.get();
@@ -642,7 +640,7 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationAndCompressionWhenSetArgOnMultisampl
                 RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_MSS);
     EXPECT_TRUE(surfaceState->getAuxiliarySurfaceMode() == (typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE)1);
     EXPECT_EQ(msi.pitch, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(msi.qPitch, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(msi.qPitch, surfaceState->getAuxiliarySurfaceQPitch());
     EXPECT_EQ(msi.multisampleCount, static_cast<uint32_t>(surfaceState->getNumberOfMultisamples()));
     EXPECT_EQ(mcsAlloc->getGpuAddress(), surfaceState->getAuxiliarySurfaceBaseAddress());
 }
@@ -658,7 +656,7 @@ HWTEST_F(ImageSetArgTest, givenDepthFormatAndCompressionWhenSetArgOnMultisampled
 
     auto image = std::unique_ptr<Image>(Image2dHelper<>::create(context, &imgDesc, &imgFormat));
     auto graphicsAllocation = image->getGraphicsAllocation(pClDevice->getRootDeviceIndex());
-    graphicsAllocation->getDefaultGmm()->isCompressionEnabled = true;
+    graphicsAllocation->getDefaultGmm()->setCompressionEnabled(true);
     image->setMcsSurfaceInfo(msi);
     cl_mem memObj = image.get();
 
@@ -673,14 +671,13 @@ HWTEST_F(ImageSetArgTest, givenDepthFormatAndCompressionWhenSetArgOnMultisampled
                 RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_DEPTH_STENCIL);
     EXPECT_TRUE(surfaceState->getAuxiliarySurfaceMode() == AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
     EXPECT_EQ(1u, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQPitch());
     EXPECT_EQ(msi.multisampleCount, static_cast<uint32_t>(surfaceState->getNumberOfMultisamples()));
     EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceBaseAddress());
 }
 
 HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapabilityThenProgramAuxFieldsForCcs) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
 
     McsSurfaceInfo msi = {10, 20, 3};
     auto mcsAlloc = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{pDevice->getRootDeviceIndex(), MemoryConstants::pageSize});
@@ -700,7 +697,7 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapa
     mockMcsGmmResInfo->setUnifiedAuxTranslationCapable();
     EXPECT_TRUE(mcsAlloc->getDefaultGmm()->unifiedAuxTranslationCapable());
 
-    mcsAlloc->getDefaultGmm()->isCompressionEnabled = true;
+    mcsAlloc->getDefaultGmm()->setCompressionEnabled(true);
 
     retVal = clSetKernelArg(pMultiDeviceKernel, 0, sizeof(memObj), &memObj);
     ASSERT_EQ(CL_SUCCESS, retVal);
@@ -710,12 +707,11 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapa
 
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(surfaceState, mcsAlloc->getDefaultGmm()));
     EXPECT_EQ(1u, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState->getAuxiliarySurfaceQPitch());
 }
 
 HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapabilityAndMcsThenAuxBaseAddressIsSet) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
 
     McsSurfaceInfo msi = {10, 20, 3};
     auto mcsAlloc = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{pDevice->getRootDeviceIndex(), MemoryConstants::pageSize});
@@ -747,7 +743,6 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapa
 
 HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapabilityAndMcsThenAuxSurfPitchAndQPitchIsSet) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
 
     McsSurfaceInfo msi = {10, 20, 3};
     auto mcsAlloc = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{pDevice->getRootDeviceIndex(), MemoryConstants::pageSize});
@@ -781,7 +776,7 @@ HWTEST_F(ImageSetArgTest, givenMcsAllocationWhenSetArgIsCalledWithUnifiedAuxCapa
                                                                                  pKernelInfo->argAsImg(0).bindful));
 
     EXPECT_EQ(pitchValue, surfaceState->getAuxiliarySurfacePitch());
-    EXPECT_EQ(qPitchValue, surfaceState->getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(qPitchValue, surfaceState->getAuxiliarySurfaceQPitch());
 }
 
 HWTEST_F(ImageSetArgTest, GivenImageFrom1dBufferWhenSettingKernelArgThenPropertiesAreSetCorrectly) {
@@ -826,9 +821,9 @@ HWTEST_F(ImageSetArgTest, GivenImageFrom1dBufferWhenSettingKernelArgThenProperti
     EXPECT_EQ(1u, surfaceState->getDepth());
 
     EXPECT_EQ(1u, surfaceState->getRenderTargetViewExtent());
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch() % 4);
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch() % 4);
 
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch());
     EXPECT_EQ(image->getSurfaceFormatInfo().surfaceFormat.genxSurfaceFormat, (SurfaceFormat)surfaceState->getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_BUFFER, surfaceState->getSurfaceType());
     EXPECT_FALSE((SurfaceFormat)surfaceState->getSurfaceArray());
@@ -894,18 +889,15 @@ HWTEST_F(ImageSetArgTest, WhenSettingArgThenImageIsReturned) {
 }
 
 HWTEST_F(ImageSetArgTest, givenCompressedResourceWhenSettingImgArgThenSetCorrectAuxParams) {
-    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
-
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
 
-    srcAllocation->getDefaultGmm()->isCompressionEnabled = true;
+    srcAllocation->getDefaultGmm()->setCompressionEnabled(true);
 
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
 
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(&surfaceState, srcAllocation->getDefaultGmm()));
     EXPECT_EQ(1u, surfaceState.getAuxiliarySurfacePitch());
-    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQPitch());
 }
 
 HWTEST_F(ImageSetArgTest, givenNonCompressedResourceWhenSettingImgArgThenDontSetAuxParams) {
@@ -915,17 +907,17 @@ HWTEST_F(ImageSetArgTest, givenNonCompressedResourceWhenSettingImgArgThenDontSet
 
     auto gmm = srcAllocation->getDefaultGmm();
     auto mockGmmResInfo = static_cast<MockGmmResourceInfo *>(gmm->gmmResourceInfo.get());
-    gmm->isCompressionEnabled = false;
+    gmm->setCompressionEnabled(false);
     mockGmmResInfo->getUnifiedAuxSurfaceOffsetCalled = 0u;
 
-    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQPitch());
     EXPECT_EQ(1u, surfaceState.getAuxiliarySurfacePitch());
 
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
 
     EXPECT_TRUE(surfaceState.getAuxiliarySurfaceMode() == AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
     EXPECT_EQ(1u, surfaceState.getAuxiliarySurfacePitch());
-    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQpitch());
+    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceQPitch());
     EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceBaseAddress());
     EXPECT_EQ(0u, mockGmmResInfo->getUnifiedAuxSurfaceOffsetCalled);
 }
@@ -994,7 +986,7 @@ HWTEST_F(ImageMediaBlockSetArgTest, WhenSettingKernelArgImageThenPropertiesAreCo
     EXPECT_EQ(srcImage->getImageDesc().image_depth, surfaceState->getDepth());
     EXPECT_EQ(srcImage->getImageDesc().image_depth, surfaceState->getRenderTargetViewExtent());
     EXPECT_EQ(rPitch, surfaceState->getSurfacePitch());
-    EXPECT_EQ(0u, surfaceState->getSurfaceQpitch() % 4);
+    EXPECT_EQ(0u, surfaceState->getSurfaceQPitch() % 4);
     EXPECT_EQ(srcImage->getSurfaceFormatInfo().surfaceFormat.genxSurfaceFormat, (SurfaceFormat)surfaceState->getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_3D, surfaceState->getSurfaceType());
     EXPECT_EQ(expectedChannelRed, surfaceState->getShaderChannelSelectRed());
@@ -1147,7 +1139,7 @@ HWTEST_F(ImageShaderChannelValueTest, GivenChannelDepthWhenGettingShaderChannelV
     cl_image_format imgFormat = {CL_DEPTH, CL_UNORM_INT16};
     std::unique_ptr<Image> image(ImageHelper<ImageReadOnly<Image2dDefaults>>::create(context, &imgDesc, &imgFormat));
 
-    image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    image->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
 
     EXPECT_EQ(RENDER_SURFACE_STATE::SHADER_CHANNEL_SELECT_RED, surfaceState.getShaderChannelSelectRed());
     EXPECT_EQ(RENDER_SURFACE_STATE::SHADER_CHANNEL_SELECT_ZERO, surfaceState.getShaderChannelSelectGreen());
@@ -1162,7 +1154,7 @@ HWTEST_F(ImageSetArgTest, givenImageWithOffsetGreaterThan4GBWhenSurfaceStateIsPr
     uint64_t surfaceOffset = 8 * MemoryConstants::gigaByte;
 
     srcImage->setSurfaceOffsets(surfaceOffset, 0, 0, 0);
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
 
     auto expectedAddress = srcAllocation->getGpuAddress() + surfaceOffset;
     auto surfaceAddress = surfaceState.getSurfaceBaseAddress();
@@ -1178,8 +1170,8 @@ HWTEST_F(ImageSetArgTest, givenMediaCompressedResourceThenSurfaceModeIsNone) {
     auto gmm = srcAllocation->getDefaultGmm();
 
     gmm->gmmResourceInfo->getResourceFlags()->Info.MediaCompressed = true;
-    gmm->isCompressionEnabled = true;
-    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex(), false);
+    gmm->setCompressionEnabled(true);
+    srcImage->setImageArg(&surfaceState, false, 0, pClDevice->getRootDeviceIndex());
 
     EXPECT_EQ(surfaceState.getAuxiliarySurfaceMode(), AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/command_stream/preemption.h"
 #include "shared/source/command_stream/scratch_space_controller.h"
 #include "shared/source/command_stream/scratch_space_controller_xehp_and_later.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/timestamp_packet.h"
 #include "shared/source/os_interface/os_interface.h"
@@ -113,7 +114,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, WhenScratc
 
     bool stateBaseAddressDirty = false;
     bool cfeStateDirty = false;
-    commandStreamReceiver->getScratchSpaceController()->setRequiredScratchSpace(ssh, 0u, perThreadScratchSize, 0u, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
+    commandStreamReceiver->getScratchSpaceController()->setRequiredScratchSpace(ssh, 0u, perThreadScratchSize, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     ASSERT_NE(nullptr, commandStreamReceiver->getScratchAllocation());
     EXPECT_TRUE(cfeStateDirty);
 
@@ -140,7 +141,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, WhenOsCont
 
     bool stateBaseAddressDirty = false;
     bool cfeStateDirty = false;
-    commandStreamReceiver->getScratchSpaceController()->setRequiredScratchSpace(ssh, 0u, perThreadScratchSize, 0u, 0u, *osContext, stateBaseAddressDirty, cfeStateDirty);
+    commandStreamReceiver->getScratchSpaceController()->setRequiredScratchSpace(ssh, 0u, perThreadScratchSize, 0u, *osContext, stateBaseAddressDirty, cfeStateDirty);
     auto allocation = commandStreamReceiver->getScratchAllocation();
     EXPECT_EQ(tileMask, static_cast<uint32_t>(allocation->storageInfo.memoryBanks.to_ulong()));
     alignedFree(ssh);
@@ -161,6 +162,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, whenProgra
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScratchSpaceSurfaceStateEnabledWhenSratchAllocationRequestedThenProgramCfeStateWithScratchAllocation) {
+
+    auto &compilerProductHelper = pDevice->getCompilerProductHelper();
+    if (compilerProductHelper.isHeaplessModeEnabled()) {
+        GTEST_SKIP();
+    }
+
     using CFE_STATE = typename FamilyType::CFE_STATE;
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
 
@@ -177,7 +184,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0] = 0x1000;
     auto &gfxCoreHelper = pDevice->getRootDeviceEnvironment().getHelper<GfxCoreHelper>();
     uint32_t computeUnits = gfxCoreHelper.getComputeUnitsUsedForScratch(pDevice->getRootDeviceEnvironment());
-    size_t scratchSpaceSize = kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0] * computeUnits;
+    auto perThreadScratchSize = kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0];
+
+    size_t scratchSpaceSize = perThreadScratchSize * computeUnits;
+
+    auto &productHelper = pDevice->getProductHelper();
+    productHelper.adjustScratchSize(scratchSpaceSize);
 
     commandQueue.enqueueKernel(kernel, 1, nullptr, &gws, nullptr, 0, nullptr, nullptr);
     commandQueue.flush();
@@ -185,15 +197,15 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     parseCommands<FamilyType>(commandStreamCSR, 0);
     findHardwareCommands<FamilyType>();
 
-    EXPECT_EQ(kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0], commandStreamReceiver->requiredScratchSize);
-    EXPECT_EQ(scratchSpaceSize, scratchController->scratchSizeBytes);
-    EXPECT_EQ(scratchSpaceSize, scratchController->getScratchSpaceAllocation()->getUnderlyingBufferSize());
+    EXPECT_EQ(kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0], commandStreamReceiver->requiredScratchSlot0Size);
+    EXPECT_EQ(scratchSpaceSize, scratchController->scratchSlot0SizeInBytes);
+    EXPECT_EQ(scratchSpaceSize, scratchController->getScratchSpaceSlot0Allocation()->getUnderlyingBufferSize());
     ASSERT_NE(nullptr, cmdMediaVfeState);
     auto cfeState = static_cast<CFE_STATE *>(cmdMediaVfeState);
     uint32_t bufferOffset = static_cast<uint32_t>(scratchController->slotId * scratchController->singleSurfaceStateSize * 2);
     EXPECT_EQ(bufferOffset, cfeState->getScratchSpaceBuffer());
     RENDER_SURFACE_STATE *scratchState = reinterpret_cast<RENDER_SURFACE_STATE *>(scratchController->surfaceStateHeap + bufferOffset);
-    EXPECT_EQ(scratchController->scratchAllocation->getGpuAddress(), scratchState->getSurfaceBaseAddress());
+    EXPECT_EQ(scratchController->scratchSlot0Allocation->getGpuAddress(), scratchState->getSurfaceBaseAddress());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_SCRATCH, scratchState->getSurfaceType());
 
     SurfaceStateBufferLength length = {0};
@@ -201,7 +213,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     EXPECT_EQ(length.surfaceState.depth + 1u, scratchState->getDepth());
     EXPECT_EQ(length.surfaceState.width + 1u, scratchState->getWidth());
     EXPECT_EQ(length.surfaceState.height + 1u, scratchState->getHeight());
-    EXPECT_EQ(kernel.kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0], scratchState->getSurfacePitch());
+
+    EXPECT_EQ(perThreadScratchSize, EncodeSurfaceState<FamilyType>::getPitchForScratchInBytes(scratchState, productHelper));
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScratchSpaceSurfaceStateEnabledWhenNewSshProvidedAndNoScratchAllocationExistThenNoDirtyBitSet) {
@@ -211,7 +224,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     bool stateBaseAddressDirty = false;
     bool cfeStateDirty = false;
     scratchController->surfaceStateHeap = reinterpret_cast<char *>(0x1000);
-    scratchController->setRequiredScratchSpace(reinterpret_cast<void *>(0x2000), 0u, 0u, 0u, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
+    scratchController->setRequiredScratchSpace(reinterpret_cast<void *>(0x2000), 0u, 0u, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_EQ(scratchController->surfaceStateHeap, reinterpret_cast<char *>(0x2000));
     EXPECT_FALSE(cfeStateDirty);
 }
@@ -225,25 +238,25 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     bool cfeStateDirty = false;
 
     void *oldSurfaceHeap = alignedMalloc(0x1000, 0x1000);
-    scratchController->setRequiredScratchSpace(oldSurfaceHeap, 0u, 0x1000u, 0u, commandStreamReceiver->taskCount, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
+    scratchController->setRequiredScratchSpace(oldSurfaceHeap, 0u, 0x1000u, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     EXPECT_EQ(1u, scratchController->slotId);
     EXPECT_EQ(scratchController->surfaceStateHeap, oldSurfaceHeap);
     char *surfaceStateBuf = static_cast<char *>(oldSurfaceHeap) + scratchController->slotId * sizeof(RENDER_SURFACE_STATE) * 2;
-    GraphicsAllocation *scratchAllocation = scratchController->scratchAllocation;
+    GraphicsAllocation *scratchAllocation = scratchController->scratchSlot0Allocation;
     RENDER_SURFACE_STATE *surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(surfaceStateBuf);
-    EXPECT_EQ(scratchController->scratchAllocation->getGpuAddress(), surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(scratchController->scratchSlot0Allocation->getGpuAddress(), surfaceState->getSurfaceBaseAddress());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_SCRATCH, surfaceState->getSurfaceType());
 
     void *newSurfaceHeap = alignedMalloc(0x1000, 0x1000);
-    scratchController->setRequiredScratchSpace(newSurfaceHeap, 0u, 0x1000u, 0u, commandStreamReceiver->taskCount, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
+    scratchController->setRequiredScratchSpace(newSurfaceHeap, 0u, 0x1000u, 0u, *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     EXPECT_EQ(1u, scratchController->slotId);
     EXPECT_EQ(scratchController->surfaceStateHeap, newSurfaceHeap);
-    EXPECT_EQ(scratchAllocation, scratchController->scratchAllocation);
+    EXPECT_EQ(scratchAllocation, scratchController->scratchSlot0Allocation);
     surfaceStateBuf = static_cast<char *>(newSurfaceHeap) + scratchController->slotId * sizeof(RENDER_SURFACE_STATE) * 2;
     surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(surfaceStateBuf);
-    EXPECT_EQ(scratchController->scratchAllocation->getGpuAddress(), surfaceState->getSurfaceBaseAddress());
+    EXPECT_EQ(scratchController->scratchSlot0Allocation->getGpuAddress(), surfaceState->getSurfaceBaseAddress());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_SCRATCH, surfaceState->getSurfaceType());
 
     alignedFree(oldSurfaceHeap);
@@ -262,26 +275,26 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     bool stateBaseAddressDirty = false;
 
     void *surfaceHeap = alignedMalloc(0x1000, 0x1000);
-    scratchController->setRequiredScratchSpace(surfaceHeap, 0u, 0x1000u, 0u, commandStreamReceiver->taskCount,
+    scratchController->setRequiredScratchSpace(surfaceHeap, 0u, 0x1000u, 0u,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     EXPECT_EQ(7u, scratchController->slotId);
     uint64_t offset = static_cast<uint64_t>(scratchController->slotId * sizeof(RENDER_SURFACE_STATE) * 2);
     EXPECT_EQ(offset, scratchController->getScratchPatchAddress());
     EXPECT_EQ(0u, scratchController->calculateNewGSH());
-    uint64_t gpuVa = scratchController->scratchAllocation->getGpuAddress();
+    uint64_t gpuVa = scratchController->scratchSlot0Allocation->getGpuAddress();
     char *surfaceStateBuf = static_cast<char *>(scratchController->surfaceStateHeap) + offset;
     RENDER_SURFACE_STATE *surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(surfaceStateBuf);
     EXPECT_EQ(gpuVa, surfaceState->getSurfaceBaseAddress());
 
-    scratchController->setRequiredScratchSpace(surfaceHeap, 0u, 0x2000u, 0u, commandStreamReceiver->taskCount,
+    scratchController->setRequiredScratchSpace(surfaceHeap, 0u, 0x2000u, 0u,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     EXPECT_EQ(8u, scratchController->slotId);
     offset = static_cast<uint64_t>(scratchController->slotId * sizeof(RENDER_SURFACE_STATE) * 2);
     EXPECT_EQ(offset, scratchController->getScratchPatchAddress());
-    EXPECT_NE(gpuVa, scratchController->scratchAllocation->getGpuAddress());
-    gpuVa = scratchController->scratchAllocation->getGpuAddress();
+    EXPECT_NE(gpuVa, scratchController->scratchSlot0Allocation->getGpuAddress());
+    gpuVa = scratchController->scratchSlot0Allocation->getGpuAddress();
     surfaceStateBuf = static_cast<char *>(scratchController->surfaceStateHeap) + offset;
     surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(surfaceStateBuf);
     EXPECT_EQ(gpuVa, surfaceState->getSurfaceBaseAddress());
@@ -300,7 +313,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     bool stateBaseAddressDirty = false;
 
     void *surfaceHeap = alignedMalloc(0x1000, 0x1000);
-    scratchController->setRequiredScratchSpace(surfaceHeap, 1u, 0x1000u, 0u, commandStreamReceiver->taskCount,
+    scratchController->setRequiredScratchSpace(surfaceHeap, 1u, 0x1000u, 0u,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     EXPECT_EQ(1u, scratchController->slotId);
@@ -308,7 +321,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     uint64_t offset = static_cast<uint64_t>(scratchController->slotId * sizeof(RENDER_SURFACE_STATE) * 2);
     EXPECT_EQ(offset, scratchController->getScratchPatchAddress());
     EXPECT_EQ(0u, scratchController->calculateNewGSH());
-    uint64_t gpuVa = scratchController->scratchAllocation->getGpuAddress();
+    uint64_t gpuVa = scratchController->scratchSlot0Allocation->getGpuAddress();
     char *surfaceStateBuf = static_cast<char *>(scratchController->surfaceStateHeap) + offset;
     RENDER_SURFACE_STATE *surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(surfaceStateBuf);
     EXPECT_EQ(gpuVa, surfaceState->getSurfaceBaseAddress());
@@ -324,13 +337,13 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
                                                ExecutionEnvironment &environment,
                                                InternalAllocationStorage &allocationStorage) : ScratchSpaceControllerXeHPAndLater(rootDeviceIndex, environment, allocationStorage) {}
 
-        using ScratchSpaceControllerXeHPAndLater::scratchAllocation;
+        using ScratchSpaceControllerXeHPAndLater::scratchSlot0Allocation;
 
         void setRequiredScratchSpace(void *sshBaseAddress,
                                      uint32_t scratchSlot,
-                                     uint32_t requiredPerThreadScratchSize,
-                                     uint32_t requiredPerThreadPrivateScratchSize,
-                                     TaskCountType currentTaskCount,
+                                     uint32_t requiredPerThreadScratchSizeSlot0,
+                                     uint32_t requiredPerThreadScratchSizeSlot1,
+
                                      OsContext &osContext,
                                      bool &stateBaseAddressDirty,
                                      bool &vfeStateDirty) override {
@@ -352,16 +365,16 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     bool stateBaseAddressDirty = false;
 
     void *surfaceHeap = alignedMalloc(0x1000, 0x1000);
-    NEO::GraphicsAllocation heap1(1u, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
-    NEO::GraphicsAllocation heap2(1u, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
-    NEO::GraphicsAllocation heap3(1u, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
+    NEO::GraphicsAllocation heap1(1u, 1u /*num gmms*/, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
+    NEO::GraphicsAllocation heap2(1u, 1u /*num gmms*/, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
+    NEO::GraphicsAllocation heap3(1u, 1u /*num gmms*/, NEO::AllocationType::buffer, surfaceHeap, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
     HeapContainer container;
 
     container.push_back(&heap1);
     container.push_back(&heap2);
     container.push_back(&heap3);
 
-    scratchController->programHeaps(container, 0u, 1u, 0u, 0u, commandStreamReceiver->getOsContext(), stateBaseAddressDirty, cfeStateDirty);
+    scratchController->programHeaps(container, 0u, 1u, 0u, commandStreamReceiver->getOsContext(), stateBaseAddressDirty, cfeStateDirty);
 
     auto scratch = static_cast<MockScratchSpaceControllerXeHPAndLater *>(scratchController.get());
     EXPECT_EQ(scratch->requiredScratchSpaceCalledTimes, 1u);
@@ -378,7 +391,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
                                                ExecutionEnvironment &environment,
                                                InternalAllocationStorage &allocationStorage) : ScratchSpaceControllerXeHPAndLater(rootDeviceIndex, environment, allocationStorage) {}
 
-        using ScratchSpaceControllerXeHPAndLater::scratchAllocation;
+        using ScratchSpaceControllerXeHPAndLater::scratchSlot0Allocation;
         using ScratchSpaceControllerXeHPAndLater::slotId;
 
       protected:
@@ -393,7 +406,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
                                                                                                                          *pDevice->executionEnvironment,
                                                                                                                          *commandStreamReceiver->getInternalAllocationStorage());
 
-    NEO::GraphicsAllocation graphicsAllocation(1u, NEO::AllocationType::buffer, nullptr, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
+    NEO::GraphicsAllocation graphicsAllocation(1u, 1u /*num gmms*/, NEO::AllocationType::buffer, nullptr, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
 
     bool cfeStateDirty = false;
 
@@ -401,9 +414,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
 
     auto scratch = static_cast<MockScratchSpaceControllerXeHPAndLater *>(scratchController.get());
     scratch->slotId = 10;
-    scratch->scratchAllocation = &graphicsAllocation;
+    scratch->scratchSlot0Allocation = &graphicsAllocation;
     scratch->setNewSshPtr(surfaceHeap, cfeStateDirty, false);
-    scratch->scratchAllocation = nullptr;
+    scratch->scratchSlot0Allocation = nullptr;
     EXPECT_EQ(10u, scratch->slotId);
     EXPECT_EQ(scratch->programSurfaceStateCalledTimes, 1u);
     EXPECT_TRUE(cfeStateDirty);
@@ -419,7 +432,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
                                                InternalAllocationStorage &allocationStorage) : ScratchSpaceControllerXeHPAndLater(rootDeviceIndex, environment, allocationStorage) {}
 
         using ScratchSpaceControllerXeHPAndLater::programSurfaceState;
-        using ScratchSpaceControllerXeHPAndLater::scratchAllocation;
+        using ScratchSpaceControllerXeHPAndLater::scratchSlot0Allocation;
         using ScratchSpaceControllerXeHPAndLater::slotId;
         using ScratchSpaceControllerXeHPAndLater::surfaceStateHeap;
         using ScratchSpaceControllerXeHPAndLater::updateSlots;
@@ -431,7 +444,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
                                                                                                                          *pDevice->executionEnvironment,
                                                                                                                          *commandStreamReceiver->getInternalAllocationStorage());
 
-    NEO::GraphicsAllocation graphicsAllocation(1u, NEO::AllocationType::buffer, nullptr, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
+    NEO::GraphicsAllocation graphicsAllocation(1u, 1u /*num gmms*/, NEO::AllocationType::buffer, nullptr, 0u, 0u, 0u, MemoryPool::system4KBPages, 0u);
 
     void *surfaceHeap = alignedMalloc(0x1000, 0x1000);
 
@@ -439,9 +452,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
     scratch->surfaceStateHeap = static_cast<char *>(surfaceHeap);
     scratch->slotId = 10;
     scratch->updateSlots = false;
-    scratch->scratchAllocation = &graphicsAllocation;
+    scratch->scratchSlot0Allocation = &graphicsAllocation;
     scratch->programSurfaceState();
-    scratch->scratchAllocation = nullptr;
+    scratch->scratchSlot0Allocation = nullptr;
     EXPECT_EQ(10u, scratch->slotId);
 
     alignedFree(surfaceHeap);
@@ -461,18 +474,18 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
 
     uint32_t sizeForPrivateScratch = MemoryConstants::pageSize;
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
-    uint64_t gpuVa = scratchController->privateScratchAllocation->getGpuAddress();
+    uint64_t gpuVa = scratchController->scratchSlot1Allocation->getGpuAddress();
     EXPECT_EQ(gpuVa, surfaceState[3].getSurfaceBaseAddress());
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch * 2, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch * 2,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
 
-    EXPECT_NE(gpuVa, scratchController->privateScratchAllocation->getGpuAddress());
-    EXPECT_EQ(scratchController->privateScratchAllocation->getGpuAddress(), surfaceState[5].getSurfaceBaseAddress());
+    EXPECT_NE(gpuVa, scratchController->scratchSlot1Allocation->getGpuAddress());
+    EXPECT_EQ(scratchController->scratchSlot1Allocation->getGpuAddress(), surfaceState[5].getSurfaceBaseAddress());
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScratchSpaceControllerWithOnlyPrivateScratchSpaceWhenGettingPatchAddressThenGetCorrectValue) {
@@ -489,17 +502,17 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
 
     uint32_t sizeForPrivateScratch = MemoryConstants::pageSize;
 
-    EXPECT_EQ(nullptr, scratchController->getScratchSpaceAllocation());
-    EXPECT_EQ(nullptr, scratchController->getPrivateScratchSpaceAllocation());
+    EXPECT_EQ(nullptr, scratchController->getScratchSpaceSlot0Allocation());
+    EXPECT_EQ(nullptr, scratchController->getScratchSpaceSlot1Allocation());
 
     EXPECT_EQ(0u, scratchController->getScratchPatchAddress());
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
     auto expectedPatchAddress = 2 * sizeof(RENDER_SURFACE_STATE);
-    EXPECT_EQ(nullptr, scratchController->getScratchSpaceAllocation());
-    EXPECT_NE(nullptr, scratchController->getPrivateScratchSpaceAllocation());
+    EXPECT_EQ(nullptr, scratchController->getScratchSpaceSlot0Allocation());
+    EXPECT_NE(nullptr, scratchController->getScratchSpaceSlot1Allocation());
 
     EXPECT_EQ(expectedPatchAddress, scratchController->getScratchPatchAddress());
 }
@@ -518,17 +531,17 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
 
     uint32_t sizeForPrivateScratch = MemoryConstants::pageSize;
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
-    uint64_t gpuVa = scratchController->privateScratchAllocation->getGpuAddress();
+    uint64_t gpuVa = scratchController->scratchSlot1Allocation->getGpuAddress();
     cfeStateDirty = false;
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, 0u, sizeForPrivateScratch,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_FALSE(cfeStateDirty);
 
-    EXPECT_EQ(gpuVa, scratchController->privateScratchAllocation->getGpuAddress());
+    EXPECT_EQ(gpuVa, scratchController->scratchSlot1Allocation->getGpuAddress());
     EXPECT_EQ(gpuVa, surfaceState[3].getSurfaceBaseAddress());
 }
 
@@ -546,10 +559,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenScrat
 
     uint32_t sizeForScratch = MemoryConstants::pageSize;
 
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, sizeForScratch, 0u, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, sizeForScratch, 0u,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
     EXPECT_TRUE(cfeStateDirty);
-    EXPECT_EQ(nullptr, scratchController->privateScratchAllocation);
+    EXPECT_EQ(nullptr, scratchController->scratchSlot1Allocation);
 
     EXPECT_EQ(0u, surfaceState[3].getSurfaceBaseAddress());
 }
@@ -582,10 +595,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenDisab
 
     bool cfeStateDirty = false;
     bool stateBaseAddressDirty = false;
-    scratchController->setRequiredScratchSpace(surfaceState, 0u, MemoryConstants::pageSize, MemoryConstants::pageSize, 0u,
+    scratchController->setRequiredScratchSpace(surfaceState, 0u, MemoryConstants::pageSize, MemoryConstants::pageSize,
                                                *pDevice->getDefaultEngine().osContext, stateBaseAddressDirty, cfeStateDirty);
-    EXPECT_EQ(0u, scratchController->privateScratchSizeBytes);
-    EXPECT_EQ(nullptr, scratchController->getPrivateScratchSpaceAllocation());
+    EXPECT_EQ(0u, scratchController->scratchSlot1SizeInBytes);
+    EXPECT_EQ(nullptr, scratchController->getScratchSpaceSlot1Allocation());
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, CommandStreamReceiverHwTestXeHPAndLater, givenDisabledPrivateScratchSpaceWhenGettingOffsetForSlotThenEachSlotContainsOnlyOneSurfaceState) {

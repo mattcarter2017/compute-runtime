@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,6 +25,16 @@ class CommandListFixture : public DeviceFixture {
     std::unique_ptr<WhiteBox<L0::CommandListImp>> commandList;
     std::unique_ptr<EventPool> eventPool;
     std::unique_ptr<WhiteBox<L0::Event>> event;
+};
+
+class DirectSubmissionCommandListFixture : public CommandListFixture {
+  public:
+    DirectSubmissionCommandListFixture();
+    ~DirectSubmissionCommandListFixture() override;
+    void setUp();
+    void tearDown();
+
+    DebugManagerStateRestore restorer;
 };
 
 struct MultiTileCommandListFixtureInit : public SingleRootMultiSubDeviceFixture {
@@ -60,7 +70,8 @@ void validateTimestampRegisters(GenCmdList &cmdList,
                                 uint64_t firstStoreRegMemAddress,
                                 uint32_t secondLoadRegisterRegSrcAddress,
                                 uint64_t secondStoreRegMemAddress,
-                                bool workloadPartition);
+                                bool workloadPartition,
+                                bool useMask);
 
 struct ModuleMutableCommandListFixture : public ModuleImmutableDataFixture {
     void setUp() {
@@ -139,6 +150,10 @@ struct CommandListStateBaseAddressFixture : public ModuleMutableCommandListFixtu
 
 struct CommandListPrivateHeapsFixture : public CommandListStateBaseAddressFixture {
     void setUp();
+    void checkAndPrepareBindlessKernel();
+
+    bool isBindlessKernel = false;
+    NEO::BindlessHeapsHelper *bindlessHeapsHelper = nullptr;
 };
 
 struct CommandListGlobalHeapsFixtureInit : public CommandListStateBaseAddressFixture {
@@ -216,7 +231,7 @@ class AppendFillFixture : public DeviceFixture {
         ze_result_t appendLaunchKernelWithParams(Kernel *kernel,
                                                  const ze_group_count_t &pThreadGroupDimensions,
                                                  L0::Event *event,
-                                                 const CmdListKernelLaunchParams &launchParams) override {
+                                                 CmdListKernelLaunchParams &launchParams) override {
             if (numberOfCallsToAppendLaunchKernelWithParams == thresholdOfCallsToAppendLaunchKernelWithParamsToFail) {
                 return ZE_RESULT_ERROR_UNKNOWN;
             }
@@ -360,6 +375,54 @@ struct CommandQueueThreadArbitrationPolicyFixture {
     std::unique_ptr<L0::ult::WhiteBox<L0::DriverHandle>> driverHandle;
     NEO::MockDevice *neoDevice = nullptr;
     L0::Device *device = nullptr;
+};
+
+struct CommandListScratchPatchFixtureInit : public ModuleMutableCommandListFixture {
+    void setUpParams(int32_t globalStatelessMode, int32_t heaplessStateInitEnabled, bool scratchAddressPatchingEnabled);
+    void tearDown();
+
+    uint64_t getSurfStateGpuBase(bool useImmediate);
+    uint64_t getExpectedScratchPatchAddress(uint64_t controllerScratchAddress);
+
+    template <typename FamilyType>
+    void testScratchInline(bool useImmediate);
+
+    template <typename FamilyType>
+    void testScratchGrowingPatching();
+
+    template <typename FamilyType>
+    void testScratchSameNotPatching();
+
+    template <typename FamilyType>
+    void testScratchImmediatePatching();
+
+    template <typename FamilyType>
+    void testScratchChangedControllerPatching();
+
+    template <typename FamilyType>
+    void testScratchCommandViewNoPatching();
+
+    template <typename FamilyType>
+    void testExternalScratchPatching();
+
+    int32_t fixtureGlobalStatelessMode = 0;
+    uint32_t scratchInlineOffset = 8;
+    uint32_t scratchInlinePointerSize = sizeof(uint64_t);
+};
+
+template <int32_t globalStatelessMode, int32_t heaplessStateInitEnabled, bool scratchAddressPatchingEnabled>
+struct CommandListScratchPatchFixture : public CommandListScratchPatchFixtureInit {
+    void setUp() {
+        CommandListScratchPatchFixtureInit::setUpParams(globalStatelessMode, heaplessStateInitEnabled, scratchAddressPatchingEnabled);
+    }
+};
+
+struct CommandListCreateFixture : public DeviceFixture {
+    CmdListMemoryCopyParams copyParams = {};
+};
+
+struct AppendMemoryCopyFixture : public DeviceFixture {
+    CmdListMemoryCopyParams copyParams = {};
 };
 
 } // namespace ult

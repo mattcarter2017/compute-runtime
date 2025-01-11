@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,11 +37,13 @@ class MockCommandQueue : public CommandQueue {
     using CommandQueue::gpgpuEngine;
     using CommandQueue::h2dEngines;
     using CommandQueue::heaplessModeEnabled;
+    using CommandQueue::heaplessStateInitEnabled;
     using CommandQueue::isCopyOnly;
     using CommandQueue::isTextureCacheFlushNeeded;
     using CommandQueue::migrateMultiGraphicsAllocationsIfRequired;
     using CommandQueue::obtainNewTimestampPacketNodes;
     using CommandQueue::overrideEngine;
+    using CommandQueue::priority;
     using CommandQueue::queueCapabilities;
     using CommandQueue::queueFamilyIndex;
     using CommandQueue::queueFamilySelected;
@@ -66,7 +68,7 @@ class MockCommandQueue : public CommandQueue {
 
     size_t countBcsEngines() const {
         return std::count_if(bcsEngines.begin(), bcsEngines.end(), [](const EngineControl *engine) {
-            return engine != nullptr;
+            return engine != nullptr && engine->getEngineUsage() == EngineUsage::regular;
         });
     }
 
@@ -157,7 +159,7 @@ class MockCommandQueue : public CommandQueue {
                           cl_event *event) override { return CL_SUCCESS; }
 
     cl_int enqueueSVMMemcpy(cl_bool blockingCopy, void *dstPtr, const void *srcPtr, size_t size,
-                            cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) override { return CL_SUCCESS; }
+                            cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver *csrParam) override { return CL_SUCCESS; }
 
     cl_int enqueueSVMMemFill(void *svmPtr, const void *pattern, size_t patternSize, size_t size, cl_uint numEventsInWaitList,
                              const cl_event *eventWaitList, cl_event *event) override { return CL_SUCCESS; }
@@ -186,10 +188,20 @@ class MockCommandQueue : public CommandQueue {
                             GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
                             const cl_event *eventWaitList, cl_event *event) override { return CL_SUCCESS; }
 
+    cl_int enqueueReadImageImpl(Image *srcImage, cl_bool blockingRead, const size_t *origin, const size_t *region,
+                                size_t rowPitch, size_t slicePitch, void *ptr,
+                                GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
+                                const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver &csr) override { return CL_SUCCESS; }
+
     cl_int enqueueWriteImage(Image *dstImage, cl_bool blockingWrite, const size_t *origin, const size_t *region,
                              size_t inputRowPitch, size_t inputSlicePitch, const void *ptr, GraphicsAllocation *mapAllocation,
                              cl_uint numEventsInWaitList, const cl_event *eventWaitList,
                              cl_event *event) override { return CL_SUCCESS; }
+
+    cl_int enqueueWriteImageImpl(Image *dstImage, cl_bool blockingWrite, const size_t *origin, const size_t *region,
+                                 size_t inputRowPitch, size_t inputSlicePitch, const void *ptr, GraphicsAllocation *mapAllocation,
+                                 cl_uint numEventsInWaitList, const cl_event *eventWaitList,
+                                 cl_event *event, CommandStreamReceiver &csr) override { return CL_SUCCESS; }
 
     cl_int enqueueCopyBufferRect(Buffer *srcBuffer, Buffer *dstBuffer, const size_t *srcOrigin, const size_t *dstOrigin,
                                  const size_t *region, size_t srcRowPitch, size_t srcSlicePitch, size_t dstRowPitch,
@@ -219,7 +231,10 @@ class MockCommandQueue : public CommandQueue {
     cl_int enqueueResourceBarrier(BarrierCommand *resourceBarrier, cl_uint numEventsInWaitList, const cl_event *eventWaitList,
                                   cl_event *event) override { return CL_SUCCESS; }
 
-    cl_int finish() override { return CL_SUCCESS; }
+    cl_int finish() override {
+        ++finishCalledCount;
+        return CL_SUCCESS;
+    }
 
     cl_int flush() override { return CL_SUCCESS; }
 
@@ -242,6 +257,7 @@ class MockCommandQueue : public CommandQueue {
     bool releaseIndirectHeapCalled = false;
     bool waitForTimestampsCalled = false;
     cl_int writeBufferRetValue = CL_SUCCESS;
+    uint32_t finishCalledCount = 0;
     uint32_t isCompletedCalled = 0;
     uint32_t writeBufferCounter = 0;
     bool writeBufferBlocking = false;
@@ -272,13 +288,17 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     using BaseClass::deferredTimestampPackets;
     using BaseClass::getDevice;
     using BaseClass::gpgpuEngine;
+    using BaseClass::heaplessModeEnabled;
+    using BaseClass::heaplessStateInitEnabled;
     using BaseClass::isBlitAuxTranslationRequired;
     using BaseClass::isCompleted;
+    using BaseClass::isGpgpuSubmissionForBcsRequired;
     using BaseClass::latestSentEnqueueType;
     using BaseClass::minimalSizeForBcsSplit;
     using BaseClass::obtainCommandStream;
     using BaseClass::obtainNewTimestampPacketNodes;
     using BaseClass::overrideEngine;
+    using BaseClass::prepareCsrDependency;
     using BaseClass::processDispatchForKernels;
     using BaseClass::relaxedOrderingForGpgpuAllowed;
     using BaseClass::requiresCacheFlushAfterWalker;
@@ -335,29 +355,62 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
         return reinterpret_cast<UltCommandStreamReceiver<GfxFamily> &>(BaseClass::getGpgpuCommandStreamReceiver());
     }
 
-    cl_int enqueueWriteImage(Image *dstImage,
-                             cl_bool blockingWrite,
-                             const size_t *origin,
-                             const size_t *region,
-                             size_t inputRowPitch,
-                             size_t inputSlicePitch,
-                             const void *ptr,
-                             GraphicsAllocation *mapAllocation,
-                             cl_uint numEventsInWaitList,
-                             const cl_event *eventWaitList,
-                             cl_event *event) override {
+    cl_int enqueueWriteImageImpl(Image *dstImage,
+                                 cl_bool blockingWrite,
+                                 const size_t *origin,
+                                 const size_t *region,
+                                 size_t inputRowPitch,
+                                 size_t inputSlicePitch,
+                                 const void *ptr,
+                                 GraphicsAllocation *mapAllocation,
+                                 cl_uint numEventsInWaitList,
+                                 const cl_event *eventWaitList,
+                                 cl_event *event,
+                                 CommandStreamReceiver &csr) override {
         enqueueWriteImageCounter++;
-        return BaseClass::enqueueWriteImage(dstImage,
-                                            blockingWrite,
-                                            origin,
-                                            region,
-                                            inputRowPitch,
-                                            inputSlicePitch,
-                                            ptr,
-                                            mapAllocation,
-                                            numEventsInWaitList,
-                                            eventWaitList,
-                                            event);
+        if (enqueueWriteImageCallBase) {
+            return BaseClass::enqueueWriteImageImpl(dstImage,
+                                                    blockingWrite,
+                                                    origin,
+                                                    region,
+                                                    inputRowPitch,
+                                                    inputSlicePitch,
+                                                    ptr,
+                                                    mapAllocation,
+                                                    numEventsInWaitList,
+                                                    eventWaitList,
+                                                    event,
+                                                    csr);
+        }
+        return CL_INVALID_OPERATION;
+    }
+    cl_int enqueueReadImageImpl(Image *srcImage,
+                                cl_bool blockingRead,
+                                const size_t *origin,
+                                const size_t *region,
+                                size_t rowPitch,
+                                size_t slicePitch,
+                                void *ptr,
+                                GraphicsAllocation *mapAllocation,
+                                cl_uint numEventsInWaitList,
+                                const cl_event *eventWaitList,
+                                cl_event *event, CommandStreamReceiver &csr) override {
+        enqueueReadImageCounter++;
+        if (enqueueReadImageCallBase) {
+            return BaseClass::enqueueReadImageImpl(srcImage,
+                                                   blockingRead,
+                                                   origin,
+                                                   region,
+                                                   rowPitch,
+                                                   slicePitch,
+                                                   ptr,
+                                                   mapAllocation,
+                                                   numEventsInWaitList,
+                                                   eventWaitList,
+                                                   event,
+                                                   csr);
+        }
+        return CL_INVALID_OPERATION;
     }
     void *cpuDataTransferHandler(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &retVal) override {
         cpuDataTransferHandlerCalled = true;
@@ -431,11 +484,11 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
         }
         return BaseClass::isQueueBlocked();
     }
-    bool isGpgpuSubmissionForBcsRequired(bool queueBlocked, TimestampPacketDependencies &timestampPacketDependencies) const override {
+    bool isGpgpuSubmissionForBcsRequired(bool queueBlocked, TimestampPacketDependencies &timestampPacketDependencies, bool containsCrossEngineDependency) const override {
         if (forceGpgpuSubmissionForBcsRequired != -1) {
             return forceGpgpuSubmissionForBcsRequired;
         }
-        return BaseClass::isGpgpuSubmissionForBcsRequired(queueBlocked, timestampPacketDependencies);
+        return BaseClass::isGpgpuSubmissionForBcsRequired(queueBlocked, timestampPacketDependencies, containsCrossEngineDependency);
     }
 
     bool waitForTimestamps(Range<CopyEngineState> copyEnginesToWait, WaitStatus &status, TimestampPacketContainer *mainContainer, TimestampPacketContainer *deferredContainer) override {
@@ -457,10 +510,24 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
         return BaseClass::enqueueMarkerWithWaitList(numEventsInWaitList, eventWaitList, event);
     }
 
+    cl_int enqueueSVMMemcpy(cl_bool blockingCopy, void *dstPtr, const void *srcPtr, size_t size,
+                            cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver *csrParam) override {
+        enqueueSVMMemcpyCalledCount++;
+        return BaseClass::enqueueSVMMemcpy(blockingCopy, dstPtr, srcPtr, size, numEventsInWaitList, eventWaitList, event, csrParam);
+    }
+
+    cl_int finish() override {
+        finishCalledCount++;
+        return BaseClass::finish();
+    }
+
     unsigned int lastCommandType;
     std::vector<Kernel *> lastEnqueuedKernels;
     MultiDispatchInfo storedMultiDispatchInfo;
     size_t enqueueWriteImageCounter = 0;
+    bool enqueueWriteImageCallBase = true;
+    size_t enqueueReadImageCounter = 0;
+    bool enqueueReadImageCallBase = true;
     size_t enqueueWriteBufferCounter = 0;
     size_t requestedCmdStreamSize = 0;
     bool blockingWriteBuffer = false;
@@ -487,7 +554,8 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     std::optional<WaitStatus> waitUntilCompleteReturnValue{};
     int waitForAllEnginesCalledCount{0};
     int enqueueMarkerWithWaitListCalledCount{0};
-
+    size_t enqueueSVMMemcpyCalledCount{0};
+    size_t finishCalledCount{0};
     LinearStream *peekCommandStream() {
         return this->commandStream;
     }

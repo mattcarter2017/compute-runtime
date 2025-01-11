@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -74,9 +74,11 @@ class GmmResourceInfo : NonCopyableOrMovableClass {
 
     MOCKABLE_VIRTUAL uint64_t getUnifiedAuxSurfaceOffset(GMM_UNIFIED_AUX_TYPE auxType) { return resourceInfo->GetUnifiedAuxSurfaceOffset(auxType); }
 
-    MOCKABLE_VIRTUAL uint32_t getMipTailStartLodSurfaceState() { return resourceInfo->GetMipTailStartLodSurfaceState(); }
+    MOCKABLE_VIRTUAL uint32_t getMipTailStartLODSurfaceState() { return resourceInfo->GetMipTailStartLodSurfaceState(); }
 
     MOCKABLE_VIRTUAL bool is64KBPageSuitable() const { return resourceInfo->Is64KBPageSuitable(); }
+
+    MOCKABLE_VIRTUAL bool isDisplayable() const;
 
     MOCKABLE_VIRTUAL GMM_RESOURCE_INFO *peekGmmResourceInfo() const { return resourceInfo.get(); }
 

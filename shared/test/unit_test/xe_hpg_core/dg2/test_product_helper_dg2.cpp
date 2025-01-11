@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -62,7 +62,6 @@ DG2TEST_F(Dg2ProductHelper, givenProductHelperWhenGetCommandsStreamPropertiesSup
     EXPECT_TRUE(productHelper->getScmPropertyLargeGrfModeSupport());
     EXPECT_FALSE(productHelper->getScmPropertyDevicePreemptionModeSupport());
 
-    EXPECT_FALSE(productHelper->getStateBaseAddressPropertyGlobalAtomicsSupport());
     EXPECT_TRUE(productHelper->getStateBaseAddressPropertyBindingTablePoolBaseAddressSupport());
 
     EXPECT_TRUE(productHelper->getFrontEndPropertyScratchSizeSupport());
@@ -109,4 +108,8 @@ DG2TEST_F(Dg2ProductHelper, whenConfiguringHardwareInfoThenWa15010089951IsSet) {
     hwInfo.workaroundTable = {};
     productHelper->configureHardwareCustom(&hwInfo, nullptr);
     EXPECT_TRUE(hwInfo.workaroundTable.flags.wa_15010089951);
+}
+
+DG2TEST_F(Dg2ProductHelper, givenProductHelperWhenCallIsNewCoherencyModelSupportedThenFalseIsReturned) {
+    EXPECT_FALSE(productHelper->isNewCoherencyModelSupported());
 }

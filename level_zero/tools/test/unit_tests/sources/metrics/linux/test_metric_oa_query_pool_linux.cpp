@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -61,6 +61,49 @@ TEST_F(MetricQueryPoolLinuxTest, givenCorrectArgumentsWhenGetContextDataIsCalled
 
     EXPECT_EQ(contextData.ClientData->Linux.Adapter->DrmFileDescriptor, osInterface.getDriverModel()->as<Drm>()->getFileDescriptor());
     EXPECT_EQ(contextData.ClientData->Linux.Adapter->Type, LinuxAdapterType::DrmFileDescriptor);
+}
+
+TEST_F(MetricQueryPoolLinuxTest, givenValidDeviceHandleWhenFlushCommandBufferCallbackIsCalledThenReturnsSuccess) {
+
+    ClientData_1_0 clientData = {};
+    ContextCreateData_1_0 contextData = {};
+    ClientDataLinuxAdapter_1_0 adapter = {};
+
+    adapter.Type = LinuxAdapterType::Last;
+    adapter.DrmFileDescriptor = -1;
+
+    clientData.Linux.Adapter = &adapter;
+    contextData.ClientData = &clientData;
+    contextData.ClientData->Linux.Adapter = &adapter;
+
+    EXPECT_EQ(mockMetricsLibrary->metricsLibraryGetContextData(*device, contextData), true);
+
+    auto &callback = mockMetricsLibrary->metricsLibraryGetCallbacks().CommandBufferFlush;
+
+    EXPECT_NE(callback, nullptr);
+    EXPECT_EQ(callback(clientData.Handle), StatusCode::Success);
+}
+
+TEST_F(MetricQueryPoolLinuxTest, givenInvalidDeviceHandleWhenFlushCommandBufferCallbackIsCalledThenReturnsFailed) {
+
+    ClientData_1_0 clientData = {};
+    ContextCreateData_1_0 contextData = {};
+    ClientDataLinuxAdapter_1_0 adapter = {};
+
+    adapter.Type = LinuxAdapterType::Last;
+    adapter.DrmFileDescriptor = -1;
+
+    clientData.Linux.Adapter = &adapter;
+    contextData.ClientData = &clientData;
+    contextData.ClientData->Linux.Adapter = &adapter;
+
+    EXPECT_EQ(mockMetricsLibrary->metricsLibraryGetContextData(*device, contextData), true);
+
+    auto &callback = mockMetricsLibrary->metricsLibraryGetCallbacks().CommandBufferFlush;
+    clientData.Handle.data = nullptr;
+
+    EXPECT_NE(callback, nullptr);
+    EXPECT_EQ(callback(clientData.Handle), StatusCode::Failed);
 }
 
 TEST_F(MetricQueryPoolLinuxTest, givenCorrectArgumentsWhenActivateConfigurationIsCalledThenReturnsSuccess) {
@@ -145,12 +188,25 @@ TEST_F(MetricQueryPoolLinuxTest, givenMetricLibraryIsInIncorrectInitializedState
 TEST_F(MetricQueryPoolLinuxTest, givenCorrectArgumentsWhenCacheConfigurationIsCalledThenCacheingIsSuccessfull) {
 
     metricsDeviceParams.ConcurrentGroupsCount = 1;
-    Mock<IConcurrentGroup_1_5> metricsConcurrentGroup;
-    TConcurrentGroupParams_1_0 metricsConcurrentGroupParams = {};
+    Mock<IConcurrentGroup_1_13> metricsConcurrentGroup;
+    TConcurrentGroupParams_1_13 metricsConcurrentGroupParams = {};
     metricsConcurrentGroupParams.SymbolName = "OA";
     metricsConcurrentGroupParams.MetricSetsCount = 1;
-    Mock<MetricsDiscovery::IMetricSet_1_5> metricsSet;
-    MetricsDiscovery::TMetricSetParams_1_4 metricsSetParams = {};
+    metricsConcurrentGroupParams.IoMeasurementInformationCount = 1;
+
+    Mock<MetricsDiscovery::IEquation_1_0> ioReadEquation;
+    MetricsDiscovery::TEquationElement_1_0 ioEquationElement = {};
+    ioEquationElement.Type = MetricsDiscovery::EQUATION_ELEM_IMM_UINT64;
+    ioEquationElement.ImmediateUInt64 = 0;
+
+    ioReadEquation.getEquationElement.push_back(&ioEquationElement);
+
+    Mock<MetricsDiscovery::IInformation_1_0> ioMeasurement;
+    MetricsDiscovery::TInformationParams_1_0 oaInformation = {};
+    oaInformation.SymbolName = "BufferOverflow";
+    oaInformation.IoReadEquation = &ioReadEquation;
+    Mock<MetricsDiscovery::IMetricSet_1_13> metricsSet;
+    MetricsDiscovery::TMetricSetParams_1_11 metricsSetParams = {};
     metricsSetParams.ApiMask = MetricsDiscovery::API_TYPE_OCL;
     openMetricsAdapter();
 
@@ -160,6 +216,8 @@ TEST_F(MetricQueryPoolLinuxTest, givenCorrectArgumentsWhenCacheConfigurationIsCa
 
     metricsConcurrentGroup.GetParamsResult = &metricsConcurrentGroupParams;
     metricsConcurrentGroup.getMetricSetResult = &metricsSet;
+    metricsConcurrentGroup.GetIoMeasurementInformationResult = &ioMeasurement;
+    ioMeasurement.GetParamsResult = &oaInformation;
 
     metricsSet.GetParamsResult = &metricsSetParams;
 

@@ -12,10 +12,6 @@
 
 namespace NEO {
 
-unsigned int getPid() {
-    return GetCurrentProcessId();
-}
-
 bool isShutdownInProgress() {
     auto handle = GetModuleHandleA("ntdll.dll");
 
@@ -36,18 +32,16 @@ unsigned int getProcessId() {
     return GetCurrentProcessId();
 }
 
+unsigned int getCurrentProcessId() {
+    return GetCurrentProcessId();
+}
+
 unsigned long getNumThreads() {
     return 1;
 }
 
 DWORD getLastError() {
     return GetLastError();
-}
-
-bool pathExists(const std::string &path) {
-    DWORD ret = GetFileAttributesA(path.c_str());
-
-    return ret == FILE_ATTRIBUTE_DIRECTORY;
 }
 
 HANDLE createEvent(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCSTR lpName) {
@@ -158,6 +152,50 @@ LSTATUS regOpenKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGSAM samDes
 LSTATUS regQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) {
     return RegQueryValueExA(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
 }
-} // namespace SysCalls
 
+HANDLE createFile(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) {
+    return CreateFile(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
+}
+
+BOOL deviceIoControl(HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped) {
+    return DeviceIoControl(hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpBytesReturned, lpOverlapped);
+}
+
+CONFIGRET cmGetDeviceInterfaceListSize(PULONG pulLen, LPGUID interfaceClassGuid, DEVINSTID_W pDeviceID, ULONG ulFlags) {
+    return CM_Get_Device_Interface_List_Size(pulLen, interfaceClassGuid, pDeviceID, ulFlags);
+}
+
+CONFIGRET cmGetDeviceInterfaceList(LPGUID interfaceClassGuid, DEVINSTID_W pDeviceID, PZZWSTR buffer, ULONG bufferLen, ULONG ulFlags) {
+    return CM_Get_Device_Interface_List(interfaceClassGuid, pDeviceID, buffer, bufferLen, ulFlags);
+}
+
+LPVOID heapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes) {
+    return HeapAlloc(hHeap, dwFlags, dwBytes);
+}
+
+BOOL heapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem) {
+    return HeapFree(hHeap, dwFlags, lpMem);
+}
+
+SIZE_T virtualQuery(LPCVOID lpAddress, PMEMORY_BASIC_INFORMATION lpBuffer, SIZE_T dwLength) {
+    return VirtualQuery(lpAddress, lpBuffer, dwLength);
+}
+
+BOOL getModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule) {
+    return ::GetModuleHandleExW(dwFlags, lpModuleName, phModule);
+}
+DWORD getModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize) {
+    return ::GetModuleFileNameW(hModule, lpFilename, nSize);
+}
+DWORD getFileVersionInfoSizeW(LPCWSTR lptstrFilename, LPDWORD lpdwHandle) {
+    return ::GetFileVersionInfoSizeW(lptstrFilename, lpdwHandle);
+}
+BOOL getFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData) {
+    return ::GetFileVersionInfoW(lptstrFilename, dwHandle, dwLen, lpData);
+}
+BOOL verQueryValueW(LPCVOID pBlock, LPCWSTR lpSubBlock, LPVOID *lpBuffer, PUINT puLen) {
+    return ::VerQueryValueW(pBlock, lpSubBlock, lpBuffer, puLen);
+}
+
+} // namespace SysCalls
 } // namespace NEO

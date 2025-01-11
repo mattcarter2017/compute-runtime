@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,14 +44,20 @@ TEST(DrmSystemInfoTest, givenSystemInfoCreatedWhenQueryingSpecificAtrributesThen
     EXPECT_EQ(0u, systemInfo.getMaxRCS());
     EXPECT_EQ(0u, systemInfo.getMaxCCS());
     EXPECT_EQ(0u, systemInfo.getL3BankSizeInKb());
+    EXPECT_EQ(0u, systemInfo.getSlmSizePerDss());
+    EXPECT_EQ(0u, systemInfo.getCsrSizeInMb());
+    EXPECT_EQ(0u, systemInfo.getNumRegions());
 }
 
+struct DrmMockToQuerySystemInfo : public DrmMock {
+    DrmMockToQuerySystemInfo(RootDeviceEnvironment &rootDeviceEnvironment)
+        : DrmMock(rootDeviceEnvironment) {}
+    bool querySystemInfo() override {
+        systemInfoQueried = true;
+        return false;
+    }
+};
 TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoFalseThenSystemInfoIsNotCreated) {
-    struct DrmMockToQuerySystemInfo : public DrmMock {
-        DrmMockToQuerySystemInfo(RootDeviceEnvironment &rootDeviceEnvironment)
-            : DrmMock(rootDeviceEnvironment) {}
-        bool querySystemInfo() override { return false; }
-    };
 
     class MyMockIoctlHelper : public IoctlHelperPrelim20 {
       public:
@@ -82,15 +88,10 @@ TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoFalseThenSystem
     EXPECT_EQ(nullptr, drm.getSystemInfo());
 
     EXPECT_TRUE(isEmpty(::testing::internal::GetCapturedStdout()));
-    EXPECT_TRUE(isEmpty(::testing::internal::GetCapturedStderr()));
+    EXPECT_FALSE(isEmpty(::testing::internal::GetCapturedStderr()));
 }
 
 TEST(DrmSystemInfoTest, whenSetupHardwareInfoThenReleaseHelperContainsCorrectIpVersion) {
-    struct DrmMockToQuerySystemInfo : public DrmMock {
-        DrmMockToQuerySystemInfo(RootDeviceEnvironment &rootDeviceEnvironment)
-            : DrmMock(rootDeviceEnvironment) {}
-        bool querySystemInfo() override { return false; }
-    };
 
     class MyMockIoctlHelper : public IoctlHelperPrelim20 {
       public:
@@ -128,6 +129,21 @@ TEST(DrmSystemInfoTest, whenSetupHardwareInfoThenReleaseHelperContainsCorrectIpV
     EXPECT_EQ(55u, exposedReleaseHelper->hardwareIpVersion.release);
 }
 
+TEST(DrmSystemInfoTest, whenQueryingSystemInfoTwiceThenSystemInfoIsCreatedOnlyOnce) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    EXPECT_TRUE(drm.querySystemInfo());
+
+    auto systemInfo = drm.getSystemInfo();
+    EXPECT_NE(nullptr, systemInfo);
+    EXPECT_EQ(2u + drm.getBaseIoctlCalls(), drm.ioctlCallsCount);
+
+    EXPECT_TRUE(drm.querySystemInfo());
+    EXPECT_EQ(systemInfo, drm.getSystemInfo());
+    EXPECT_EQ(2u + drm.getBaseIoctlCalls(), drm.ioctlCallsCount);
+}
+
 TEST(DrmSystemInfoTest, whenQueryingSystemInfoThenSystemInfoIsCreatedAndReturnsNonZeros) {
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
@@ -146,6 +162,9 @@ TEST(DrmSystemInfoTest, whenQueryingSystemInfoThenSystemInfoIsCreatedAndReturnsN
     EXPECT_NE(0u, systemInfo->getMaxRCS());
     EXPECT_NE(0u, systemInfo->getMaxCCS());
     EXPECT_NE(0u, systemInfo->getL3BankSizeInKb());
+    EXPECT_NE(0u, systemInfo->getSlmSizePerDss());
+    EXPECT_NE(0u, systemInfo->getCsrSizeInMb());
+    EXPECT_NE(0u, systemInfo->getNumRegions());
 
     EXPECT_EQ(2u + drm.getBaseIoctlCalls(), drm.ioctlCallsCount);
 }
@@ -161,6 +180,47 @@ TEST(DrmSystemInfoTest, givenSystemInfoCreatedFromDeviceBlobWhenQueryingSpecific
     EXPECT_EQ(0x17u, systemInfo.getMaxRCS());
     EXPECT_EQ(0x18u, systemInfo.getMaxCCS());
     EXPECT_EQ(0x2Du, systemInfo.getL3BankSizeInKb());
+    EXPECT_EQ(0x24u, systemInfo.getSlmSizePerDss());
+    EXPECT_EQ(0x25u, systemInfo.getCsrSizeInMb());
+    EXPECT_EQ(0x04u, systemInfo.getNumHbmStacksPerTile());
+    EXPECT_EQ(0x08u, systemInfo.getNumChannlesPerHbmStack());
+    EXPECT_EQ(0x02u, systemInfo.getNumRegions());
+}
+
+TEST(DrmSystemInfoTest, givenSystemInfoCreatedFromDeviceBlobAndDifferentMaxSubSlicesAndMaxDSSThenQueryReturnsTheMaxValue) {
+    uint32_t hwBlob0[] = {NEO::DeviceBlobConstants::maxDualSubSlicesSupported, 1, 4, NEO::DeviceBlobConstants::maxSubSlicesSupported, 1, 8};
+    std::vector<uint32_t> inputBlobData0(reinterpret_cast<uint32_t *>(hwBlob0), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob0, sizeof(hwBlob0))));
+    SystemInfo systemInfo0(inputBlobData0);
+    EXPECT_EQ(8u, systemInfo0.getMaxDualSubSlicesSupported());
+
+    uint32_t hwBlob1[] = {NEO::DeviceBlobConstants::maxDualSubSlicesSupported, 1, 16, NEO::DeviceBlobConstants::maxSubSlicesSupported, 1, 8};
+    std::vector<uint32_t> inputBlobData1(reinterpret_cast<uint32_t *>(hwBlob1), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob1, sizeof(hwBlob1))));
+    SystemInfo systemInfo1(inputBlobData1);
+    EXPECT_EQ(16u, systemInfo1.getMaxDualSubSlicesSupported());
+}
+
+TEST(DrmSystemInfoTest, givenSystemInfoCreatedFromDeviceBlobAndDifferentMaxEuPerSubSliceAndMaxEuPerDSSThenQueryReturnsTheMaxValue) {
+    uint32_t hwBlob0[] = {NEO::DeviceBlobConstants::maxEuPerDualSubSlice, 1, 7, NEO::DeviceBlobConstants::maxEuPerSubSlice, 1, 8};
+    std::vector<uint32_t> inputBlobData0(reinterpret_cast<uint32_t *>(hwBlob0), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob0, sizeof(hwBlob0))));
+    SystemInfo systemInfo0(inputBlobData0);
+    EXPECT_EQ(8u, systemInfo0.getMaxEuPerDualSubSlice());
+
+    uint32_t hwBlob1[] = {NEO::DeviceBlobConstants::maxEuPerDualSubSlice, 1, 8, NEO::DeviceBlobConstants::maxEuPerSubSlice, 1, 7};
+    std::vector<uint32_t> inputBlobData1(reinterpret_cast<uint32_t *>(hwBlob1), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob1, sizeof(hwBlob1))));
+    SystemInfo systemInfo1(inputBlobData1);
+    EXPECT_EQ(8u, systemInfo1.getMaxEuPerDualSubSlice());
+}
+
+TEST(DrmSystemInfoTest, givenSystemInfoCreatedFromDeviceBlobAndDifferentSlmSizePerDssAndSlmSizePerSsThenQueryReturnsTheMaxValue) {
+    uint32_t hwBlob0[] = {NEO::DeviceBlobConstants::slmSizePerDss, 1, 7, NEO::DeviceBlobConstants::slmSizePerSs, 1, 8};
+    std::vector<uint32_t> inputBlobData0(reinterpret_cast<uint32_t *>(hwBlob0), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob0, sizeof(hwBlob0))));
+    SystemInfo systemInfo0(inputBlobData0);
+    EXPECT_EQ(8u, systemInfo0.getSlmSizePerDss());
+
+    uint32_t hwBlob1[] = {NEO::DeviceBlobConstants::slmSizePerDss, 1, 8, NEO::DeviceBlobConstants::slmSizePerSs, 1, 7};
+    std::vector<uint32_t> inputBlobData1(reinterpret_cast<uint32_t *>(hwBlob1), reinterpret_cast<uint32_t *>(ptrOffset(hwBlob1, sizeof(hwBlob1))));
+    SystemInfo systemInfo1(inputBlobData1);
+    EXPECT_EQ(8u, systemInfo1.getSlmSizePerDss());
 }
 
 TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoFailsThenSystemInfoIsNotCreatedAndDebugMessageIsPrinted) {
@@ -191,7 +251,7 @@ TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoFailsThenSystem
     if (productHelper.isPlatformQuerySupported()) {
         EXPECT_TRUE(hasSubstr(::testing::internal::GetCapturedStderr(), "Size got from PRELIM_DRM_I915_QUERY_HW_IP_VERSION query does not match PrelimI915::prelim_drm_i915_query_hw_ip_version size\n"));
     } else {
-        EXPECT_TRUE(::testing::internal::GetCapturedStderr().empty());
+        EXPECT_FALSE(::testing::internal::GetCapturedStderr().empty());
     }
 }
 
@@ -203,19 +263,26 @@ TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoSucceedsThenSys
 
     HardwareInfo hwInfo = *defaultHwInfo;
 
+    hwInfo.capabilityTable.slmSize = 0x1234678u;
+
     auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
     DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
 
     int ret = drm.setupHardwareInfo(&device, false);
     EXPECT_EQ(ret, 0);
     EXPECT_NE(nullptr, drm.getSystemInfo());
-    const auto &gtSystemInfo = executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->gtSystemInfo;
+    const auto &newHwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
+    const auto &gtSystemInfo = newHwInfo.gtSystemInfo;
 
     EXPECT_GT(gtSystemInfo.MaxEuPerSubSlice, 0u);
     EXPECT_GT(gtSystemInfo.MaxSlicesSupported, 0u);
     EXPECT_GT(gtSystemInfo.MaxSubSlicesSupported, 0u);
     EXPECT_GT(gtSystemInfo.MaxDualSubSlicesSupported, 0u);
     EXPECT_GT(gtSystemInfo.MemoryType, 0u);
+    EXPECT_EQ(gtSystemInfo.CsrSizeInMb, drm.getSystemInfo()->getCsrSizeInMb());
+    EXPECT_EQ(gtSystemInfo.SLMSizeInKb, drm.getSystemInfo()->getSlmSizePerDss());
+    EXPECT_EQ(newHwInfo.capabilityTable.slmSize, hwInfo.capabilityTable.slmSize);
+    EXPECT_NE(newHwInfo.capabilityTable.slmSize, drm.getSystemInfo()->getSlmSizePerDss());
 }
 
 TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoSucceedsThenSystemInfoIsCreatedAndHardwareInfoSetProperlyBasedOnBlobData) {
@@ -233,7 +300,6 @@ TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoSucceedsThenSys
     drm.storedSSVal = 1u;
     drm.storedEUVal = 1u;
 
-    auto expectedMaxSlicesSupported = dummyDeviceBlobData[2];
     auto expectedMaxSubslicesSupported = dummyDeviceBlobData[5];
     auto expectedMaxEusPerSubsliceSupported = dummyDeviceBlobData[8];
 
@@ -245,14 +311,32 @@ TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoSucceedsThenSys
     EXPECT_NE(nullptr, drm.getSystemInfo());
     const auto &gtSystemInfo = executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->gtSystemInfo;
 
-    EXPECT_EQ(expectedMaxSlicesSupported, gtSystemInfo.MaxSlicesSupported);
-    EXPECT_NE(0u, gtSystemInfo.MaxSlicesSupported);
-
     EXPECT_EQ(expectedMaxSubslicesSupported, gtSystemInfo.MaxSubSlicesSupported);
     EXPECT_NE(0u, gtSystemInfo.MaxSubSlicesSupported);
 
     EXPECT_EQ(expectedMaxEusPerSubsliceSupported, gtSystemInfo.MaxEuPerSubSlice);
     EXPECT_NE(0u, gtSystemInfo.MaxEuPerSubSlice);
+}
+
+TEST(DrmSystemInfoTest, givenSetupHardwareInfoWhenQuerySystemInfoSucceedsAndBlobHasZerosThenHardwareInfoDefaultValuesNotChanged) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    HardwareInfo hwInfo = *defaultHwInfo;
+
+    auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
+    DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
+
+    drm.systemInfo.reset(new SystemInfo(inputBlobDataZeros));
+    drm.systemInfoQueried = true;
+    int ret = drm.setupHardwareInfo(&device, false);
+    EXPECT_EQ(ret, 0);
+    EXPECT_NE(nullptr, drm.getSystemInfo());
+    const auto &newHwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
+
+    EXPECT_EQ(newHwInfo.featureTable.regionCount, 1u);
 }
 
 TEST(DrmSystemInfoTest, givenZeroBankCountWhenCreatingSystemInfoThenUseDualSubslicesToCalculateL3Size) {
@@ -272,7 +356,7 @@ TEST(DrmSystemInfoTest, givenZeroBankCountWhenCreatingSystemInfoThenUseDualSubsl
     EXPECT_NE(nullptr, drm.getSystemInfo());
     const auto &gtSystemInfo = executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->gtSystemInfo;
 
-    EXPECT_EQ(0u, gtSystemInfo.L3BankCount);
+    EXPECT_EQ(gtSystemInfo.MaxDualSubSlicesSupported, gtSystemInfo.L3BankCount);
 
     uint64_t expectedL3Size = gtSystemInfo.MaxDualSubSlicesSupported * drm.getSystemInfo()->getL3BankSizeInKb();
     uint64_t calculatedL3Size = gtSystemInfo.L3CacheSizeInKb;
@@ -303,4 +387,117 @@ TEST(DrmSystemInfoTest, givenNonZeroBankCountWhenCreatingSystemInfoThenUseDualSu
     uint64_t calculatedL3Size = gtSystemInfo.L3CacheSizeInKb;
 
     EXPECT_EQ(expectedL3Size, calculatedL3Size);
+}
+
+TEST(DrmSystemInfoTest, givenNumL3BanksSetInTopoologyDataWhenCreatingSystemInfoThenRespectThatNumberOfL3Banks) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+    class MyMockIoctlHelper : public IoctlHelperPrelim20 {
+      public:
+        using IoctlHelperPrelim20::IoctlHelperPrelim20;
+
+        bool getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQueryTopologyData &topologyData, TopologyMap &topologyMap) override {
+            IoctlHelperPrelim20::getTopologyDataAndMap(hwInfo, topologyData, topologyMap);
+            topologyData.numL3Banks = 7;
+            return true;
+        }
+    };
+
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+    drm.ioctlHelper = std::make_unique<MyMockIoctlHelper>(drm);
+
+    HardwareInfo hwInfo = *defaultHwInfo;
+    hwInfo.gtSystemInfo.L3BankCount = 5;
+
+    uint32_t expectedNumOfL3Banks = 7;
+
+    auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
+    DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
+
+    int ret = drm.setupHardwareInfo(&device, false);
+    EXPECT_EQ(ret, 0);
+    EXPECT_NE(nullptr, drm.getSystemInfo());
+    const auto &gtSystemInfo = executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->gtSystemInfo;
+
+    EXPECT_EQ(expectedNumOfL3Banks, gtSystemInfo.L3BankCount);
+
+    uint64_t expectedL3Size = gtSystemInfo.L3BankCount * drm.getSystemInfo()->getL3BankSizeInKb();
+    uint64_t calculatedL3Size = gtSystemInfo.L3CacheSizeInKb;
+
+    EXPECT_EQ(expectedL3Size, calculatedL3Size);
+}
+
+TEST(DrmSystemInfoTest, givenHardwareInfoWithoutEuCountWhenQuerySystemInfoSucceedsThenEuCountIsSetBasedOnMaxEuPerSubSlice) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+    HardwareInfo &hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo();
+
+    hwInfo.gtSystemInfo.EUCount = 0u;
+    hwInfo.gtSystemInfo.SubSliceCount = 2u;
+    hwInfo.gtSystemInfo.DualSubSliceCount = 2u;
+
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    drm.storedEUVal = 0;
+    drm.failRetTopology = true;
+
+    auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
+    DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
+
+    int ret = drm.setupHardwareInfo(&device, false);
+    EXPECT_EQ(ret, 0);
+    EXPECT_NE(nullptr, drm.getSystemInfo());
+    const auto &newHwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
+    const auto &gtSystemInfo = newHwInfo.gtSystemInfo;
+
+    EXPECT_NE(0u, gtSystemInfo.EUCount);
+    EXPECT_EQ(hwInfo.gtSystemInfo.SubSliceCount * drm.getSystemInfo()->getMaxEuPerDualSubSlice(), gtSystemInfo.EUCount);
+}
+
+TEST(DrmSystemInfoTest, givenHardwareInfoWithoutEuCountWhenQuerySystemInfoFailsThenFailureIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    HardwareInfo &hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo();
+
+    hwInfo.gtSystemInfo.EUCount = 0u;
+    hwInfo.gtSystemInfo.SubSliceCount = 2u;
+    hwInfo.gtSystemInfo.DualSubSliceCount = 2u;
+    hwInfo.gtSystemInfo.MaxEuPerSubSlice = 0u;
+
+    drm.storedEUVal = 0;
+    drm.failRetTopology = true;
+    drm.failQueryDeviceBlob = true;
+
+    auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
+    DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
+
+    int ret = drm.setupHardwareInfo(&device, false);
+    EXPECT_EQ(ret, -1);
+    EXPECT_EQ(nullptr, drm.getSystemInfo());
+}
+
+TEST(DrmSystemInfoTest, givenTopologyWithMoreEuPerDssThanInDeviceBlobWhenSetupHardwareInfoThenDeviceBlobValueLimitsEuPerDssCount) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+    HardwareInfo &hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo();
+
+    DrmMockEngine drm(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    drm.storedSSVal = 2;
+    drm.storedEUVal = 200;
+
+    auto setupHardwareInfo = [](HardwareInfo *, bool, const ReleaseHelper *) {};
+    DeviceDescriptor device = {0, &hwInfo, setupHardwareInfo};
+
+    int ret = drm.setupHardwareInfo(&device, false);
+    EXPECT_EQ(ret, 0);
+    EXPECT_NE(nullptr, drm.getSystemInfo());
+    const auto &newHwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
+    const auto &gtSystemInfo = newHwInfo.gtSystemInfo;
+
+    EXPECT_NE(static_cast<uint32_t>(drm.storedEUVal), gtSystemInfo.EUCount);
+    EXPECT_EQ(hwInfo.gtSystemInfo.SubSliceCount * drm.getSystemInfo()->getMaxEuPerDualSubSlice(), gtSystemInfo.EUCount);
+    EXPECT_EQ(hwInfo.gtSystemInfo.EUCount * drm.getSystemInfo()->getNumThreadsPerEu(), gtSystemInfo.ThreadCount);
 }

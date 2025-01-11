@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/source/command_container/encode_surface_state.h"
 #include "shared/source/command_stream/stream_properties.h"
+#include "shared/source/gen_common/reg_configs_common.h"
 #include "shared/source/gmm_helper/client_context/gmm_client_context.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/state_base_address.h"
@@ -23,7 +24,6 @@
 #include "opencl/test/unit_test/mocks/mock_kernel.h"
 
 #include "encode_surface_state_args.h"
-#include "reg_configs_common.h"
 #include "test_traits_common.h"
 
 using namespace NEO;
@@ -55,7 +55,7 @@ HWTEST2_F(ProgramPipelineXeHPAndLater, givenDebugVariableWhenProgramPipelineSele
 }
 
 using PreemptionWatermarkXeHPAndLater = PreambleFixture;
-HWCMDTEST_F(IGFX_XE_HP_CORE, PreemptionWatermarkXeHPAndLater, givenPreambleThenPreambleWorkAroundsIsNotProgrammed) {
+HWTEST2_F(PreemptionWatermarkXeHPAndLater, givenPreambleThenPreambleWorkAroundsIsNotProgrammed, IsAtLeastXeHpCore) {
     PreambleHelper<FamilyType>::programGenSpecificPreambleWorkArounds(&linearStream, *defaultHwInfo);
 
     parseCommands<FamilyType>(linearStream);
@@ -68,7 +68,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, PreemptionWatermarkXeHPAndLater, givenPreambleThenP
     EXPECT_EQ(expectedSize, PreambleHelper<FamilyType>::getAdditionalCommandsSize(mockDevice));
 
     mockDevice.executionEnvironment->rootDeviceEnvironments[0]->initDebuggerL0(&mockDevice);
-    expectedSize += PreambleHelper<FamilyType>::getKernelDebuggingCommandsSize(mockDevice.getDebugger() != nullptr);
+    expectedSize = PreambleHelper<FamilyType>::getKernelDebuggingCommandsSize(mockDevice.getDebugger() != nullptr);
     EXPECT_EQ(expectedSize, PreambleHelper<FamilyType>::getAdditionalCommandsSize(mockDevice));
 }
 
@@ -176,7 +176,7 @@ HWTEST2_F(PreambleCfeStateXeHPAndLater, givenNotSetDebugFlagWhenPreambleCfeState
     EXPECT_EQ(overDispatchControl, static_cast<uint32_t>(cfeState->getOverDispatchControl()));
 }
 
-HWTEST2_F(PreambleCfeStateXeHPAndLater, givenSetDebugFlagWhenPreambleCfeStateIsProgrammedThenCFEStateParamsHaveSetValue, IsAtLeastXeHpCore) {
+HWTEST2_F(PreambleCfeStateXeHPAndLater, givenSetDebugFlagWhenPreambleCfeStateIsProgrammedThenCFEStateParamsHaveSetValue, IsWithinXeHpCoreAndXe2HpgCore) {
     using CFE_STATE = typename FamilyType::CFE_STATE;
 
     uint32_t expectedValue1 = 1u;
@@ -185,11 +185,11 @@ HWTEST2_F(PreambleCfeStateXeHPAndLater, givenSetDebugFlagWhenPreambleCfeStateIsP
     DebugManagerStateRestore dbgRestore;
 
     debugManager.flags.CFEFusedEUDispatch.set(expectedValue1);
-    debugManager.flags.CFEOverDispatchControl.set(expectedValue1);
+    debugManager.flags.OverDispatchControl.set(expectedValue1);
     debugManager.flags.CFESingleSliceDispatchCCSMode.set(expectedValue1);
     debugManager.flags.CFELargeGRFThreadAdjustDisable.set(expectedValue1);
     debugManager.flags.CFENumberOfWalkers.set(expectedValue2);
-    debugManager.flags.CFEMaximumNumberOfThreads.set(expectedValue2);
+    debugManager.flags.MaximumNumberOfThreads.set(expectedValue2);
 
     uint64_t expectedAddress = 1 << CFE_STATE::SCRATCHSPACEBUFFER_BIT_SHIFT;
     auto pVfeCmd = PreambleHelper<FamilyType>::getSpaceForVfeState(&linearStream, *defaultHwInfo, EngineGroupType::renderCompute);
@@ -214,7 +214,9 @@ using XeHpCommandStreamReceiverFlushTaskTests = UltCommandStreamReceiverTest;
 HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushingCommandStreamReceiverThenExpectStateBaseAddressEqualsIndirectObjectBaseAddress) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-
+    if (commandStreamReceiver.heaplessModeEnabled) {
+        GTEST_SKIP();
+    }
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
     hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
@@ -233,7 +235,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushC
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
     auto gmmHelper = pDevice->getRootDeviceEnvironment().getGmmHelper();
-
+    if (commandStreamReceiver.heaplessStateInitialized) {
+        GTEST_SKIP();
+    }
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
     hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
@@ -257,6 +261,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushC
     debugManager.flags.DisableCachingForHeaps.set(1);
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    if (commandStreamReceiver.heaplessStateInitialized) {
+        GTEST_SKIP();
+    }
     auto gmmHelper = pDevice->getRootDeviceEnvironment().getGmmHelper();
 
     flushTask(commandStreamReceiver);
@@ -296,6 +303,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, givenForce
     debugManager.flags.ForceL1Caching.set(0u);
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    if (commandStreamReceiver.heaplessStateInitialized) {
+        GTEST_SKIP();
+    }
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
     hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
@@ -312,7 +322,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushi
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
 
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-
+    if (commandStreamReceiver.heaplessModeEnabled) {
+        GTEST_SKIP();
+    }
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
     hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
@@ -328,9 +340,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushi
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushingCommandStreamReceiverThenSetBindlessSamplerStateBaseAddressModifyEnable) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    if (commandStreamReceiver.heaplessModeEnabled) {
+        GTEST_SKIP();
+    }
 
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
@@ -339,60 +352,26 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, whenFlushi
     ASSERT_NE(nullptr, hwParserCsr.cmdStateBaseAddress);
     auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
     EXPECT_TRUE(stateBaseAddress->getBindlessSamplerStateBaseAddressModifyEnable());
-    EXPECT_EQ(0u, stateBaseAddress->getBindlessSamplerStateBaseAddress());
-    EXPECT_EQ(0u, stateBaseAddress->getBindlessSamplerStateBufferSize());
-}
-
-HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, givenMultEngineQueueFalseWhenFlushingCommandStreamReceiverThenSetPartialWriteFieldsTrue) {
-    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-    flushTask(commandStreamReceiver);
-    HardwareParse hwParserCsr;
-    hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
-    hwParserCsr.findHardwareCommands<FamilyType>();
-    ASSERT_NE(nullptr, hwParserCsr.cmdStateBaseAddress);
-    auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
-    EXPECT_TRUE(stateBaseAddress->getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-    EXPECT_TRUE(stateBaseAddress->getDisableSupportForMultiGpuPartialWritesForStatelessMessages());
+    EXPECT_EQ(dsh.getHeapGpuBase(), stateBaseAddress->getBindlessSamplerStateBaseAddress());
+    EXPECT_EQ(dsh.getHeapSizeInPages(), stateBaseAddress->getBindlessSamplerStateBufferSize());
 }
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, givenDebugKeysThatOverrideMultiGpuSettingWhenStateBaseAddressIsProgrammedThenValuesMatch) {
     DebugManagerStateRestore restorer;
-    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
 
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-    debugManager.flags.ForceMultiGpuAtomics.set(0);
-    debugManager.flags.ForceMultiGpuPartialWrites.set(0);
-    flushTask(commandStreamReceiver);
-    HardwareParse hwParserCsr;
-    hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
-    hwParserCsr.findHardwareCommands<FamilyType>();
-    ASSERT_NE(nullptr, hwParserCsr.cmdStateBaseAddress);
-    auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
-    EXPECT_EQ(0u, stateBaseAddress->getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-    EXPECT_EQ(0u, stateBaseAddress->getDisableSupportForMultiGpuPartialWritesForStatelessMessages());
-}
-
-HWCMDTEST_F(IGFX_XE_HP_CORE, XeHpCommandStreamReceiverFlushTaskTests, givenMultEngineQueueTrueWhenFlushingCommandStreamReceiverThenSetPartialWriteFieldsFalse) {
-    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-    commandStreamReceiver.multiOsContextCapable = true;
+    if (commandStreamReceiver.heaplessStateInitialized) {
+        GTEST_SKIP();
+    }
 
     flushTask(commandStreamReceiver);
     HardwareParse hwParserCsr;
     hwParserCsr.parseCommands<FamilyType>(commandStreamReceiver.commandStream, 0);
     hwParserCsr.findHardwareCommands<FamilyType>();
     ASSERT_NE(nullptr, hwParserCsr.cmdStateBaseAddress);
-    auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
-    EXPECT_TRUE(stateBaseAddress->getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-    EXPECT_FALSE(stateBaseAddress->getDisableSupportForMultiGpuPartialWritesForStatelessMessages());
 }
 
 using StateBaseAddressXeHPAndLaterTests = XeHpCommandStreamReceiverFlushTaskTests;
-
-namespace {
 
 template <typename FamilyType, typename CommandStreamReceiverType>
 void flushTaskAndcheckForSBA(StateBaseAddressXeHPAndLaterTests *sbaTest, CommandStreamReceiverType &csr, bool shouldBePresent) {
@@ -410,43 +389,9 @@ void flushTaskAndcheckForSBA(StateBaseAddressXeHPAndLaterTests *sbaTest, Command
     }
 }
 
-template <typename FamilyType>
-void testGlobalAtomicsImpactOnSBA(StateBaseAddressXeHPAndLaterTests *sbaTest, bool multiOsCtx, bool multiSubDevices, bool expectSBA) {
-
-    auto &commandStreamReceiver = sbaTest->pDevice->getUltCommandStreamReceiver<FamilyType>();
-    commandStreamReceiver.multiOsContextCapable = multiOsCtx;
-    sbaTest->flushTaskFlags.areMultipleSubDevicesInContext = multiSubDevices;
-
-    flushTaskAndcheckForSBA<FamilyType>(sbaTest, commandStreamReceiver, true);
-    flushTaskAndcheckForSBA<FamilyType>(sbaTest, commandStreamReceiver, false);
-
-    commandStreamReceiver.lastSentUseGlobalAtomics ^= true;
-    flushTaskAndcheckForSBA<FamilyType>(sbaTest, commandStreamReceiver, expectSBA);
-    flushTaskAndcheckForSBA<FamilyType>(sbaTest, commandStreamReceiver, false);
-
-    commandStreamReceiver.lastSentUseGlobalAtomics ^= true;
-    flushTaskAndcheckForSBA<FamilyType>(sbaTest, commandStreamReceiver, expectSBA);
-}
-
-} /* namespace */
-
-struct GlobalAtomicsStateBaseAddressTests : public StateBaseAddressXeHPAndLaterTests,
-                                            public ::testing::WithParamInterface<std::tuple<bool, bool>> {};
-
-HWTEST_P(GlobalAtomicsStateBaseAddressTests, givenAnyMultiOSContextValueWithAnySubDeviceNumberWhenLastSentUseGlobalAtomicsIsFlippedThenStatBaseAddressProgrammingIsNeverAffected) {
-    auto [multiOsCtx, multiSubDevices] = GetParam();
-    testGlobalAtomicsImpactOnSBA<FamilyType>(this, multiOsCtx, multiSubDevices, false);
-}
-
-INSTANTIATE_TEST_CASE_P(,
-                        GlobalAtomicsStateBaseAddressTests,
-                        ::testing::Combine(
-                            ::testing::Bool(),
-                            ::testing::Bool()));
-
 using RenderSurfaceStateXeHPAndLaterTests = XeHpCommandStreamReceiverFlushTaskTests;
 
-HWCMDTEST_F(IGFX_XE_HP_CORE, RenderSurfaceStateXeHPAndLaterTests, givenSpecificProductFamilyWhenAppendingRssThenProgramGpuCoherency) {
+HWTEST2_F(RenderSurfaceStateXeHPAndLaterTests, givenSpecificProductFamilyWhenAppendingRssThenProgramGpuCoherency, IsWithinXeGfxFamily) {
     auto memoryManager = pDevice->getExecutionEnvironment()->memoryManager.get();
     size_t allocationSize = MemoryConstants::pageSize;
     AllocationProperties properties(pDevice->getRootDeviceIndex(), allocationSize, AllocationType::buffer, pDevice->getDeviceBitfield());
@@ -472,7 +417,6 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, RenderSurfaceStateXeHPAndLaterTests, givenSpecificP
     args.areMultipleSubDevicesInContext = true;
 
     EncodeSurfaceState<FamilyType>::encodeBuffer(args);
-
     EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT, rssCmd.getCoherencyType());
 }
 
@@ -480,12 +424,24 @@ using PipelineSelectTest = ::testing::Test;
 
 HWTEST2_F(PipelineSelectTest, WhenProgramPipelineSelectThenProperMaskIsSet, IsWithinXeGfxFamily) {
     using PIPELINE_SELECT = typename FamilyType::PIPELINE_SELECT;
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &rootDeviceEnvironment = *mockExecutionEnvironment.rootDeviceEnvironments[0];
-    PIPELINE_SELECT cmd = FamilyType::cmdInitPipelineSelect;
 
-    LinearStream pipelineSelectStream(&cmd, sizeof(cmd));
+    std::vector<uint8_t> linearStreamBackingMemory;
+    size_t sizeNeededForCommandSream = 0;
+    if (MemorySynchronizationCommands<FamilyType>::isBarrierPriorToPipelineSelectWaRequired(rootDeviceEnvironment)) {
+        sizeNeededForCommandSream += MemorySynchronizationCommands<FamilyType>::getSizeForSingleBarrier(false);
+    }
+
+    sizeNeededForCommandSream += sizeof(PIPELINE_SELECT);
+    linearStreamBackingMemory.resize(linearStreamBackingMemory.size() + sizeNeededForCommandSream);
+
+    PIPELINE_SELECT *cmd = reinterpret_cast<PIPELINE_SELECT *>(linearStreamBackingMemory.data() + linearStreamBackingMemory.size() - sizeof(PIPELINE_SELECT));
+    *cmd = FamilyType::cmdInitPipelineSelect;
+
+    LinearStream pipelineSelectStream(linearStreamBackingMemory.data(), linearStreamBackingMemory.size());
 
     PipelineSelectArgs pipelineArgs = {};
     pipelineArgs.systolicPipelineSelectSupport = PreambleHelper<FamilyType>::isSystolicModeConfigurable(rootDeviceEnvironment);
@@ -501,5 +457,24 @@ HWTEST2_F(PipelineSelectTest, WhenProgramPipelineSelectThenProperMaskIsSet, IsWi
         expectedMask |= pipelineSelectSystolicModeEnableMaskBits;
     }
 
-    EXPECT_EQ(expectedMask, cmd.getMaskBits());
+    EXPECT_EQ(expectedMask, cmd->getMaskBits());
+
+    HardwareParse hwParser;
+    hwParser.parsePipeControl = true;
+    hwParser.parseCommands<FamilyType>(pipelineSelectStream, 0);
+    hwParser.findHardwareCommands<FamilyType>();
+
+    if (MemorySynchronizationCommands<FamilyType>::isBarrierPriorToPipelineSelectWaRequired(rootDeviceEnvironment)) {
+        bool pcWithRenderFlushFound = false;
+
+        auto itorPipeControl = hwParser.pipeControlList.begin();
+        if (itorPipeControl != hwParser.pipeControlList.end()) {
+            auto pipeControl = reinterpret_cast<PIPE_CONTROL *>(*itorPipeControl);
+            if (pipeControl->getRenderTargetCacheFlushEnable()) {
+                pcWithRenderFlushFound = true;
+            }
+        }
+
+        EXPECT_TRUE(pcWithRenderFlushFound);
+    }
 }

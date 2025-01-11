@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,7 +28,7 @@ class DrmCommandStreamReceiver : public DeviceCommandStreamReceiver<GfxFamily> {
     using BaseClass::makeResident;
     using BaseClass::mediaVfeStateDirty;
     using BaseClass::osContext;
-    using BaseClass::requiredScratchSize;
+    using BaseClass::requiredScratchSlot0Size;
     using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiver::getTagAddress;
     using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiver::getTagAllocation;
     using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiver::latestSentTaskCount;
@@ -45,7 +45,7 @@ class DrmCommandStreamReceiver : public DeviceCommandStreamReceiver<GfxFamily> {
     ~DrmCommandStreamReceiver() override;
 
     SubmissionStatus flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override;
-    SubmissionStatus processResidency(const ResidencyContainer &allocationsForResidency, uint32_t handleId) override;
+    SubmissionStatus processResidency(ResidencyContainer &allocationsForResidency, uint32_t handleId) override;
     void makeNonResident(GraphicsAllocation &gfxAllocation) override;
     bool waitForFlushStamp(FlushStamp &flushStampToWait) override;
     bool isKmdWaitModeActive() override;
@@ -64,12 +64,13 @@ class DrmCommandStreamReceiver : public DeviceCommandStreamReceiver<GfxFamily> {
 
     SubmissionStatus printBOsForSubmit(ResidencyContainer &allocationsForResidency, GraphicsAllocation &cmdBufferAllocation);
 
-    bool waitUserFence(TaskCountType waitValue, uint64_t hostAddress, int64_t timeout) override;
+    bool waitUserFenceSupported() override { return isUserFenceWaitActive(); }
+    bool waitUserFence(TaskCountType waitValue, uint64_t hostAddress, int64_t timeout, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) override;
 
     using CommandStreamReceiver::pageTableManager;
 
   protected:
-    MOCKABLE_VIRTUAL SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency);
+    MOCKABLE_VIRTUAL SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency);
     MOCKABLE_VIRTUAL int exec(const BatchBuffer &batchBuffer, uint32_t vmHandleId, uint32_t drmContextId, uint32_t index);
     MOCKABLE_VIRTUAL void readBackAllocation(void *source);
     bool isUserFenceWaitActive();
@@ -83,6 +84,5 @@ class DrmCommandStreamReceiver : public DeviceCommandStreamReceiver<GfxFamily> {
     int32_t kmdWaitTimeout = -1;
 
     bool useUserFenceWait = true;
-    bool useContextForUserFenceWait = false;
 };
 } // namespace NEO

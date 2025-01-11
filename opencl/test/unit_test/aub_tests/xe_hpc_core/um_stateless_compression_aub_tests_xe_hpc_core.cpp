@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,7 +12,7 @@
 #include "opencl/source/api/api.h"
 #include "opencl/source/platform/platform.h"
 #include "opencl/test/unit_test/aub_tests/fixtures/aub_fixture.h"
-#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_aub_fixture.h"
+#include "opencl/test/unit_test/aub_tests/fixtures/multicontext_ocl_aub_fixture.h"
 #include "opencl/test/unit_test/fixtures/program_fixture.h"
 #include "opencl/test/unit_test/mocks/mock_kernel.h"
 
@@ -69,11 +69,11 @@ XE_HPC_CORETEST_P(UmStatelessCompression, givenDeviceMemAllocWhenStatelessCompre
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        UmStatelessCompression,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(,
+                         UmStatelessCompression,
+                         ::testing::Bool());
 
-class UmStatelessCompressionWithBlitter : public MulticontextAubFixture,
+class UmStatelessCompressionWithBlitter : public MulticontextOclAubFixture,
                                           public ::testing::Test,
                                           public ::testing::WithParamInterface<bool /*compareCompressedMemory*/> {
   public:
@@ -83,10 +83,10 @@ class UmStatelessCompressionWithBlitter : public MulticontextAubFixture,
         debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
         compareCompressedMemory = GetParam();
 
-        MulticontextAubFixture::setUp(1, EnabledCommandStreamers::single, true);
+        MulticontextOclAubFixture::setUp(1, EnabledCommandStreamers::single, true);
     }
     void TearDown() override {
-        MulticontextAubFixture::tearDown();
+        MulticontextOclAubFixture::tearDown();
     }
 
     DebugManagerStateRestore debugRestorer;
@@ -127,12 +127,12 @@ XE_HPC_CORETEST_P(UmStatelessCompressionWithBlitter, givenDeviceMemAllocWhenItIs
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        UmStatelessCompressionWithBlitter,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(,
+                         UmStatelessCompressionWithBlitter,
+                         ::testing::Bool());
 
 class UmStatelessCompressionWithStatefulAccess : public ProgramFixture,
-                                                 public MulticontextAubFixture,
+                                                 public MulticontextOclAubFixture,
                                                  public ::testing::Test,
                                                  public ::testing::WithParamInterface<bool /*compareCompressedMemory*/> {
   public:
@@ -144,10 +144,10 @@ class UmStatelessCompressionWithStatefulAccess : public ProgramFixture,
         compareCompressedMemory = GetParam();
 
         ProgramFixture::setUp();
-        MulticontextAubFixture::setUp(1, EnabledCommandStreamers::single, true);
+        MulticontextOclAubFixture::setUp(1, EnabledCommandStreamers::single, true);
     }
     void TearDown() override {
-        MulticontextAubFixture::tearDown();
+        MulticontextOclAubFixture::tearDown();
         ProgramFixture::tearDown();
     }
 
@@ -210,6 +210,6 @@ XE_HPC_CORETEST_P(UmStatelessCompressionWithStatefulAccess, givenDeviceMemAllocW
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        UmStatelessCompressionWithStatefulAccess,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(,
+                         UmStatelessCompressionWithStatefulAccess,
+                         ::testing::Bool());

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,16 +21,19 @@ struct ReleaseHelperTestsBase : public ::testing::Test {
 
     ReleaseHelperTestsBase();
     ~ReleaseHelperTestsBase() override;
-    void whenGettingMediaFrequencyTileIndexThenFalseIsReturned();
-    void whenGettingPreferredAllocationMethodThenNoPreferenceIsReturned();
-    void whenGettingMaxPreferredSlmSizeThenSizeIsNotModified();
-    void whenGettingMediaFrequencyTileIndexThenOneIsReturned();
-    void whenCheckPreferredAllocationMethodThenAllocateByKmdIsReturnedExceptTagBufferAndTimestampPacketTagBuffer();
-    void whenShouldAdjustCalledThenTrueReturned();
-    void whenShouldAdjustCalledThenFalseReturned();
     void whenGettingSupportedNumGrfsThenValues128And256Returned();
     void whenGettingThreadsPerEuConfigsThen4And8AreReturned();
-
+    void whenGettingTotalMemBankSizeThenReturn32GB();
+    void whenGettingAdditionalFp16AtomicCapabilitiesThenReturnNoCapabilities();
+    void whenGettingAdditionalExtraKernelCapabilitiesThenReturnNoCapabilities();
+    void whenIsDummyBlitWaRequiredCalledThenTrueReturned();
+    void whenIsDummyBlitWaRequiredCalledThenFalseReturned();
+    void whenIsLocalOnlyAllowedCalledThenTrueReturned();
+    void whenIsLocalOnlyAllowedCalledThenFalseReturned();
+    void whenGettingPreferredSlmSizeThenAllEntriesEmpty();
+    void whenGettingSupportedNumGrfsThenValuesUpTo256Returned();
+    void whenGettingNumThreadsPerEuThenCorrectValueIsReturnedBasedOnDebugKey();
+    void whenGettingThreadsPerEuConfigsThenCorrectValueIsReturnedBasedOnNumThreadPerEu();
     virtual std::vector<uint32_t> getRevisions() = 0;
 
     std::unique_ptr<ReleaseHelper> releaseHelper;

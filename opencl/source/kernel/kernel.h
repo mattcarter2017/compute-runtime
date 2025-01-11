@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,7 +37,6 @@ class Buffer;
 class CommandQueue;
 class CommandStreamReceiver;
 class GraphicsAllocation;
-class ImageTransformer;
 class Surface;
 class PrintfHandler;
 class MultiDeviceKernel;
@@ -142,7 +141,6 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
 
     MOCKABLE_VIRTUAL cl_int cloneKernel(Kernel *pSourceKernel);
 
-    MOCKABLE_VIRTUAL bool canTransformImages() const;
     MOCKABLE_VIRTUAL bool isPatched() const;
 
     // API entry points
@@ -211,17 +209,16 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
 
     Program *getProgram() const { return program; }
 
-    uint32_t getScratchSize() {
-        return kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[0];
-    }
-
-    uint32_t getPrivateScratchSize() {
-        return kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[1];
+    uint32_t getScratchSize(uint32_t slotId) {
+        return kernelInfo.kernelDescriptor.kernelAttributes.perThreadScratchSize[slotId];
     }
 
     bool usesSyncBuffer() const;
     void patchSyncBuffer(GraphicsAllocation *gfxAllocation, size_t bufferOffset);
     void *patchBindlessSurfaceState(NEO::GraphicsAllocation *alloc, uint32_t bindless);
+    uint32_t getSurfaceStateIndexForBindlessOffset(NEO::CrossThreadDataOffset bindlessOffset) const;
+    void patchBindlessOffsetsForImplicitArgs(uint64_t bindlessSurfaceStateBaseOffset) const;
+    void patchBindlessOffsetsInCrossThreadData(uint64_t bindlessSurfaceStateBaseOffset) const;
 
     // Helpers
     cl_int setArg(uint32_t argIndex, uint32_t argValue);
@@ -327,11 +324,6 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
 
     std::unique_ptr<KernelObjsForAuxTranslation> fillWithKernelObjsForAuxTranslation();
 
-    MOCKABLE_VIRTUAL bool requiresCacheFlushCommand(const CommandQueue &commandQueue) const;
-
-    using CacheFlushAllocationsVec = StackVec<GraphicsAllocation *, 32>;
-    void getAllocationsForCacheFlush(CacheFlushAllocationsVec &out) const;
-
     void setAuxTranslationDirection(AuxTranslationDirection auxTranslationDirection) {
         this->auxTranslationDirection = auxTranslationDirection;
     }
@@ -347,7 +339,7 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
     cl_int setKernelExecutionType(cl_execution_info_kernel_type_intel executionType);
     void getSuggestedLocalWorkSize(const cl_uint workDim, const size_t *globalWorkSize, const size_t *globalWorkOffset,
                                    size_t *localWorkSize);
-    uint32_t getMaxWorkGroupCount(const cl_uint workDim, const size_t *localWorkSize, const CommandQueue *commandQueue) const;
+    uint32_t getMaxWorkGroupCount(const cl_uint workDim, const size_t *localWorkSize, const CommandQueue *commandQueue, bool forceSingleTileQuery) const;
 
     uint64_t getKernelStartAddress(const bool localIdsGenerationByRuntime, const bool kernelUsesLocalIds, const bool isCssUsed, const bool returnFullAddress) const;
 
@@ -459,7 +451,6 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
     void provideInitializationHints();
 
     void markArgPatchedAndResolveArgs(uint32_t argIndex);
-    void resolveArgs();
 
     void reconfigureKernel();
     bool hasDirectStatelessAccessToSharedBuffer() const;
@@ -490,7 +481,6 @@ class Kernel : public ReferenceTrackedObject<Kernel> {
     std::vector<PatchInfoData> patchInfoDataList;
     std::vector<size_t> slmSizes;
 
-    std::unique_ptr<ImageTransformer> imageTransformer;
     std::unique_ptr<char[]> pSshLocal;
     std::unique_ptr<ImplicitArgs> pImplicitArgs = nullptr;
 

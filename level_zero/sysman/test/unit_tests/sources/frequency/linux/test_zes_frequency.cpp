@@ -1,13 +1,14 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/test/unit_tests/sources/frequency/linux/mock_sysman_frequency.h"
 #include "level_zero/sysman/test/unit_tests/sources/linux/mock_sysman_fixture.h"
+#include "level_zero/sysman/test/unit_tests/sources/linux/mocks/mock_sysman_product_helper.h"
 
 #include <cmath>
 
@@ -31,8 +32,6 @@ class SysmanDeviceFrequencyFixture : public SysmanDeviceFixture {
     L0::Sysman::SysmanDevice *device = nullptr;
     std::unique_ptr<MockFrequencySysfsAccess> pSysfsAccess;
     L0::Sysman::SysFsAccessInterface *pSysfsAccessOld = nullptr;
-    std::unique_ptr<ProductHelper> pProductHelper;
-    std::unique_ptr<ProductHelper> pProductHelperOld;
     uint32_t numClocks = 0;
     double step = 0;
 
@@ -42,9 +41,8 @@ class SysmanDeviceFrequencyFixture : public SysmanDeviceFixture {
         pSysfsAccessOld = pLinuxSysmanImp->pSysfsAccess;
         pSysfsAccess = std::make_unique<MockFrequencySysfsAccess>();
         pLinuxSysmanImp->pSysfsAccess = pSysfsAccess.get();
-        pProductHelper = std::make_unique<MockProductHelperFreq>();
         auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-        std::swap(rootDeviceEnvironment.productHelper, pProductHelper);
+        rootDeviceEnvironment.getMutableHardwareInfo()->capabilityTable.supportsImages = false;
         pSysfsAccess->setVal(minFreqFile, minFreq);
         pSysfsAccess->setVal(maxFreqFile, maxFreq);
         pSysfsAccess->setVal(requestFreqFile, request);
@@ -65,8 +63,6 @@ class SysmanDeviceFrequencyFixture : public SysmanDeviceFixture {
 
     void TearDown() override {
         pLinuxSysmanImp->pSysfsAccess = pSysfsAccessOld;
-        auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-        std::swap(rootDeviceEnvironment.productHelper, pProductHelper);
         SysmanDeviceFixture::TearDown();
     }
 
@@ -112,11 +108,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenComponentCountZeroAndValidPtrWhenEnume
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenComponentCountZeroWhenEnumeratingFrequencyHandlesAndMediaFreqDomainIsPresentThenNonZeroCountIsReturnedAndCallSucceds) {
-    auto mockProductHelper = std::make_unique<MockProductHelperFreq>();
-    mockProductHelper->isMediaFreqDomainPresent = true;
-    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
-    auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-    std::swap(rootDeviceEnvironment.productHelper, productHelper);
+    pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef().getMutableHardwareInfo()->capabilityTable.supportsImages = true;
     uint32_t count = 0U;
 
     EXPECT_EQ(ZE_RESULT_SUCCESS, zesDeviceEnumFrequencyDomains(device->toHandle(), &count, nullptr));
@@ -130,16 +122,11 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenComponentCountZeroWhenEnumeratingFrequ
     for (auto handle : handles) {
         EXPECT_NE(handle, nullptr);
     }
-    std::swap(rootDeviceEnvironment.productHelper, productHelper);
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenComponentCountZeroWhenEnumeratingFrequencyHandlesAndMediaDomainIsAbsentThenNonZeroCountIsReturnedAndCallSucceds) {
     pSysfsAccess->directoryExistsResult = false;
-    auto mockProductHelper = std::make_unique<MockProductHelperFreq>();
-    mockProductHelper->isMediaFreqDomainPresent = true;
-    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
-    auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-    std::swap(rootDeviceEnvironment.productHelper, productHelper);
+    pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef().getMutableHardwareInfo()->capabilityTable.supportsImages = true;
     uint32_t count = 0U;
 
     EXPECT_EQ(ZE_RESULT_SUCCESS, zesDeviceEnumFrequencyDomains(device->toHandle(), &count, nullptr));
@@ -153,7 +140,6 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenComponentCountZeroWhenEnumeratingFrequ
     for (auto handle : handles) {
         EXPECT_NE(handle, nullptr);
     }
-    std::swap(rootDeviceEnvironment.productHelper, productHelper);
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenActualComponentCountTwoWhenTryingToGetOneComponentOnlyThenOneComponentIsReturnedAndCountUpdated) {
@@ -171,6 +157,11 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenActualComponentCountTwoWhenTryingToGet
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencyGetPropertiesThenSuccessIsReturned) {
+    MockSysmanProductHelper *pMockSysmanProductHelper = new MockSysmanProductHelper();
+    pMockSysmanProductHelper->isFrequencySetRangeSupportedResult = true;
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper(static_cast<SysmanProductHelper *>(pMockSysmanProductHelper));
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
     auto handles = getFreqHandles(handleComponentCount);
     for (auto handle : handles) {
         EXPECT_NE(handle, nullptr);
@@ -183,6 +174,19 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFreq
         EXPECT_DOUBLE_EQ(maxFreq, properties.max);
         EXPECT_DOUBLE_EQ(minFreq, properties.min);
         EXPECT_TRUE(properties.canControl);
+    }
+}
+
+TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleAndFrequenceSetRangeIsUnsupportedWhenCallingzesFrequencyGetPropertiesThenVerifyCanControlIsSetToFalse) {
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper = std::make_unique<MockSysmanProductHelper>();
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
+    auto handles = getFreqHandles(handleComponentCount);
+    for (auto handle : handles) {
+        ASSERT_NE(nullptr, handle);
+        zes_freq_properties_t properties{};
+        EXPECT_EQ(ZE_RESULT_SUCCESS, zesFrequencyGetProperties(handle, &properties));
+        EXPECT_FALSE(properties.canControl);
     }
 }
 
@@ -260,7 +264,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFreq
     }
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequencySetRangeForFailures1ThenAPIExitsGracefully) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequencySetRangeForFailures1ThenAPIExitsGracefully, IsXeHpOrXeHpcOrXeHpgCore) {
     auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
     ze_bool_t onSubdevice = (subDeviceCount == 0) ? false : true;
     uint32_t subdeviceId = 0;
@@ -277,7 +281,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequen
     EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, pFrequencyImp->frequencySetRange(&limits));
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequencySetRangeForFailures2ThenAPIExitsGracefully) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequencySetRangeForFailures2ThenAPIExitsGracefully, IsXeHpOrXeHpcOrXeHpgCore) {
     auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
     ze_bool_t onSubdevice = (subDeviceCount == 0) ? false : true;
     uint32_t subdeviceId = 0;
@@ -294,7 +298,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyLimitsWhenCallingFrequen
     EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, pFrequencyImp->frequencySetRange(&limits));
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeThenVerifyzesFrequencySetRangeTest1CallSucceeds) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeThenVerifyzesFrequencySetRangeTest1CallSucceeds, IsXeHpOrXeHpcOrXeHpgCore) {
     auto handles = getFreqHandles(handleComponentCount);
     for (auto handle : handles) {
         const double startingMin = 900.0;
@@ -314,7 +318,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFreq
     }
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenNegativeUnityRangeSetWhenGetRangeIsCalledThenReturnsValueFromDefaultPath) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenNegativeUnityRangeSetWhenGetRangeIsCalledThenReturnsValueFromDefaultPath, IsXeHpOrXeHpcOrXeHpgCore) {
     auto handles = getFreqHandles(handleComponentCount);
     for (auto handle : handles) {
         const double negativeMin = -1;
@@ -331,7 +335,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenNegativeUnityRangeSetWhenGetRangeIsCal
     }
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeThenVerifyzesFrequencySetRangeTest2CallSucceeds) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeThenVerifyzesFrequencySetRangeTest2CallSucceeds, IsXeHpOrXeHpcOrXeHpgCore) {
     auto handles = getFreqHandles(handleComponentCount);
     for (auto handle : handles) {
         const double startingMax = 600.0;
@@ -351,7 +355,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFreq
     }
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenInvalidFrequencyLimitsWhenCallingFrequencySetRangeThenVerifyFrequencySetRangeTestReturnsError) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenInvalidFrequencyLimitsWhenCallingFrequencySetRangeThenVerifyFrequencySetRangeTestReturnsError, IsXeHpOrXeHpcOrXeHpgCore) {
     auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
     ze_bool_t onSubdevice = (subDeviceCount == 0) ? false : true;
     uint32_t subdeviceId = 0;
@@ -362,6 +366,25 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenInvalidFrequencyLimitsWhenCallingFrequ
     limits.min = clockValue(maxFreq + step);
     limits.max = minFreq;
     EXPECT_EQ(ZE_RESULT_ERROR_INVALID_ARGUMENT, pFrequencyImp->frequencySetRange(&limits));
+}
+
+TEST_F(SysmanDeviceFrequencyFixture, GivenFrequencySetRangeNotSupportedWhenCallingzesFrequencySetRangeThenVerifyzesFrequencySetRangeFails) {
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper = std::make_unique<MockSysmanProductHelper>();
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
+    auto handles = getFreqHandles(handleComponentCount);
+    for (auto handle : handles) {
+        const double startingMin = 900.0;
+        const double newMax = 600.0;
+        zes_freq_range_t limits;
+
+        pSysfsAccess->setVal(minFreqFile, startingMin);
+        // If the new Max value is less than the old Min
+        // value, the new Min must be set before the new Max
+        limits.min = minFreq;
+        limits.max = newMax;
+        EXPECT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, zesFrequencySetRange(handle, &limits));
+    }
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencyGetStateThenVerifyzesFrequencyGetStateTestCallSucceeds) {
@@ -431,7 +454,7 @@ TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFreq
     }
 }
 
-TEST_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeWithLegacyPathThenVerifyzesFrequencySetRangeTestCallSucceeds) {
+HWTEST2_F(SysmanDeviceFrequencyFixture, GivenValidFrequencyHandleWhenCallingzesFrequencySetRangeWithLegacyPathThenVerifyzesFrequencySetRangeTestCallSucceeds, IsXeHpOrXeHpcOrXeHpgCore) {
     pSysfsAccess->isLegacy = true;
     pSysfsAccess->directoryExistsResult = false;
     for (auto handle : pSysmanDeviceImp->pFrequencyHandleContext->handleList) {
@@ -751,6 +774,11 @@ TEST_F(SysmanDeviceFrequencyFixture, GivengetMinValFunctionReturnsErrorWhenValid
 }
 
 TEST_F(SysmanDeviceFrequencyFixture, GivenOnSubdeviceSetWhenValidatingAnyFrequencyAPIThenSuccessIsReturned) {
+    MockSysmanProductHelper *pMockSysmanProductHelper = new MockSysmanProductHelper();
+    pMockSysmanProductHelper->isFrequencySetRangeSupportedResult = true;
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper(static_cast<SysmanProductHelper *>(pMockSysmanProductHelper));
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
     zes_freq_properties_t properties = {};
     PublicLinuxFrequencyImp linuxFrequencyImp(pOsSysman, 1, 0, ZES_FREQ_DOMAIN_GPU);
     EXPECT_EQ(ZE_RESULT_SUCCESS, linuxFrequencyImp.osFrequencyGetProperties(properties));
@@ -880,7 +908,6 @@ class FreqMultiDeviceFixture : public SysmanMultiDeviceFixture {
     L0::Sysman::SysmanDevice *device = nullptr;
     std::unique_ptr<MockFrequencySysfsAccess> pSysfsAccess;
     L0::Sysman::SysFsAccessInterface *pSysfsAccessOld = nullptr;
-    std::unique_ptr<ProductHelper> pProductHelper;
 
     void SetUp() override {
         SysmanMultiDeviceFixture::SetUp();
@@ -888,9 +915,8 @@ class FreqMultiDeviceFixture : public SysmanMultiDeviceFixture {
         pSysfsAccessOld = pLinuxSysmanImp->pSysfsAccess;
         pSysfsAccess = std::make_unique<MockFrequencySysfsAccess>();
         pLinuxSysmanImp->pSysfsAccess = pSysfsAccess.get();
-        pProductHelper = std::make_unique<MockProductHelperFreq>();
         auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-        std::swap(rootDeviceEnvironment.productHelper, pProductHelper);
+        rootDeviceEnvironment.getMutableHardwareInfo()->capabilityTable.supportsImages = false;
         // delete handles created in initial SysmanDeviceHandleContext::init() call
         for (auto handle : pSysmanDeviceImp->pFrequencyHandleContext->handleList) {
             delete handle;
@@ -901,8 +927,6 @@ class FreqMultiDeviceFixture : public SysmanMultiDeviceFixture {
 
     void TearDown() override {
         pLinuxSysmanImp->pSysfsAccess = pSysfsAccessOld;
-        auto &rootDeviceEnvironment = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef();
-        std::swap(rootDeviceEnvironment.productHelper, pProductHelper);
         SysmanMultiDeviceFixture::TearDown();
     }
 

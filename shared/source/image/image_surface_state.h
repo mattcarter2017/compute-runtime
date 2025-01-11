@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "shared/source/command_container/encode_surface_state.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/gmm_helper/gmm.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
@@ -50,13 +51,13 @@ inline void setImageSurfaceState(typename GfxFamily::RENDER_SURFACE_STATE *surfa
 
     surfaceState->setAuxiliarySurfaceMode(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE);
     surfaceState->setAuxiliarySurfacePitch(1u);
-    surfaceState->setAuxiliarySurfaceQpitch(0u);
+    surfaceState->setAuxiliarySurfaceQPitch(0u);
     surfaceState->setAuxiliarySurfaceBaseAddress(0u);
     surfaceState->setRenderTargetViewExtent(renderTargetViewExtent);
     surfaceState->setMinimumArrayElement(minimumArrayElement);
 
     // SurfaceQpitch is in rows but must be a multiple of VALIGN
-    surfaceState->setSurfaceQpitch(imageInfo.qPitch);
+    surfaceState->setSurfaceQPitch(imageInfo.qPitch);
 
     surfaceState->setSurfaceArray(isImageArray);
 
@@ -70,7 +71,7 @@ inline void setImageSurfaceState(typename GfxFamily::RENDER_SURFACE_STATE *surfa
 
     surfaceState->setMemoryObjectControlState(gmmHelper.getMOCS(GMM_RESOURCE_USAGE_OCL_IMAGE));
 
-    surfaceState->setCoherencyType(RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT);
+    EncodeSurfaceState<GfxFamily>::setCoherencyType(surfaceState, RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT);
 
     surfaceState->setMultisampledSurfaceStorageFormat(RENDER_SURFACE_STATE::MULTISAMPLED_SURFACE_STORAGE_FORMAT::MULTISAMPLED_SURFACE_STORAGE_FORMAT_MSS);
 
@@ -135,6 +136,6 @@ inline void setUnifiedAuxBaseAddress(typename GfxFamily::RENDER_SURFACE_STATE *s
 }
 
 template <typename GfxFamily>
-void setMipTailStartLod(typename GfxFamily::RENDER_SURFACE_STATE *surfaceState, Gmm *gmm);
+void setMipTailStartLOD(typename GfxFamily::RENDER_SURFACE_STATE *surfaceState, Gmm *gmm);
 
 } // namespace NEO

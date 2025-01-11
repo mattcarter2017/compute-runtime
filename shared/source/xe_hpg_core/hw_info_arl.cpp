@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,7 +35,6 @@ const RuntimeCapabilityTable ARL::capabilityTable{
     {0, 0, 0, 0, false, false, false, false},                  // kmdNotifyProperties
     MemoryConstants::max48BitAddress,                          // gpuAddressSpace
     0,                                                         // sharedSystemMemCapabilities
-    83.333,                                                    // defaultProfilingTimerResolution
     MemoryConstants::pageSize,                                 // requiredPreemptionSurfaceSize
     "",                                                        // deviceName
     nullptr,                                                   // preferredPlatformName
@@ -71,67 +70,35 @@ const RuntimeCapabilityTable ARL::capabilityTable{
     false,                                                     // supportsOnDemandPageFaults
     false,                                                     // supportsIndependentForwardProgress
     false,                                                     // hostPtrTrackingEnabled
-    true,                                                      // levelZeroSupported
     true,                                                      // isIntegratedDevice
     true,                                                      // supportsMediaBlock
     false,                                                     // p2pAccessSupported
     false,                                                     // p2pAtomicAccessSupported
     true,                                                      // fusedEuEnabled
-    false,                                                     // l0DebuggerSupported
-    true                                                       // supportsFloatAtomics
+    true,                                                      // l0DebuggerSupported
+    true,                                                      // supportsFloatAtomics
+    0                                                          // cxlType
 };
 
 WorkaroundTable ARL::workaroundTable = {};
 FeatureTable ARL::featureTable = {};
 
-void ARL::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo) {
+void ARL::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper) {
+    setupDefaultFeatureTableAndWorkaroundTable(hwInfo, releaseHelper);
     FeatureTable *featureTable = &hwInfo->featureTable;
     WorkaroundTable *workaroundTable = &hwInfo->workaroundTable;
 
-    featureTable->flags.ftrL3IACoherency = true;
-    featureTable->flags.ftrPPGTT = true;
-    featureTable->flags.ftrSVM = true;
-    featureTable->flags.ftrIA32eGfxPTEs = true;
-    featureTable->flags.ftrStandardMipTailFormat = true;
-    featureTable->flags.ftrTranslationTable = true;
-    featureTable->flags.ftrUserModeTranslationTable = true;
-    featureTable->flags.ftrTileMappedResource = true;
-    featureTable->flags.ftrFbc = true;
-    featureTable->flags.ftrAstcHdr2D = true;
-    featureTable->flags.ftrAstcLdr2D = true;
-
-    featureTable->flags.ftrGpGpuMidBatchPreempt = true;
-    featureTable->flags.ftrGpGpuThreadGroupLevelPreempt = true;
-
-    featureTable->flags.ftrTileY = false;
-    featureTable->flags.ftrLinearCCS = true;
-    featureTable->flags.ftrE2ECompression = false;
-    featureTable->flags.ftrCCSNode = true;
-    featureTable->flags.ftrCCSRing = true;
     featureTable->flags.ftrTile64Optimization = true;
+    featureTable->ftrBcsInfo = 1;
 
-    workaroundTable->flags.wa4kAlignUVOffsetNV12LinearSurface = true;
     workaroundTable->flags.waUntypedBufferCompression = true;
 };
 
 void ARL::setupHardwareInfoBase(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->ThreadCount = gtSysInfo->EUCount * releaseHelper->getNumThreadsPerEu();
-    gtSysInfo->TotalPsThreadsWindowerRange = 64;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
-    gtSysInfo->TotalVsThreads = 336;
-    gtSysInfo->TotalHsThreads = 336;
-    gtSysInfo->TotalDsThreads = 336;
-    gtSysInfo->TotalGsThreads = 336;
-
-    gtSysInfo->CCSInfo.IsValid = true;
-    gtSysInfo->CCSInfo.NumberOfCCSEnabled = 1;
-    gtSysInfo->CCSInfo.Instances.CCSEnableMask = 0b1;
+    setupDefaultGtSysInfo(hwInfo, releaseHelper);
 
     if (setupFeatureTableAndWorkaroundTable) {
-        setupFeatureAndWorkaroundTable(hwInfo);
+        setupFeatureAndWorkaroundTable(hwInfo, *releaseHelper);
     }
 }
 
@@ -145,33 +112,9 @@ const HardwareInfo ArlHwConfig::hwInfo = {
 GT_SYSTEM_INFO ArlHwConfig::gtSystemInfo = {0};
 void ArlHwConfig::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
     ARL::setupHardwareInfoBase(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
-
-    // non-zero values for unit tests
-    if (gtSysInfo->SliceCount == 0) {
-        gtSysInfo->SliceCount = 1;
-        gtSysInfo->SubSliceCount = 2;
-        gtSysInfo->DualSubSliceCount = gtSysInfo->SubSliceCount;
-        gtSysInfo->EUCount = 4;
-        gtSysInfo->MaxEuPerSubSlice = gtSysInfo->EUCount / gtSysInfo->SubSliceCount;
-        gtSysInfo->MaxSlicesSupported = gtSysInfo->SliceCount;
-        gtSysInfo->MaxSubSlicesSupported = gtSysInfo->SubSliceCount;
-
-        gtSysInfo->L3BankCount = 1;
-
-        hwInfo->featureTable.ftrBcsInfo = 1;
-        gtSysInfo->IsDynamicallyPopulated = true;
-        for (uint32_t slice = 0; slice < gtSysInfo->SliceCount; slice++) {
-            gtSysInfo->SliceInfo[slice].Enabled = true;
-        }
-    }
-    gtSysInfo->L3CacheSizeInKb = 1;
 
     if (setupFeatureTableAndWorkaroundTable) {
-        ARL::setupFeatureAndWorkaroundTable(hwInfo);
+        ARL::setupFeatureAndWorkaroundTable(hwInfo, *releaseHelper);
     }
 };
 

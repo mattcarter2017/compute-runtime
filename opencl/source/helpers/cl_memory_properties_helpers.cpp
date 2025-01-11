@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,6 +37,7 @@ bool ClMemoryPropertiesHelper::parseMemoryProperties(const cl_mem_properties_int
             case CL_MEM_ALLOC_FLAGS_INTEL:
                 allocflags |= static_cast<cl_mem_alloc_flags_intel>(properties[i + 1]);
                 break;
+            case CL_MEM_DEVICE_ID_INTEL_DEPRECATED:
             case CL_MEM_DEVICE_ID_INTEL: {
                 if (deviceSet) {
                     return false;
@@ -61,8 +62,8 @@ bool ClMemoryPropertiesHelper::parseMemoryProperties(const cl_mem_properties_int
                 handle = static_cast<uint64_t>(properties[i + 1]);
                 handleType = static_cast<uint64_t>(UnifiedSharingHandleType::win32Nt);
                 break;
-            case CL_DEVICE_HANDLE_LIST_KHR:
-                while (properties[i + 1] != CL_DEVICE_HANDLE_LIST_END_KHR) {
+            case CL_MEM_DEVICE_HANDLE_LIST_KHR:
+                while (properties[i + 1] != CL_MEM_DEVICE_HANDLE_LIST_END_KHR) {
                     cl_device_id deviceId = reinterpret_cast<cl_device_id>(properties[i + 1]);
                     auto pClDevice = NEO::castToObject<ClDevice>(deviceId);
                     if ((pClDevice == nullptr) || (!context.isDeviceAssociated(*pClDevice))) {

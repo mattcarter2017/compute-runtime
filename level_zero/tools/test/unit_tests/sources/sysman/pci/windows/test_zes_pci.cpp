@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -274,8 +274,21 @@ TEST_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingGetPciStateAndKm
     delete pPciImp;
 }
 
+TEST_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingGetPciStateAndSpeedParamsNotSupportedThenNotknownValuesAreReturned) {
+    setLocalMemorySupportedAndReinit(true);
+    pKmdSysManager->pciCurrentLinkSpeedReturnCode = KmdSysman::KmdSysmanFail;
+    pKmdSysManager->pciCurrentLinkWidthReturnCode = KmdSysman::KmdSysmanFail;
+    zes_pci_state_t pState = {};
+    WddmPciImp *pPciImp = new WddmPciImp(pOsSysman);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, pPciImp->getState(&pState));
+    EXPECT_EQ(pState.speed.gen, -1);
+    EXPECT_EQ(pState.speed.width, -1);
+    EXPECT_EQ(pState.speed.maxBandwidth, -1);
+    delete pPciImp;
+}
+
 TEST_F(SysmanDevicePciFixture, WhenConvertingLinkSpeedThenResultIsCorrect) {
-    for (int32_t i = PciGenerations::PciGen1; i <= PciGenerations::PciGen5; i++) {
+    for (int32_t i = static_cast<int32_t>(PciGenerations::pciGen1); i <= static_cast<int32_t>(PciGenerations::pciGen5); i++) {
         double speed = convertPciGenToLinkSpeed(i);
         int32_t gen = convertLinkSpeedToPciGen(speed);
         EXPECT_EQ(i, gen);

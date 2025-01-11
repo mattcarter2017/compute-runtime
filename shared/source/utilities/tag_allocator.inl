@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,9 +13,8 @@
 namespace NEO {
 template <typename TagType>
 TagAllocator<TagType>::TagAllocator(const RootDeviceIndicesContainer &rootDeviceIndices, MemoryManager *memMngr, size_t tagCount, size_t tagAlignment,
-                                    size_t tagSize, bool doNotReleaseNodes, DeviceBitfield deviceBitfield)
-    : TagAllocatorBase(rootDeviceIndices, memMngr, tagCount, tagAlignment, tagSize, doNotReleaseNodes, deviceBitfield) {
-    std::unique_lock<std::mutex> lock(allocatorMutex);
+                                    size_t tagSize, ValueT initialValue, bool doNotReleaseNodes, bool initializeTags, DeviceBitfield deviceBitfield)
+    : TagAllocatorBase(rootDeviceIndices, memMngr, tagCount, tagAlignment, tagSize, doNotReleaseNodes, deviceBitfield), initialValue(initialValue), initializeTags(initializeTags) {
 
     populateFreeTags();
 }
@@ -33,10 +32,13 @@ TagNodeBase *TagAllocator<TagType>::getTag() {
     }
     usedTags.pushFrontOne(*node);
     node->incRefCount();
-    node->initialize();
+
+    if (initializeTags) {
+        node->initialize();
+    }
 
     if (debugManager.flags.PrintTimestampPacketUsage.get() == 1) {
-        printf("\nPID: %u, TSP taken from pool and initialized: 0x%" PRIX64, SysCalls::getProcessId(), node->getGpuAddress());
+        printf("\nPID: %u, TSP taken from pool and initialized(%d): 0x%" PRIX64, SysCalls::getProcessId(), initializeTags, node->getGpuAddress());
     }
 
     return node;
@@ -182,7 +184,7 @@ size_t TagNode<TagType>::getGlobalEndOffset() const {
 
 template <typename TagType>
 uint64_t TagNode<TagType>::getContextStartValue([[maybe_unused]] uint32_t packetIndex) const {
-    if constexpr (TagType::getTagNodeType() != TagNodeType::hwPerfCounter) {
+    if constexpr (TagType::getTagNodeType() == TagNodeType::timestampPacket || TagType::getTagNodeType() == TagNodeType::hwTimeStamps) {
         return tagForCpuAccess->getContextStartValue(packetIndex);
     } else {
         UNRECOVERABLE_IF(true);
@@ -191,7 +193,7 @@ uint64_t TagNode<TagType>::getContextStartValue([[maybe_unused]] uint32_t packet
 
 template <typename TagType>
 uint64_t TagNode<TagType>::getGlobalStartValue([[maybe_unused]] uint32_t packetIndex) const {
-    if constexpr (TagType::getTagNodeType() != TagNodeType::hwPerfCounter) {
+    if constexpr (TagType::getTagNodeType() == TagNodeType::timestampPacket || TagType::getTagNodeType() == TagNodeType::hwTimeStamps) {
         return tagForCpuAccess->getGlobalStartValue(packetIndex);
     } else {
         UNRECOVERABLE_IF(true);
@@ -200,7 +202,7 @@ uint64_t TagNode<TagType>::getGlobalStartValue([[maybe_unused]] uint32_t packetI
 
 template <typename TagType>
 uint64_t TagNode<TagType>::getContextEndValue([[maybe_unused]] uint32_t packetIndex) const {
-    if constexpr (TagType::getTagNodeType() != TagNodeType::hwPerfCounter) {
+    if constexpr (TagType::getTagNodeType() == TagNodeType::timestampPacket || TagType::getTagNodeType() == TagNodeType::hwTimeStamps) {
         return tagForCpuAccess->getContextEndValue(packetIndex);
     } else {
         UNRECOVERABLE_IF(true);
@@ -209,7 +211,7 @@ uint64_t TagNode<TagType>::getContextEndValue([[maybe_unused]] uint32_t packetIn
 
 template <typename TagType>
 uint64_t TagNode<TagType>::getGlobalEndValue([[maybe_unused]] uint32_t packetIndex) const {
-    if constexpr (TagType::getTagNodeType() != TagNodeType::hwPerfCounter) {
+    if constexpr (TagType::getTagNodeType() == TagNodeType::timestampPacket || TagType::getTagNodeType() == TagNodeType::hwTimeStamps) {
         return tagForCpuAccess->getGlobalEndValue(packetIndex);
     } else {
         UNRECOVERABLE_IF(true);

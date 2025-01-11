@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,15 +9,16 @@
 
 #include "shared/source/debugger/debugger.h"
 #include "shared/source/memory_manager/graphics_allocation.h"
+#include "shared/source/memory_manager/unified_memory_pooling.h"
 #include "shared/source/os_interface/os_library.h"
 
 #include "level_zero/api/extensions/public/ze_exp_ext.h"
 #include "level_zero/core/source/driver/driver_handle.h"
-#include "level_zero/core/source/get_extension_function_lookup_map.h"
-#include "level_zero/include/ze_intel_gpu.h"
+#include "level_zero/ze_intel_gpu.h"
 
 #include <map>
 #include <mutex>
+#include <unordered_map>
 
 namespace L0 {
 class HostPointerManager;
@@ -33,6 +34,7 @@ enum L0DeviceHierarchyMode {
 #pragma pack(1)
 struct IpcMemoryData {
     uint64_t handle = 0;
+    uint64_t poolOffset = 0;
     uint8_t type = 0;
 };
 #pragma pack()
@@ -101,6 +103,8 @@ struct DriverHandleImp : public DriverHandle {
                                                void *basePtr,
                                                uintptr_t *peerGpuAddress,
                                                NEO::SvmAllocationData **peerAllocData);
+
+    NEO::GraphicsAllocation *getCounterPeerAllocation(Device *device, NEO::GraphicsAllocation &graphicsAllocation);
     void initializeVertexes();
     ze_result_t fabricVertexGetExp(uint32_t *pCount, ze_fabric_vertex_handle_t *phDevices) override;
     void createHostPointerManager();
@@ -124,10 +128,9 @@ struct DriverHandleImp : public DriverHandle {
     ze_result_t parseAffinityMaskCombined(uint32_t *pCount, ze_device_handle_t *phDevices);
     std::map<uint64_t, IpcHandleTracking *> &getIPCHandleMap() { return this->ipcHandles; };
     [[nodiscard]] std::unique_lock<std::mutex> lockIPCHandleMap() { return std::unique_lock<std::mutex>(this->ipcHandleMapMutex); };
+    void initHostUsmAllocPool();
 
     std::unique_ptr<HostPointerManager> hostPointerManager;
-    // Experimental functions
-    std::unordered_map<std::string, void *> extensionFunctionsLookupMap;
 
     std::mutex sharedMakeResidentAllocationsLock;
     std::map<void *, NEO::GraphicsAllocation *> sharedMakeResidentAllocations;
@@ -135,6 +138,7 @@ struct DriverHandleImp : public DriverHandle {
     std::vector<Device *> devices;
     std::vector<FabricVertex *> fabricVertices;
     std::vector<FabricEdge *> fabricEdges;
+    std::vector<FabricEdge *> fabricIndirectEdges;
 
     std::mutex rtasLock;
 
@@ -142,12 +146,16 @@ struct DriverHandleImp : public DriverHandle {
     static const std::vector<std::pair<std::string, uint32_t>> extensionsSupported;
 
     uint64_t uuidTimestamp = 0u;
+    unsigned int pid = 0;
 
     NEO::MemoryManager *memoryManager = nullptr;
     NEO::SVMAllocsManager *svmAllocsManager = nullptr;
+    NEO::UsmMemAllocPool usmHostMemAllocPool;
 
     std::unique_ptr<NEO::OsLibrary> rtasLibraryHandle;
     bool rtasLibraryUnavailable = false;
+
+    bool externalSemaphoreControllerCreated = false;
 
     uint32_t numDevices = 0;
 
@@ -157,7 +165,6 @@ struct DriverHandleImp : public DriverHandle {
     RootDeviceIndicesContainer rootDeviceIndices;
     std::map<uint32_t, NEO::DeviceBitfield> deviceBitfields;
     void updateRootDeviceBitFields(std::unique_ptr<NEO::Device> &neoDevice);
-    void enableRootDeviceDebugger(std::unique_ptr<NEO::Device> &neoDevice);
 
     // Environment Variables
     NEO::DebuggingMode enableProgramDebugging = NEO::DebuggingMode::disabled;
@@ -170,9 +177,17 @@ struct DriverHandleImp : public DriverHandle {
     // not based on the lifetime of the object of a class.
     std::unordered_map<std::thread::id, std::string> errorDescs;
     std::mutex errorDescsMutex;
-    int setErrorDescription(const char *fmt, ...) override;
+    int setErrorDescription(const std::string &str) override;
     ze_result_t getErrorDescription(const char **ppString) override;
     ze_result_t clearErrorDescription() override;
+
+  protected:
+    NEO::GraphicsAllocation *getPeerAllocation(Device *device,
+                                               NEO::SVMAllocsManager::MapBasedAllocationTracker &storage,
+                                               NEO::SvmAllocationData *allocData,
+                                               void *basePtr,
+                                               uintptr_t *peerGpuAddress,
+                                               NEO::SvmAllocationData **peerAllocData);
 };
 
 extern struct DriverHandleImp *globalDriver;

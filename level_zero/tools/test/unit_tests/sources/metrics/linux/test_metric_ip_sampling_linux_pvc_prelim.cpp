@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -58,13 +58,13 @@ class DrmPrelimMock : public DrmMock {
         uint16_t computeEngineClass = getIoctlHelper()->getDrmParamValue(DrmParam::engineClassCompute);
         std::vector<EngineCapabilities> engines(4);
         engines[0].engine = {computeEngineClass, 0};
-        engines[0].capabilities = 0;
+        engines[0].capabilities = {};
         engines[1].engine = {computeEngineClass, 1};
-        engines[1].capabilities = 0;
+        engines[1].capabilities = {};
         engines[2].engine = {computeEngineClass, 2};
-        engines[2].capabilities = 0;
+        engines[2].capabilities = {};
         engines[3].engine = {computeEngineClass, 3};
-        engines[3].capabilities = 0;
+        engines[3].capabilities = {};
 
         std::vector<DistanceInfo> distances(4);
         distances[0].engine = engines[0].engine;
@@ -89,7 +89,7 @@ class DrmPrelimMock : public DrmMock {
         uint16_t computeEngineClass = getIoctlHelper()->getDrmParamValue(DrmParam::engineClassCompute);
         std::vector<EngineCapabilities> engines(1);
         engines[0].engine = {computeEngineClass, 0};
-        engines[0].capabilities = 0;
+        engines[0].capabilities = {};
 
         std::vector<DistanceInfo> distances(1);
         distances[0].engine = engines[0].engine;
@@ -189,6 +189,15 @@ HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenI915PerfIoctlEnableFailsWhenStar
     EXPECT_EQ(metricIpSamplingOsInterface->startMeasurement(notifyEveryNReports, samplingPeriodNs), ZE_RESULT_ERROR_UNKNOWN);
 }
 
+HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenGetEuStallPropertiesWhenStartMeasurementIsCalledThenReturnFailure, IsPVC) {
+
+    auto drm = static_cast<DrmPrelimMock *>(device->getOsInterface().getDriverModel()->as<NEO::Drm>());
+    drm->setIoctlHelperPrelim20Mock();
+    uint32_t notifyEveryNReports = 0, samplingPeriodNs = 10000;
+    EXPECT_EQ(metricIpSamplingOsInterface->startMeasurement(notifyEveryNReports, samplingPeriodNs), ZE_RESULT_ERROR_UNKNOWN);
+    drm->restoreIoctlHelperPrelim20();
+}
+
 HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenCloseSucceedsWhenStopMeasurementIsCalledThenReturnSuccess, IsPVC) {
 
     VariableBackup<int> backupCloseFuncRetval(&NEO::SysCalls::closeFuncRetVal, 0);
@@ -201,7 +210,7 @@ HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenCloseFailsWhenStopMeasurementIsC
     EXPECT_EQ(metricIpSamplingOsInterface->stopMeasurement(), ZE_RESULT_ERROR_UNKNOWN);
 }
 
-HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenI915PerfIoctlDisableFailsWhenStartMeasurementIsCalledThenReturnFailure, IsPVC) {
+HWTEST2_F(MetricIpSamplingLinuxTestPrelim, givenI915PerfIoctlDisableFailsWhenStopMeasurementIsCalledThenReturnFailure, IsPVC) {
 
     VariableBackup<decltype(SysCalls::sysCallsIoctl)> mockIoctl(&SysCalls::sysCallsIoctl, [](int fileDescriptor, unsigned long int request, void *arg) -> int {
         if (request == I915_PERF_IOCTL_DISABLE) {
@@ -279,7 +288,7 @@ HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenSupportedProductFamilyAndUnsuppo
     EXPECT_FALSE(metricIpSamplingOsInterface->isDependencyAvailable());
 }
 
-HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenSupportedProductFamilyAndSupportedDeviceIdIsUsedWhenIsDependencyAvailableIsCalledThenReturnFailure, IsPVC) {
+HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenSupportedProductFamilyAndSupportedDeviceIdIsUsedWhenIsDependencyAvailableIsCalledThenReturnSucess, IsPVC) {
 
     auto hwInfo = neoDevice->getRootDeviceEnvironment().getMutableHardwareInfo();
     hwInfo->platform.eProductFamily = productFamily;
@@ -288,32 +297,6 @@ HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenSupportedProductFamilyAndSupport
         hwInfo->platform.usDeviceID = deviceId;
         EXPECT_TRUE(metricIpSamplingOsInterface->isDependencyAvailable());
     }
-}
-
-HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenDriverOpenFailsWhenIsDependencyAvailableIsCalledThenReturnFailure, IsPVC) {
-
-    auto hwInfo = neoDevice->getRootDeviceEnvironment().getMutableHardwareInfo();
-    hwInfo->platform.eProductFamily = productFamily;
-    hwInfo->platform.usDeviceID = NEO::pvcXtDeviceIds.front();
-
-    auto drm = static_cast<DrmPrelimMock *>(device->getOsInterface().getDriverModel()->as<NEO::Drm>());
-    VariableBackup<int> backupCsTimeStampFrequency(&drm->storedCsTimestampFrequency, 0);
-    VariableBackup<int> backupStoredRetVal(&drm->storedRetVal, -1);
-
-    EXPECT_FALSE(metricIpSamplingOsInterface->isDependencyAvailable());
-}
-
-HWTEST2_F(MetricIpSamplingLinuxTestPrelim, GivenIoctlHelperFailsWhenIsDependencyAvailableIsCalledThenReturnFailure, IsPVC) {
-
-    auto hwInfo = neoDevice->getRootDeviceEnvironment().getMutableHardwareInfo();
-    hwInfo->platform.eProductFamily = productFamily;
-    hwInfo->platform.usDeviceID = NEO::pvcXtDeviceIds.front();
-
-    auto drm = static_cast<DrmPrelimMock *>(device->getOsInterface().getDriverModel()->as<NEO::Drm>());
-
-    drm->setIoctlHelperPrelim20Mock();
-    EXPECT_FALSE(metricIpSamplingOsInterface->isDependencyAvailable());
-    drm->restoreIoctlHelperPrelim20();
 }
 
 struct MetricIpSamplingLinuxMultiDeviceTest : public ::testing::Test {

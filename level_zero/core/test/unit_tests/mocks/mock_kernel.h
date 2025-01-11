@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -38,33 +38,45 @@ template <>
 struct WhiteBox<::L0::KernelImp> : public ::L0::KernelImp {
     using BaseClass = ::L0::KernelImp;
     using BaseClass::BaseClass;
+    using ::L0::KernelImp::argumentsResidencyContainer;
+    using ::L0::KernelImp::cooperativeSupport;
     using ::L0::KernelImp::createPrintfBuffer;
     using ::L0::KernelImp::crossThreadData;
     using ::L0::KernelImp::crossThreadDataSize;
     using ::L0::KernelImp::dynamicStateHeapData;
     using ::L0::KernelImp::dynamicStateHeapDataSize;
     using ::L0::KernelImp::groupSize;
+    using ::L0::KernelImp::heaplessEnabled;
+    using ::L0::KernelImp::implicitArgsResidencyContainerIndices;
+    using ::L0::KernelImp::implicitScalingEnabled;
+    using ::L0::KernelImp::internalResidencyContainer;
     using ::L0::KernelImp::isBindlessOffsetSet;
     using ::L0::KernelImp::kernelHasIndirectAccess;
     using ::L0::KernelImp::kernelImmData;
     using ::L0::KernelImp::kernelRequiresGenerationOfLocalIdsByRuntime;
-    using ::L0::KernelImp::midThreadPreemptionDisallowedForRayTracingKernels;
+    using ::L0::KernelImp::localDispatchSupport;
+    using ::L0::KernelImp::maxWgCountPerTileCcs;
+    using ::L0::KernelImp::maxWgCountPerTileCooperative;
+    using ::L0::KernelImp::maxWgCountPerTileRcs;
     using ::L0::KernelImp::module;
     using ::L0::KernelImp::numThreadsPerThreadGroup;
     using ::L0::KernelImp::patchBindlessOffsetsInCrossThreadData;
     using ::L0::KernelImp::patchBindlessSurfaceState;
+    using ::L0::KernelImp::patchSamplerBindlessOffsetsInCrossThreadData;
     using ::L0::KernelImp::perThreadDataForWholeThreadGroup;
     using ::L0::KernelImp::perThreadDataSize;
     using ::L0::KernelImp::perThreadDataSizeForWholeThreadGroup;
     using ::L0::KernelImp::pImplicitArgs;
     using ::L0::KernelImp::printfBuffer;
+    using ::L0::KernelImp::rcsAvailable;
+    using ::L0::KernelImp::regionGroupBarrierIndex;
     using ::L0::KernelImp::requiredWorkgroupOrder;
-    using ::L0::KernelImp::residencyContainer;
     using ::L0::KernelImp::setAssertBuffer;
     using ::L0::KernelImp::slmArgsTotalSize;
     using ::L0::KernelImp::suggestGroupSizeCache;
     using ::L0::KernelImp::surfaceStateHeapData;
     using ::L0::KernelImp::surfaceStateHeapDataSize;
+    using ::L0::KernelImp::syncBufferIndex;
     using ::L0::KernelImp::unifiedMemoryControls;
     using ::L0::KernelImp::usingSurfaceStateHeap;
 
@@ -103,13 +115,29 @@ struct Mock<::L0::KernelImp> : public WhiteBox<::L0::KernelImp> {
         printPrintfOutputCalledTimes++;
     }
 
+    ze_result_t setArgumentValue(uint32_t argIndex, size_t argSize, const void *pArgValue) override {
+
+        if (checkPassedArgumentValues) {
+            UNRECOVERABLE_IF(argIndex >= passedArgumentValues.size());
+
+            passedArgumentValues[argIndex].resize(argSize);
+            memcpy(passedArgumentValues[argIndex].data(), pArgValue, argSize);
+
+            return ZE_RESULT_SUCCESS;
+        } else {
+            return BaseClass::setArgumentValue(argIndex, argSize, pArgValue);
+        }
+    }
+
     WhiteBox<::L0::KernelImmutableData> immutableData;
+    std::vector<std::vector<uint8_t>> passedArgumentValues;
     NEO::KernelDescriptor descriptor;
     NEO::KernelInfo info;
     uint32_t printPrintfOutputCalledTimes = 0;
     bool hangDetectedPassedToPrintfOutput = false;
     bool enableForcingOfGenerateLocalIdByHw = false;
     bool forceGenerateLocalIdByHw = false;
+    bool checkPassedArgumentValues = false;
 };
 
 } // namespace ult

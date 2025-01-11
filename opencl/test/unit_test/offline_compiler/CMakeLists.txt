@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018-2023 Intel Corporation
+# Copyright (C) 2018-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -13,7 +13,19 @@ set(IGDRCL_SRCS_cloc
     ${OCLOC_DIRECTORY}/source/offline_linker.cpp
     ${OCLOC_DIRECTORY}/source/ocloc_concat.cpp
     ${OCLOC_DIRECTORY}/source/ocloc_fatbinary.cpp
+    ${OCLOC_DIRECTORY}/source/ocloc_supported_devices_helper.h
+    ${OCLOC_DIRECTORY}/source/ocloc_supported_devices_helper.cpp
 )
+
+if(WIN32)
+  list(APPEND IGDRCL_SRCS_cloc
+       ${OCLOC_DIRECTORY}/source/windows/ocloc_supported_devices_helper_windows.cpp
+  )
+else()
+  list(APPEND IGDRCL_SRCS_cloc
+       ${OCLOC_DIRECTORY}/source/linux/ocloc_supported_devices_helper_linux.cpp
+  )
+endif()
 
 set(IGDRCL_SRCS_offline_compiler_mock
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder/mock/mock_decoder.h
@@ -66,6 +78,7 @@ set(IGDRCL_SRCS_offline_compiler_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_igc_facade_tests.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_product_config_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_product_config_tests.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_supported_devices_helper_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_tests_configuration.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ocloc_validator_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offline_compiler_tests.cpp
@@ -78,6 +91,9 @@ set(IGDRCL_SRCS_offline_compiler_tests
     ${NEO_SHARED_DIRECTORY}/memory_manager/deferred_deleter.cpp
     ${NEO_SHARED_DIRECTORY}/memory_manager/deferred_deleter.h
     ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_compilers.cpp
+    ${NEO_SHARED_TEST_DIRECTORY}/common/mocks${BRANCH_DIR_SUFFIX}/mock_igc_path.cpp
+    ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_os_library.cpp
+    ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_os_library.h
     ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_compilers.h
     ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_modules_zebin.cpp
     ${NEO_SHARED_TEST_DIRECTORY}/common/mocks/mock_modules_zebin.h
@@ -103,6 +119,7 @@ if(WIN32)
   list(APPEND IGDRCL_SRCS_offline_compiler_tests
        ${NEO_SHARED_DIRECTORY}/os_interface/windows/os_thread_win.cpp
        ${NEO_SHARED_TEST_DIRECTORY}/common/os_interface/windows/signal_utils.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/windows/ocloc_supported_devices_helper_windows_tests.cpp
   )
   list(REMOVE_ITEM IGDRCL_SRCS_offline_compiler_tests
        ${NEO_SHARED_DIRECTORY}/utilities/windows/directory.cpp
@@ -113,6 +130,7 @@ else()
        ${NEO_SHARED_DIRECTORY}/os_interface/linux/sys_calls_linux.cpp
        ${NEO_SHARED_TEST_DIRECTORY}/common/os_interface/linux/signal_utils.cpp
        ${OCLOC_DIRECTORY}/source/linux/os_library_ocloc_helper.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/linux/ocloc_supported_devices_helper_linux_tests.cpp
   )
   list(REMOVE_ITEM IGDRCL_SRCS_offline_compiler_tests
        ${NEO_SHARED_DIRECTORY}/utilities/linux/directory.cpp
@@ -128,7 +146,13 @@ target_include_directories(ocloc_tests PRIVATE
                            ${NEO_SHARED_TEST_DIRECTORY}/common/test_configuration/unit_tests
                            $<TARGET_PROPERTY:ocloc_lib,INCLUDE_DIRECTORIES>
 )
-target_compile_definitions(ocloc_tests PUBLIC MOCKABLE_VIRTUAL=virtual $<TARGET_PROPERTY:ocloc_lib,INTERFACE_COMPILE_DEFINITIONS> ${TESTED_CORE_FLAGS_DEFINITONS})
+target_compile_definitions(ocloc_tests PUBLIC
+                           MOCKABLE_VIRTUAL=virtual
+                           $<TARGET_PROPERTY:ocloc_lib,INTERFACE_COMPILE_DEFINITIONS>
+                           ${TESTED_CORE_FLAGS_DEFINITONS}
+                           NEO_OCLOC_CURRENT_LIB_NAME="ocloc-current"
+                           NEO_OCLOC_FORMER_LIB_NAME="ocloc-former"
+)
 
 target_link_libraries(ocloc_tests gmock-gtest)
 
@@ -144,6 +168,7 @@ get_property(CLOC_LIB_FOLDER TARGET ocloc_lib PROPERTY FOLDER)
 get_property(CLOC_LIB_COMPILE_FLAGS TARGET ocloc_lib PROPERTY COMPILE_FLAGS)
 set_property(TARGET ocloc_tests PROPERTY FOLDER ${CLOC_LIB_FOLDER})
 set_property(TARGET ocloc_tests APPEND_STRING PROPERTY COMPILE_FLAGS ${CLOC_LIB_COMPILE_FLAGS} ${ASAN_FLAGS} ${TSAN_FLAGS})
+set_property(TARGET ocloc_tests PROPERTY ENABLE_EXPORTS TRUE)
 
 string(TOLOWER ${DEFAULT_TESTED_PLATFORM} CLOC_LIB_DEFAULT_DEVICE)
 
@@ -157,7 +182,8 @@ endif()
 
 macro(macro_for_each_platform)
   if("${PLATFORM_IT_LOWER}" STREQUAL "${CLOC_LIB_DEFAULT_DEVICE}")
-    list(GET ${PLATFORM_IT}_${CORE_TYPE}_REVISIONS 0 REVISION_ID)
+    list(GET ${PLATFORM_IT}_${CORE_TYPE}_REVISIONS 0 REVISION_CONFIG)
+    parse_revision_config(${REVISION_CONFIG} ${PLATFORM_IT_LOWER} DEVICE_ID REVISION_ID)
     add_dependencies(run_ocloc_tests prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID})
     add_dependencies(unit_tests prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID})
     set(run_tests_cmd ocloc_tests --device ${PLATFORM_IT_LOWER} --rev_id ${REVISION_ID})
@@ -175,7 +201,7 @@ if(WIN32)
                      TARGET run_ocloc_tests
                      POST_BUILD
                      COMMAND echo deleting offline compiler files and directories...
-                     COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/copybuffer_${CLOC_LIB_DEFAULT_DEVICE}.bc
+                     COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/copybuffer_${CLOC_LIB_DEFAULT_DEVICE}.spv
                      COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/copybuffer_${CLOC_LIB_DEFAULT_DEVICE}.gen
                      COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/copybuffer_${CLOC_LIB_DEFAULT_DEVICE}.bin
                      COMMAND ${CMAKE_COMMAND} -E remove_directory ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/offline_compiler_test
@@ -187,7 +213,7 @@ else()
                      TARGET run_ocloc_tests
                      POST_BUILD
                      COMMAND echo deleting offline compiler files and directories...
-                     COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/*.bc
+                     COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/*.spv
                      COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/*.gen
                      COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/*.ll
                      COMMAND ${CMAKE_COMMAND} -E remove ${TargetDir}/${CLOC_LIB_DEFAULT_DEVICE}/*.bin

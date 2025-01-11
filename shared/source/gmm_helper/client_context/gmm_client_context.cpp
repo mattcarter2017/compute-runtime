@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2022 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/source/gmm_helper/client_context/gmm_client_context.h"
 
+#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/gmm_helper/client_context/gmm_handle_allocator.h"
 #include "shared/source/gmm_helper/gmm_interface.h"
@@ -26,9 +27,9 @@ GmmClientContext::GmmClientContext(const RootDeviceEnvironment &rootDeviceEnviro
     GMM_INIT_IN_ARGS inArgs{};
     GMM_INIT_OUT_ARGS outArgs{};
 
-    auto gtSystemInfo = hardwareInfo->gtSystemInfo;
+    const auto &gtSystemInfo = hardwareInfo->gtSystemInfo;
     inArgs.ClientType = GMM_CLIENT::GMM_OCL_VISTA;
-    inArgs.pGtSysInfo = &gtSystemInfo;
+    inArgs.pGtSysInfo = const_cast<GT_SYSTEM_INFO *>(&gtSystemInfo);
     inArgs.pSkuTable = &gmmFtrTable;
     inArgs.pWaTable = &gmmWaTable;
     inArgs.Platform = hardwareInfo->platform;
@@ -36,6 +37,9 @@ GmmClientContext::GmmClientContext(const RootDeviceEnvironment &rootDeviceEnviro
     auto osInterface = rootDeviceEnvironment.osInterface.get();
     if (osInterface && osInterface->getDriverModel()) {
         osInterface->getDriverModel()->setGmmInputArgs(&inArgs);
+    }
+    if (debugManager.flags.EnableFtrTile64Optimization.get() != -1) {
+        reinterpret_cast<_SKU_FEATURE_TABLE *>(inArgs.pSkuTable)->FtrTile64Optimization = debugManager.flags.EnableFtrTile64Optimization.get();
     }
 
     auto ret = GmmInterface::initialize(&inArgs, &outArgs);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -30,13 +30,25 @@ ze_result_t zeCommandQueueExecuteCommandLists(
     uint32_t numCommandLists,
     ze_command_list_handle_t *phCommandLists,
     ze_fence_handle_t hFence) {
-    return L0::CommandQueue::fromHandle(hCommandQueue)->executeCommandLists(numCommandLists, phCommandLists, hFence, true);
+    return L0::CommandQueue::fromHandle(hCommandQueue)->executeCommandLists(numCommandLists, phCommandLists, hFence, true, nullptr);
 }
 
 ze_result_t zeCommandQueueSynchronize(
     ze_command_queue_handle_t hCommandQueue,
     uint64_t timeout) {
     return L0::CommandQueue::fromHandle(hCommandQueue)->synchronize(timeout);
+}
+
+ze_result_t zeCommandQueueGetOrdinal(
+    ze_command_queue_handle_t hCommandQueue,
+    uint32_t *pOrdinal) {
+    return L0::CommandQueue::fromHandle(hCommandQueue)->getOrdinal(pOrdinal);
+}
+
+ze_result_t zeCommandQueueGetIndex(
+    ze_command_queue_handle_t hCommandQueue,
+    uint32_t *pIndex) {
+    return L0::CommandQueue::fromHandle(hCommandQueue)->getIndex(pIndex);
 }
 
 } // namespace L0
@@ -78,5 +90,21 @@ ZE_APIEXPORT ze_result_t ZE_APICALL zeCommandQueueSynchronize(
     return L0::zeCommandQueueSynchronize(
         hCommandQueue,
         timeout);
+}
+
+ZE_APIEXPORT ze_result_t ZE_APICALL zeCommandQueueGetOrdinal(
+    ze_command_queue_handle_t hCommandQueue,
+    uint32_t *pOrdinal) {
+    return L0::zeCommandQueueGetOrdinal(
+        hCommandQueue,
+        pOrdinal);
+}
+
+ZE_APIEXPORT ze_result_t ZE_APICALL zeCommandQueueGetIndex(
+    ze_command_queue_handle_t hCommandQueue,
+    uint32_t *pIndex) {
+    return L0::zeCommandQueueGetIndex(
+        hCommandQueue,
+        pIndex);
 }
 }

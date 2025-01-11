@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -46,6 +46,7 @@ TEST(Debugger, givenL0DebuggerWhenGettingL0DebuggerThenCorrectObjectIsReturned) 
 }
 
 TEST(Debugger, givenL0DebuggerOFFWhenGettingStateSaveAreaHeaderThenValidSipTypeIsReturned) {
+    VariableBackup<bool> mockSipBackup(&MockSipData::useMockSip, false);
     auto executionEnvironment = new NEO::ExecutionEnvironment();
     executionEnvironment->prepareRootDeviceEnvironments(1);
     auto hwInfo = *NEO::defaultHwInfo.get();
@@ -56,7 +57,7 @@ TEST(Debugger, givenL0DebuggerOFFWhenGettingStateSaveAreaHeaderThenValidSipTypeI
     auto isHexadecimalArrayPreferred = gfxCoreHelper.isSipKernelAsHexadecimalArrayPreferred();
     if (!isHexadecimalArrayPreferred) {
         auto mockBuiltIns = new NEO::MockBuiltins();
-        executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+        MockRootDeviceEnvironment::resetBuiltins(executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     }
 
     executionEnvironment->rootDeviceEnvironments[0]->initGmm();
@@ -168,9 +169,10 @@ HWTEST_F(L0DebuggerTest, GivenDeviceWhenAllocateCalledThenDebuggerIsCreated) {
 
 HWTEST_F(L0DebuggerTest, givenDebuggerWithoutMemoryOperationsHandlerWhenNotifyingModuleAllocationsThenNoAllocationIsResident) {
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
 
     StackVec<NEO::GraphicsAllocation *, 32> allocs;
-    NEO::GraphicsAllocation alloc(0, NEO::AllocationType::internalHostMemory,
+    NEO::GraphicsAllocation alloc(0, 1u /*num gmms*/, NEO::AllocationType::internalHostMemory,
                                   reinterpret_cast<void *>(0x1234), 0x1000, 0, sizeof(uint32_t),
                                   MemoryPool::system4KBPages, MemoryManager::maxOsContextCount);
     allocs.push_back(&alloc);
@@ -194,6 +196,7 @@ HWTEST_F(L0DebuggerTest, givenDebuggerWhenCreatedThenModuleHeapDebugAreaIsCreate
 
     auto neoDevice = pDevice;
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(neoDevice);
+    debugger->initialize();
     auto debugArea = debugger->getModuleDebugArea();
 
     EXPECT_EQ(1, memoryOperationsHandler->makeResidentCalledCount);
@@ -216,6 +219,23 @@ HWTEST_F(L0DebuggerTest, givenDebuggerWhenCreatedThenModuleHeapDebugAreaIsCreate
     neoDevice->getMemoryManager()->freeGraphicsMemory(allocation);
 }
 
+HWTEST_F(L0DebuggerTest, givenDebuggerCreatedWhenSubdevicesExistThenModuleHeapDebugAreaIsResidentForSubDevices) {
+    DebugManagerStateRestore restorer;
+    constexpr auto numSubDevices = 2;
+    debugManager.flags.CreateMultipleSubDevices.set(numSubDevices);
+    auto executionEnvironment = new NEO::ExecutionEnvironment;
+    auto devices = NEO::DeviceFactory::createDevices(*executionEnvironment);
+    auto neoDevice = devices[0].get();
+
+    auto memoryOperationsHandler = new NEO::MockMemoryOperations();
+    memoryOperationsHandler->makeResidentCalledCount = 0;
+    neoDevice->getExecutionEnvironment()->rootDeviceEnvironments[0]->memoryOperationsInterface.reset(memoryOperationsHandler);
+    auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(neoDevice);
+    debugger->initialize();
+
+    EXPECT_EQ((1 + numSubDevices), memoryOperationsHandler->makeResidentCalledCount);
+}
+
 HWTEST_F(L0DebuggerTest, givenBindlessSipWhenModuleHeapDebugAreaIsCreatedThenReservedFieldIsSet) {
     DebugManagerStateRestore restorer;
     NEO::debugManager.flags.UseBindlessDebugSip.set(1);
@@ -234,6 +254,7 @@ HWTEST_F(L0DebuggerTest, givenBindlessSipWhenModuleHeapDebugAreaIsCreatedThenRes
     memoryOperationsHandler->makeResidentCalledCount = 0;
     auto neoDevice = pDevice;
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(neoDevice);
+    debugger->initialize();
     auto debugArea = debugger->getModuleDebugArea();
 
     DebugAreaHeader *header = reinterpret_cast<DebugAreaHeader *>(debugArea->getUnderlyingBuffer());
@@ -258,6 +279,7 @@ HWTEST_F(L0DebuggerTest, givenUseBindlessDebugSipZeroWhenModuleHeapDebugAreaIsCr
     memoryOperationsHandler->makeResidentCalledCount = 0;
     auto neoDevice = pDevice;
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(neoDevice);
+    debugger->initialize();
     auto debugArea = debugger->getModuleDebugArea();
 
     DebugAreaHeader *header = reinterpret_cast<DebugAreaHeader *>(debugArea->getUnderlyingBuffer());
@@ -286,6 +308,7 @@ HWTEST_F(PerContextAddressSpaceL0DebuggerTest, givenCanonizedGpuVasWhenProgrammi
     NEO::debugManager.flags.DebuggerForceSbaTrackingMode.set(0);
 
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
 
     debugger->sbaTrackingGpuVa.address = 0x45670000;
     auto expectedGpuVa = debugger->sbaTrackingGpuVa.address + offsetof(NEO::SbaTrackedAddresses, generalStateBaseAddress);
@@ -375,6 +398,7 @@ HWTEST_F(PerContextAddressSpaceL0DebuggerTest, givenNonZeroGpuVasWhenProgramming
     NEO::debugManager.flags.DebuggerForceSbaTrackingMode.set(0);
 
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
     debugger->singleAddressSpaceSbaTracking = 0;
     debugger->sbaTrackingGpuVa.address = 0x45670000;
     auto expectedGpuVa = debugger->sbaTrackingGpuVa.address + offsetof(NEO::SbaTrackedAddresses, generalStateBaseAddress);
@@ -475,6 +499,7 @@ HWTEST_F(L0DebuggerMultiSubDeviceTest, givenMultiSubDevicesWhenSbaTrackingBuffer
     auto neoDevice = devices[0].get();
 
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(neoDevice);
+    debugger->initialize();
 
     const auto &engines = neoDevice->getAllEngines();
     EXPECT_LE(1u, engines.size());
@@ -554,8 +579,8 @@ struct L0DebuggerSimpleParameterizedTest : public ::testing::TestWithParam<int>,
 using Gen12Plus = IsAtLeastGfxCore<IGFX_GEN12_CORE>;
 
 HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenZeroGpuVasWhenProgrammingSbaTrackingThenStreamIsNotUsed, Gen12Plus) {
-    using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
 
     debugger->sbaTrackingGpuVa.address = 0x45670000;
 
@@ -575,6 +600,7 @@ HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenZeroGpuVasWhenProgrammingSbaTr
 
 HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenNotChangedSurfaceStateWhenCapturingSBAThenNoTrackingCmdsAreAdded, Gen12Plus) {
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
 
     debugger->sbaTrackingGpuVa.address = 0x45670000;
 
@@ -598,6 +624,7 @@ HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenNotChangedSurfaceStateWhenCapt
 
 HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenChangedBaseAddressesWhenCapturingSBAThenTrackingCmdsAreAdded, Gen12Plus) {
     auto debugger = std::make_unique<MockDebuggerL0Hw<FamilyType>>(pDevice);
+    debugger->initialize();
 
     debugger->sbaTrackingGpuVa.address = 0x45670000;
     {
@@ -640,4 +667,4 @@ HWTEST2_P(L0DebuggerSimpleParameterizedTest, givenChangedBaseAddressesWhenCaptur
     }
 }
 
-INSTANTIATE_TEST_CASE_P(SBAModesForDebugger, L0DebuggerSimpleParameterizedTest, ::testing::Values(0, 1));
+INSTANTIATE_TEST_SUITE_P(SBAModesForDebugger, L0DebuggerSimpleParameterizedTest, ::testing::Values(0, 1));

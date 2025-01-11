@@ -9,7 +9,7 @@
 #include "shared/source/gmm_helper/gmm_lib.h"
 
 namespace CacheSettings {
-inline constexpr uint32_t unknownMocs = GMM_RESOURCE_USAGE_UNKNOWN;
+inline constexpr uint32_t unknownMocs = -1;
 } // namespace CacheSettings
 
 namespace NEO {
@@ -32,6 +32,6 @@ struct CacheSettingsHelper {
 
   protected:
     static GMM_RESOURCE_USAGE_TYPE_ENUM getDefaultUsageTypeWithCachingEnabled(AllocationType allocationType, const ProductHelper &productHelper);
-    static GMM_RESOURCE_USAGE_TYPE_ENUM getDefaultUsageTypeWithCachingDisabled(AllocationType allocationType);
+    static GMM_RESOURCE_USAGE_TYPE_ENUM getDefaultUsageTypeWithCachingDisabled(AllocationType allocationType, const ProductHelper &productHelper);
 };
 } // namespace NEO

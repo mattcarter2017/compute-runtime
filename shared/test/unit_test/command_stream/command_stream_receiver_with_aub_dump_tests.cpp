@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -57,7 +57,7 @@ struct MyMockCsr : UltCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> {
         gfxAllocation.updateResidencyTaskCount(1, osContext->getContextId());
     }
 
-    SubmissionStatus processResidency(const ResidencyContainer &allocationsForResidency, uint32_t handleId) override {
+    SubmissionStatus processResidency(ResidencyContainer &allocationsForResidency, uint32_t handleId) override {
         processResidencyParameterization.wasCalled = true;
         processResidencyParameterization.receivedAllocationsForResidency = &allocationsForResidency;
         return SubmissionStatus::success;
@@ -126,9 +126,9 @@ struct MyMockCsr : UltCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> {
 
 template <typename BaseCSR>
 struct MyMockCsrWithAubDump : CommandStreamReceiverWithAUBDump<BaseCSR> {
-    MyMockCsrWithAubDump<BaseCSR>(bool createAubCSR,
-                                  ExecutionEnvironment &executionEnvironment,
-                                  const DeviceBitfield deviceBitfield)
+    MyMockCsrWithAubDump(bool createAubCSR,
+                         ExecutionEnvironment &executionEnvironment,
+                         const DeviceBitfield deviceBitfield)
         : CommandStreamReceiverWithAUBDump<BaseCSR>("aubfile", executionEnvironment, 0, deviceBitfield) {
         this->aubCSR.reset(createAubCSR ? new MyMockCsr(executionEnvironment, 0, deviceBitfield) : nullptr);
     }
@@ -204,13 +204,13 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerAvailableWhe
     executionEnvironment->initializeMemoryManager();
     std::string fileName = "file_name.aub";
     MockAubManager *mockManager = new MockAubManager();
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, fileName, CommandStreamReceiverType::CSR_TBX_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, fileName, CommandStreamReceiverType::tbxWithAub);
     mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(mockManager);
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
     DeviceBitfield deviceBitfield(1);
     CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment, 0, deviceBitfield);
     ASSERT_EQ(nullptr, csrWithAubDump.aubCSR);
-    EXPECT_EQ(CommandStreamReceiverType::CSR_TBX_WITH_AUB, csrWithAubDump.getType());
+    EXPECT_EQ(CommandStreamReceiverType::tbxWithAub, csrWithAubDump.getType());
 }
 
 HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerAvailableWhenHwCsrWithAubDumpIsCreatedThenAubCsrIsCreated) {
@@ -219,21 +219,21 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerAvailableWhe
 
     std::string fileName = "file_name.aub";
     MockAubManager *mockManager = new MockAubManager();
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, fileName, CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, fileName, CommandStreamReceiverType::hardwareWithAub);
     mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(mockManager);
 
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
     DeviceBitfield deviceBitfield(1);
     CommandStreamReceiverWithAUBDump<UltCommandStreamReceiver<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment, 0, deviceBitfield);
     ASSERT_NE(nullptr, csrWithAubDump.aubCSR);
-    EXPECT_EQ(CommandStreamReceiverType::CSR_HW_WITH_AUB, csrWithAubDump.getType());
+    EXPECT_EQ(CommandStreamReceiverType::hardwareWithAub, csrWithAubDump.getType());
 }
 
 HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenCsrWithAubDumpWhenWaitingForTaskCountThenAddPollForCompletion) {
     auto executionEnvironment = pDevice->getExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
 
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::hardwareWithAub);
     mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(new MockAubManager());
 
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
@@ -253,11 +253,35 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenCsrWithAubDumpWhenWait
     csrWithAubDump.waitForTaskCountWithKmdNotifyFallback(1, 0, false, QueueThrottle::MEDIUM);
 }
 
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, whenPollForAubCompletionCalledThenDontInsertPoll) {
+    MockOsContext osContext(0, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_CCS, EngineUsage::regular}));
+
+    auto executionEnvironment = pDevice->getExecutionEnvironment();
+    executionEnvironment->initializeMemoryManager();
+
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::hardwareWithAub);
+    mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(new MockAubManager());
+
+    executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
+    DeviceBitfield deviceBitfield(1);
+    CommandStreamReceiverWithAUBDump<UltCommandStreamReceiver<FamilyType>> csrWithAubDump("file_name.aub", *executionEnvironment, 0, deviceBitfield);
+    csrWithAubDump.initializeTagAllocation();
+
+    auto mockAubCsr = new MockAubCsr<FamilyType>("file_name.aub", false, *executionEnvironment, 0, deviceBitfield);
+    mockAubCsr->initializeTagAllocation();
+    csrWithAubDump.aubCSR.reset(mockAubCsr);
+    csrWithAubDump.setupContext(osContext);
+
+    csrWithAubDump.pollForAubCompletion();
+    EXPECT_FALSE(csrWithAubDump.pollForCompletionCalled);
+    EXPECT_TRUE(mockAubCsr->pollForCompletionCalled);
+}
+
 HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenCsrWithAubDumpWhenPollForCompletionCalledThenAubCsrPollForCompletionCalled) {
     auto executionEnvironment = pDevice->getExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
 
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::hardwareWithAub);
     mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(new MockAubManager());
 
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
@@ -308,33 +332,33 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
 HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenWriteMemoryIsCalledThenBothCommandStreamReceiversAreCalled) {
     MockGraphicsAllocation mockAllocation;
 
-    EXPECT_EQ(0u, csrWithAubDump->writeMemoryParams.callCount);
+    EXPECT_EQ(0u, csrWithAubDump->writeMemoryParams.totalCallCount);
     if (createAubCSR) {
-        EXPECT_EQ(0u, csrWithAubDump->getAubMockCsr().writeMemoryParams.callCount);
+        EXPECT_EQ(0u, csrWithAubDump->getAubMockCsr().writeMemoryParams.totalCallCount);
     }
 
     csrWithAubDump->writeMemory(mockAllocation, false, 0, 0);
 
-    EXPECT_EQ(1u, csrWithAubDump->writeMemoryParams.callCount);
+    EXPECT_EQ(1u, csrWithAubDump->writeMemoryParams.totalCallCount);
     EXPECT_EQ(&mockAllocation, csrWithAubDump->writeMemoryParams.latestGfxAllocation);
     EXPECT_FALSE(csrWithAubDump->writeMemoryParams.latestChunkedMode);
 
     if (createAubCSR) {
-        EXPECT_EQ(1u, csrWithAubDump->getAubMockCsr().writeMemoryParams.callCount);
+        EXPECT_EQ(1u, csrWithAubDump->getAubMockCsr().writeMemoryParams.totalCallCount);
         EXPECT_EQ(&mockAllocation, csrWithAubDump->getAubMockCsr().writeMemoryParams.latestGfxAllocation);
         EXPECT_FALSE(csrWithAubDump->getAubMockCsr().writeMemoryParams.latestChunkedMode);
     }
 
     csrWithAubDump->writeMemory(mockAllocation, true, 1, 2);
 
-    EXPECT_EQ(2u, csrWithAubDump->writeMemoryParams.callCount);
+    EXPECT_EQ(2u, csrWithAubDump->writeMemoryParams.totalCallCount);
     EXPECT_TRUE(csrWithAubDump->writeMemoryParams.latestChunkedMode);
     EXPECT_EQ(&mockAllocation, csrWithAubDump->writeMemoryParams.latestGfxAllocation);
     EXPECT_EQ(1u, csrWithAubDump->writeMemoryParams.latestGpuVaChunkOffset);
     EXPECT_EQ(2u, csrWithAubDump->writeMemoryParams.latestChunkSize);
 
     if (createAubCSR) {
-        EXPECT_EQ(2u, csrWithAubDump->getAubMockCsr().writeMemoryParams.callCount);
+        EXPECT_EQ(2u, csrWithAubDump->getAubMockCsr().writeMemoryParams.totalCallCount);
         EXPECT_TRUE(csrWithAubDump->getAubMockCsr().writeMemoryParams.latestChunkedMode);
         EXPECT_EQ(&mockAllocation, csrWithAubDump->getAubMockCsr().writeMemoryParams.latestGfxAllocation);
         EXPECT_EQ(1u, csrWithAubDump->getAubMockCsr().writeMemoryParams.latestGpuVaChunkOffset);
@@ -346,7 +370,7 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenCsrWithAubDumpWhenCrea
     auto executionEnvironment = pDevice->getExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
 
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::hardwareWithAub);
     mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(new MockAubManager());
 
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
@@ -371,7 +395,7 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubCsrWithHwWhenAdding
     auto executionEnvironment = pDevice->getExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
 
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::hardwareWithAub);
     auto mockAubManager = new MockAubManager();
     mockAubCenter->aubManager.reset(mockAubManager);
 
@@ -388,7 +412,7 @@ HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubCsrWithTbxWhenAddin
     auto executionEnvironment = pDevice->getExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
 
-    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::CSR_TBX_WITH_AUB);
+    MockAubCenter *mockAubCenter = new MockAubCenter(pDevice->getRootDeviceEnvironment(), false, "file_name.aub", CommandStreamReceiverType::tbxWithAub);
     auto mockAubManager = new MockAubManager();
     mockAubCenter->aubManager.reset(mockAubManager);
 
@@ -442,7 +466,7 @@ struct CommandStreamReceiverTagTests : public ::testing::Test {
         executionEnvironment->initializeMemoryManager();
 
         MockAubManager *mockManager = new MockAubManager();
-        MockAubCenter *mockAubCenter = new MockAubCenter(*executionEnvironment->rootDeviceEnvironments[0], false, fileName, CommandStreamReceiverType::CSR_HW_WITH_AUB);
+        MockAubCenter *mockAubCenter = new MockAubCenter(*executionEnvironment->rootDeviceEnvironments[0], false, fileName, CommandStreamReceiverType::hardwareWithAub);
         mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(mockManager);
 
         executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
@@ -671,7 +695,7 @@ static bool createAubCSR[] = {
     false,
     true};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     CommandStreamReceiverWithAubDumpTest_Create,
     CommandStreamReceiverWithAubDumpTest,
     testing::ValuesIn(createAubCSR));

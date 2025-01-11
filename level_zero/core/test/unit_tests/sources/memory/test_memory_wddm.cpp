@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,8 @@
 #include "shared/source/built_ins/sip.h"
 #include "shared/source/gmm_helper/gmm.h"
 #include "shared/test/common/mocks/mock_device.h"
+#include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_usm_memory_pool.h"
 
 #include "level_zero/core/test/unit_tests/fixtures/memory_ipc_fixture.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_built_ins.h"
@@ -293,7 +295,7 @@ struct MemoryGetIpcHandleTest : public ::testing::Test {
 
         neoDevice = NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
         auto mockBuiltIns = new MockBuiltins();
-        neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+        MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
         NEO::DeviceVector devices;
         devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
         driverHandle = std::make_unique<DriverHandleGetWinHandleMock>();
@@ -372,6 +374,77 @@ TEST_F(MemoryOpenIpcHandleTest,
 
     result = context->freeMem(ptr);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+}
+
+struct HostUsmPoolMemoryOpenIpcHandleTest : public MemoryIPCTests {
+    void SetUp() override {
+        NEO::debugManager.flags.EnableHostUsmAllocationPool.set(1);
+        MemoryIPCTests::SetUp();
+    }
+
+    DebugManagerStateRestore restorer;
+};
+
+TEST_F(HostUsmPoolMemoryOpenIpcHandleTest,
+       givenCallToOpenIpcMemHandleItIsSuccessfullyOpenedAndClosed) {
+    auto mockHostMemAllocPool = reinterpret_cast<MockUsmMemAllocPool *>(&driverHandle->usmHostMemAllocPool);
+    EXPECT_TRUE(driverHandle->usmHostMemAllocPool.isInitialized());
+    size_t size = 1;
+    size_t alignment = 0u;
+    void *ptr = nullptr;
+
+    ze_host_mem_alloc_desc_t hostDesc = {};
+    ze_result_t result = context->allocHostMem(&hostDesc,
+                                               size, alignment, &ptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_NE(nullptr, ptr);
+    EXPECT_TRUE(driverHandle->usmHostMemAllocPool.isInPool(ptr));
+    const auto pooledAllocationOffset = ptrDiff(mockHostMemAllocPool->allocations.get(ptr)->address, castToUint64(mockHostMemAllocPool->pool));
+    EXPECT_GT(pooledAllocationOffset, 0u);
+
+    ze_ipc_mem_handle_t ipcHandle = {};
+    result = context->getIpcMemHandle(ptr, &ipcHandle);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    IpcMemoryData &ipcData = *reinterpret_cast<IpcMemoryData *>(ipcHandle.data);
+    EXPECT_EQ(pooledAllocationOffset, ipcData.poolOffset);
+
+    ze_ipc_memory_flags_t flags = {};
+    void *ipcPtr;
+    result = context->openIpcMemHandle(device->toHandle(), ipcHandle, flags, &ipcPtr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(ptrOffset(ptr, pooledAllocationOffset), ipcPtr);
+
+    result = context->closeIpcMemHandle(ipcPtr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    result = context->freeMem(ptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+}
+
+TEST_F(MemoryExportImportWinHandleTest,
+       givenCallToDeviceOrHostAllocWithExtendedImportDescriptorAndInvalidFDThenInvalidArgumentIsReturned) {
+    size_t size = 10;
+    size_t alignment = 1u;
+    ze_device_mem_alloc_desc_t importDeviceDesc = {};
+    ze_external_memory_import_fd_t extendedImportDesc = {};
+    extendedImportDesc.stype = ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_FD;
+    extendedImportDesc.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD;
+    extendedImportDesc.fd = std::numeric_limits<int>::max();
+    importDeviceDesc.pNext = &extendedImportDesc;
+
+    void *importedPtr = nullptr;
+    ze_result_t result = context->allocDeviceMem(device->toHandle(),
+                                                 &importDeviceDesc,
+                                                 size, alignment, &importedPtr);
+    EXPECT_EQ(ZE_RESULT_ERROR_INVALID_ARGUMENT, result);
+    EXPECT_EQ(nullptr, importedPtr);
+
+    ze_host_mem_alloc_desc_t importHostDesc = {};
+    importHostDesc.pNext = &extendedImportDesc;
+    result = context->allocHostMem(&importHostDesc,
+                                   size, alignment, &importedPtr);
+    EXPECT_EQ(ZE_RESULT_ERROR_INVALID_ARGUMENT, result);
+    EXPECT_EQ(nullptr, importedPtr);
 }
 
 } // namespace ult

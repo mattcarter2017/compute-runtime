@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,24 +29,6 @@ inline void HardwareInterface<GfxFamily>::getDefaultDshSpace(
 }
 
 template <typename GfxFamily>
-inline void HardwareInterface<GfxFamily>::dispatchWorkarounds(
-    LinearStream *commandStream,
-    CommandQueue &commandQueue,
-    Kernel &kernel,
-    const bool &enable) {
-
-    if (enable) {
-        PreemptionHelper::applyPreemptionWaCmdsBegin<GfxFamily>(commandStream, commandQueue.getDevice());
-        // Implement enabling special WA DisableLSQCROPERFforOCL if needed
-        GpgpuWalkerHelper<GfxFamily>::applyWADisableLSQCROPERFforOCL(commandStream, kernel, enable);
-    } else {
-        // Implement disabling special WA DisableLSQCROPERFforOCL if needed
-        GpgpuWalkerHelper<GfxFamily>::applyWADisableLSQCROPERFforOCL(commandStream, kernel, enable);
-        PreemptionHelper::applyPreemptionWaCmdsEnd<GfxFamily>(commandStream, commandQueue.getDevice());
-    }
-}
-
-template <typename GfxFamily>
 template <typename WalkerType>
 inline void HardwareInterface<GfxFamily>::programWalker(
     LinearStream &commandStream,
@@ -64,7 +46,6 @@ inline void HardwareInterface<GfxFamily>::programWalker(
     uint32_t simd = kernel.getKernelInfo().getMaxSimdSize();
     auto &rootDeviceEnvironment = commandQueue.getDevice().getRootDeviceEnvironment();
 
-    size_t globalOffsets[3] = {dispatchInfo.getOffset().x, dispatchInfo.getOffset().y, dispatchInfo.getOffset().z};
     size_t startWorkGroups[3] = {walkerArgs.startOfWorkgroups->x, walkerArgs.startOfWorkgroups->y, walkerArgs.startOfWorkgroups->z};
     size_t numWorkGroups[3] = {walkerArgs.numberOfWorkgroups->x, walkerArgs.numberOfWorkgroups->y, walkerArgs.numberOfWorkgroups->z};
     auto threadGroupCount = static_cast<uint32_t>(walkerArgs.numberOfWorkgroups->x * walkerArgs.numberOfWorkgroups->y * walkerArgs.numberOfWorkgroups->z);
@@ -79,7 +60,7 @@ inline void HardwareInterface<GfxFamily>::programWalker(
     auto kernelUsesLocalIds = HardwareCommandsHelper<GfxFamily>::kernelUsesLocalIds(kernel);
 
     GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(&walkerCmd, kernel.getKernelInfo().kernelDescriptor,
-                                                           globalOffsets, startWorkGroups,
+                                                           startWorkGroups,
                                                            numWorkGroups, walkerArgs.localWorkSizes, simd, dim,
                                                            false, false, 0u);
 
@@ -102,7 +83,13 @@ inline void HardwareInterface<GfxFamily>::programWalker(
         0,
         commandQueue.getDevice());
 
-    EncodeWalkerArgs encodeWalkerArgs{kernel.getExecutionType(), false, kernel.getKernelInfo().kernelDescriptor, NEO::RequiredDispatchWalkOrder::none, 0, 0};
+    EncodeWalkerArgs encodeWalkerArgs{
+        kernel.getKernelInfo().kernelDescriptor, // kernelDescriptor
+        kernel.getExecutionType(),               // kernelExecutionType
+        RequiredDispatchWalkOrder::none,         // requiredDispatchWalkOrder
+        0,                                       // localRegionSize
+        0,                                       // maxFrontEndThreads
+        false};                                  // requiredSystemFence
     EncodeDispatchKernel<GfxFamily>::encodeAdditionalWalkerFields(rootDeviceEnvironment, walkerCmd, encodeWalkerArgs);
     *walkerCmdBuf = walkerCmd;
 }
