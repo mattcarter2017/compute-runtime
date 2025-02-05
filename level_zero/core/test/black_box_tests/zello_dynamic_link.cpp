@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,71 +14,6 @@
 #include <iostream>
 #include <memory>
 
-const char *importModuleSrc = R"===(
-int lib_func_add(int x, int y);
-int lib_func_mult(int x, int y);
-int lib_func_sub(int x, int y);
-
-kernel void call_library_funcs(__global int* result) {
-    int add_result = lib_func_add(1,2);
-    int mult_result = lib_func_mult(add_result,2);
-    result[0] = lib_func_sub(mult_result, 1);
-}
-)===";
-
-const char *exportModuleSrc = R"===(
-int lib_func_add(int x, int y) {
-    return x+y;
-}
-
-int lib_func_mult(int x, int y) {
-    return x*y;
-}
-
-int lib_func_sub(int x, int y) {
-    return x-y;
-}
-)===";
-
-const char *importModuleSrcCircDep = R"===(
-int lib_func_add(int x, int y);
-int lib_func_mult(int x, int y);
-int lib_func_sub(int x, int y);
-
-kernel void call_library_funcs(__global int* result) {
-    int add_result = lib_func_add(1,2);
-    int mult_result = lib_func_mult(add_result,2);
-    result[0] = lib_func_sub(mult_result, 1);
-}
-
-int lib_func_add2(int x) {
-    return x+2;
-}
-)===";
-
-const char *exportModuleSrcCircDep = R"===(
-int lib_func_add2(int x);
-int lib_func_add5(int x);
-
-int lib_func_add(int x, int y) {
-    return lib_func_add5(lib_func_add2(x + y));
-}
-
-int lib_func_mult(int x, int y) {
-    return x*y;
-}
-
-int lib_func_sub(int x, int y) {
-    return x-y;
-}
-)===";
-
-const char *exportModuleSrc2CircDep = R"===(
-int lib_func_add5(int x) {
-    return x+5;
-}
-)===";
-
 int main(int argc, char *argv[]) {
     const std::string blackBoxName = "Zello Dynamic Link";
     bool outputValidationSuccessful = true;
@@ -87,12 +22,12 @@ int main(int argc, char *argv[]) {
     bool circularDep = LevelZeroBlackBoxTests::isCircularDepTest(argc, argv);
     int numModules = 2;
 
-    char *exportModuleSrcValue = const_cast<char *>(exportModuleSrc);
-    char *importModuleSrcValue = const_cast<char *>(importModuleSrc);
+    char *exportModuleSrcValue = const_cast<char *>(LevelZeroBlackBoxTests::DynamicLink::exportModuleSrc);
+    char *importModuleSrcValue = const_cast<char *>(LevelZeroBlackBoxTests::DynamicLink::importModuleSrc);
     ze_module_handle_t exportModule2 = {};
     if (circularDep) {
-        exportModuleSrcValue = const_cast<char *>(exportModuleSrcCircDep);
-        importModuleSrcValue = const_cast<char *>(importModuleSrcCircDep);
+        exportModuleSrcValue = const_cast<char *>(LevelZeroBlackBoxTests::DynamicLink::exportModuleSrcCircDep);
+        importModuleSrcValue = const_cast<char *>(LevelZeroBlackBoxTests::DynamicLink::importModuleSrcCircDep);
         numModules = 3;
     }
     // Setup
@@ -100,16 +35,20 @@ int main(int argc, char *argv[]) {
 
     uint32_t driverCount = 0;
     SUCCESS_OR_TERMINATE(zeDriverGet(&driverCount, nullptr));
-    if (driverCount == 0)
+    if (driverCount == 0) {
+        std::cerr << "No driver handle found!" << std::endl;
         std::terminate();
+    }
     ze_driver_handle_t driverHandle;
     driverCount = 1;
     SUCCESS_OR_TERMINATE(zeDriverGet(&driverCount, &driverHandle));
 
     uint32_t deviceCount = 0;
     SUCCESS_OR_TERMINATE(zeDeviceGet(driverHandle, &deviceCount, nullptr));
-    if (deviceCount == 0)
+    if (deviceCount == 0) {
+        std::cerr << "No device found!" << std::endl;
         std::terminate();
+    }
     ze_device_handle_t device;
     deviceCount = 1;
     SUCCESS_OR_TERMINATE(zeDeviceGet(driverHandle, &deviceCount, &device));
@@ -142,9 +81,7 @@ int main(int argc, char *argv[]) {
     }
     std::string buildLog;
     auto exportBinaryModule = LevelZeroBlackBoxTests::compileToSpirV(exportModuleSrcValue, "", buildLog);
-    if (buildLog.size() > 0) {
-        std::cout << "Build log " << buildLog;
-    }
+    LevelZeroBlackBoxTests::printBuildLog(buildLog);
     SUCCESS_OR_TERMINATE((0 == exportBinaryModule.size()));
 
     ze_module_handle_t exportModule;
@@ -166,10 +103,8 @@ int main(int argc, char *argv[]) {
         if (LevelZeroBlackBoxTests::verbose) {
             std::cout << "reading export module2 for spirv\n";
         }
-        auto exportBinaryModule2 = LevelZeroBlackBoxTests::compileToSpirV(exportModuleSrc2CircDep, "", buildLog);
-        if (buildLog.size() > 0) {
-            std::cout << "Build log " << buildLog;
-        }
+        auto exportBinaryModule2 = LevelZeroBlackBoxTests::compileToSpirV(LevelZeroBlackBoxTests::DynamicLink::exportModuleSrc2CircDep, "", buildLog);
+        LevelZeroBlackBoxTests::printBuildLog(buildLog);
         SUCCESS_OR_TERMINATE((0 == exportBinaryModule2.size()));
 
         ze_module_desc_t exportModuleDesc2 = {ZE_STRUCTURE_TYPE_MODULE_DESC};
@@ -191,9 +126,7 @@ int main(int argc, char *argv[]) {
         std::cout << "reading import module for spirv\n";
     }
     auto importBinaryModule = LevelZeroBlackBoxTests::compileToSpirV(importModuleSrcValue, "", buildLog);
-    if (buildLog.size() > 0) {
-        std::cout << "Build log " << buildLog;
-    }
+    LevelZeroBlackBoxTests::printBuildLog(buildLog);
     SUCCESS_OR_TERMINATE((0 == importBinaryModule.size()));
 
     ze_module_handle_t importModule;

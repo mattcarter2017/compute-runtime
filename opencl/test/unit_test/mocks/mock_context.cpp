@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,6 +14,7 @@
 #include "shared/source/memory_manager/deferred_deleter.h"
 #include "shared/source/memory_manager/unified_memory_manager.h"
 #include "shared/source/os_interface/os_context.h"
+#include "shared/source/utilities/staging_buffer_manager.h"
 #include "shared/test/common/helpers/engine_descriptor_helper.h"
 #include "shared/test/common/mocks/mock_svm_manager.h"
 
@@ -70,6 +71,7 @@ MockContext::MockContext() {
     cl_device_id deviceId = pDevice;
     initializeWithDevices(ClDeviceVector{&deviceId, 1}, false);
     pDevice->decRefInternal();
+    this->usmPoolInitialized = true;
 }
 
 void MockContext::setSharingFunctions(SharingFunctions *sharingFunctions) {
@@ -123,6 +125,7 @@ void MockContext::initializeWithDevices(const ClDeviceVector &devices, bool noSp
         }
         deviceBitfields.insert({rootDeviceIndex, deviceBitfield});
     }
+    stagingBufferManager = std::make_unique<StagingBufferManager>(svmAllocsManager, rootDeviceIndices, deviceBitfields, true);
 
     cl_int retVal;
     if (!noSpecialQueue) {
@@ -195,11 +198,12 @@ BcsMockContext::BcsMockContext(ClDevice *device) : MockContext(device) {
 
         BlitPropertiesContainer container;
         container.push_back(blitProperties);
-        bcsCsr->flushBcsTask(container, true, false, const_cast<Device &>(device));
+        bcsCsr->flushBcsTask(container, true, const_cast<Device &>(device));
 
         return BlitOperationResult::success;
     };
     blitMemoryToAllocationFuncBackup = mockBlitMemoryToAllocation;
+    this->usmPoolInitialized = true;
 }
 BcsMockContext::~BcsMockContext() = default;
 } // namespace NEO

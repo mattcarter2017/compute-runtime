@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/gtest_helpers.h"
+#include "shared/test/common/helpers/mock_file_io.h"
 #include "shared/test/common/utilities/base_object_utils.h"
 #include "shared/test/common/utilities/logger_tests.h"
 
@@ -114,7 +115,7 @@ TEST(FileLogger, GivenDebugFunctionalityWhenDebugFlagIsDisabledThenDoNotDumpKern
     kernelInfo->addArgImmediate(0, 32, 32);
 
     size_t crossThreadDataSize = 64;
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -144,7 +145,7 @@ TEST(FileLogger, GivenMdiWhenDumpingKernelArgsThenFileIsCreated) {
     kernelInfo->addArgImmediate(0, 32, 32);
 
     size_t crossThreadDataSize = 64;
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -152,6 +153,7 @@ TEST(FileLogger, GivenMdiWhenDumpingKernelArgsThenFileIsCreated) {
     flags.DumpKernelArgs.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
     FullyEnabledClFileLogger clFileLogger(fileLogger, flags);
+    fileLogger.useRealFiles(false);
 
     clFileLogger.dumpKernelArgs(multiDispatchInfo.get());
 
@@ -208,7 +210,7 @@ TEST(FileLogger, GivenImmediateWhenDumpingKernelArgsThenFileIsCreated) {
     kernelInfo->addArgImmediate(0, 32, 32);
 
     size_t crossThreadDataSize = 64;
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -216,6 +218,7 @@ TEST(FileLogger, GivenImmediateWhenDumpingKernelArgsThenFileIsCreated) {
     flags.DumpKernelArgs.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
     FullyEnabledClFileLogger clFileLogger(fileLogger, flags);
+    fileLogger.useRealFiles(false);
 
     clFileLogger.dumpKernelArgs(multiDispatchInfo.get());
 
@@ -237,7 +240,7 @@ TEST(FileLogger, GivenImmediateZeroSizeWhenDumpingKernelArgsThenFileIsNotCreated
     kernelInfo->addArgImmediate(0, 0, 32);
 
     size_t crossThreadDataSize = sizeof(64);
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -288,7 +291,7 @@ TEST(FileLogger, GivenBufferNotSetWhenDumpingKernelArgsThenFileIsNotCreated) {
     kernel->initialize();
 
     size_t crossThreadDataSize = sizeof(void *);
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -321,7 +324,7 @@ TEST(FileLogger, GivenBufferWhenDumpingKernelArgsThenFileIsCreated) {
     kernel->initialize();
 
     size_t crossThreadDataSize = sizeof(void *);
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     kernel->setArg(0, clObj);
@@ -331,6 +334,7 @@ TEST(FileLogger, GivenBufferWhenDumpingKernelArgsThenFileIsCreated) {
     flags.DumpKernelArgs.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
     FullyEnabledClFileLogger clFileLogger(fileLogger, flags);
+    fileLogger.useRealFiles(false);
 
     clFileLogger.dumpKernelArgs(multiDispatchInfo.get());
 
@@ -389,7 +393,7 @@ TEST(FileLogger, GivenImageNotSetWhenDumpingKernelArgsThenFileIsNotCreated) {
     kernel->initialize();
 
     size_t crossThreadDataSize = sizeof(void *);
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     std::string testFile = "testfile";
@@ -421,7 +425,7 @@ TEST(FileLogger, GivenDisabledDebugFunctionalityWhenLoggingThenDumpingDoesNotOcc
     EXPECT_FALSE(fileLogger.enabled());
 
     // Log file not created
-    bool logFileCreated = fileExists(fileLogger.getLogFileName());
+    bool logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     // test kernel dumping
@@ -429,12 +433,12 @@ TEST(FileLogger, GivenDisabledDebugFunctionalityWhenLoggingThenDumpingDoesNotOcc
     std::string kernelDumpFile = "testDumpKernel";
     fileLogger.dumpKernel(kernelDumpFile, "kernel source here");
 
-    kernelDumpCreated = fileExists(kernelDumpFile.append(".txt"));
+    kernelDumpCreated = virtualFileExists(kernelDumpFile.append(".txt"));
     EXPECT_FALSE(kernelDumpCreated);
 
     // test api logging
     fileLogger.logApiCall(__FUNCTION__, true, 0);
-    logFileCreated = fileExists(fileLogger.getLogFileName());
+    logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     // getInput returns 0
@@ -474,7 +478,7 @@ TEST(FileLogger, GivenDisabledDebugFunctionalityWhenLoggingThenDumpingDoesNotOcc
     kernel->initialize();
 
     size_t crossThreadDataSize = sizeof(void *);
-    auto crossThreadData = std::unique_ptr<uint8_t>(new uint8_t[crossThreadDataSize]);
+    auto crossThreadData = std::make_unique<uint8_t[]>(crossThreadDataSize);
     kernel->setCrossThreadData(crossThreadData.get(), static_cast<uint32_t>(crossThreadDataSize));
 
     kernel->setArg(0, nullptr);
@@ -483,12 +487,12 @@ TEST(FileLogger, GivenDisabledDebugFunctionalityWhenLoggingThenDumpingDoesNotOcc
     // test api input logging
     fileLogger.logInputs("Arg name", "value");
     fileLogger.logInputs("int", 5);
-    logFileCreated = fileExists(fileLogger.getLogFileName());
+    logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     // check Log
     fileLogger.log(true, "string to be logged");
-    logFileCreated = fileExists(fileLogger.getLogFileName());
+    logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     files = Directory::getFiles(path);

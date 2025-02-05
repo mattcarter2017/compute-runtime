@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,14 +29,12 @@ const char *neoMockSettingsFileName = "neo_mock.config";
 bool CompressionSelector::preferCompressedAllocation(const AllocationProperties &properties) {
     return false;
 }
-void PageFaultManager::transferToCpu(void *ptr, size_t size, void *cmdQ) {
+void CpuPageFaultManager::transferToCpu(void *ptr, size_t size, void *cmdQ) {
 }
-void PageFaultManager::transferToGpu(void *ptr, void *cmdQ) {
+void CpuPageFaultManager::transferToGpu(void *ptr, void *cmdQ) {
 }
-void PageFaultManager::allowCPUMemoryEviction(void *ptr, PageFaultData &pageFaultData) {
+void CpuPageFaultManager::allowCPUMemoryEviction(bool evict, void *ptr, PageFaultData &pageFaultData) {
 }
-CompilerCacheConfig getDefaultCompilerCacheConfig() { return {}; }
-const char *getAdditionalBuiltinAsString(EBuiltInOps::Type builtin) { return nullptr; }
 
 void RootDeviceEnvironment::initApiGfxCoreHelper() {
 }
@@ -47,26 +45,22 @@ using namespace NEO;
 void cleanTestHelpers() {}
 
 void applyWorkarounds() {
-    const std::array<ConstStringRef, 11> builtinIntermediateNames{"copy_buffer_to_buffer.builtin_kernel.bc",
-                                                                  "copy_buffer_rect.builtin_kernel.bc",
-                                                                  "fill_buffer.builtin_kernel.bc",
-                                                                  "copy_buffer_to_image3d.builtin_kernel.bc",
-                                                                  "copy_image3d_to_buffer.builtin_kernel.bc",
-                                                                  "copy_image_to_image1d.builtin_kernel.bc",
-                                                                  "copy_image_to_image2d.builtin_kernel.bc",
-                                                                  "copy_image_to_image3d.builtin_kernel.bc",
-                                                                  "fill_image1d.builtin_kernel.bc",
-                                                                  "fill_image2d.builtin_kernel.bc",
-                                                                  "fill_image3d.builtin_kernel.bc"};
+    const std::array<ConstStringRef, 11> builtinIntermediateNames{"copy_buffer_to_buffer.builtin_kernel.spv",
+                                                                  "copy_buffer_rect.builtin_kernel.spv",
+                                                                  "fill_buffer.builtin_kernel.spv",
+                                                                  "copy_buffer_to_image3d.builtin_kernel.spv",
+                                                                  "copy_image3d_to_buffer.builtin_kernel.spv",
+                                                                  "copy_image_to_image1d.builtin_kernel.spv",
+                                                                  "copy_image_to_image2d.builtin_kernel.spv",
+                                                                  "copy_image_to_image3d.builtin_kernel.spv",
+                                                                  "fill_image1d.builtin_kernel.spv",
+                                                                  "fill_image2d.builtin_kernel.spv",
+                                                                  "fill_image3d.builtin_kernel.spv"};
     auto &storageRegistry = EmbeddedStorageRegistry::getInstance();
     for (auto builtinIntermediateName : builtinIntermediateNames) {
         std::string resource = "__mock_spirv_resource";
         storageRegistry.store(builtinIntermediateName.str(), createBuiltinResource(resource.data(), resource.size() + 1));
     }
-}
-
-bool isPlatformSupported(const HardwareInfo &hwInfoForTests) {
-    return true;
 }
 
 void setupTestFiles(std::string testBinaryFiles, int32_t revId) {

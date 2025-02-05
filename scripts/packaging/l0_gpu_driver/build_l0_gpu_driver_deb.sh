@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# Copyright (C) 2021-2023 Intel Corporation
+# Copyright (C) 2021-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -14,6 +14,8 @@ REPO_DIR="$( cd "$( dirname "${DIR}/../../../../" )" && pwd )"
 BUILD_DIR="${REPO_DIR}/../build_l0_gpu_driver"
 NEO_SKIP_UNIT_TESTS=${NEO_SKIP_UNIT_TESTS:-FALSE}
 NEO_DISABLE_BUILTINS_COMPILATION=${NEO_DISABLE_BUILTINS_COMPILATION:-FALSE}
+NEO_LEGACY_PLATFORMS_SUPPORT=${NEO_LEGACY_PLATFORMS_SUPPORT:-FALSE}
+NEO_CURRENT_PLATFORMS_SUPPORT=${NEO_CURRENT_PLATFORMS_SUPPORT:-TRUE}
 SPEC_FILE="${SPEC_FILE:-${OS_TYPE}}"
 
 BRANCH_SUFFIX="$( cat ${REPO_DIR}/.branch )"
@@ -52,12 +54,16 @@ mkdir -p $BUILD_DIR/debian
 COPYRIGHT="${REPO_DIR}/scripts/packaging/${BRANCH_SUFFIX}/l0_gpu_driver/${SPEC_FILE}/copyright"
 CONTROL="${REPO_DIR}/scripts/packaging/${BRANCH_SUFFIX}/l0_gpu_driver/${SPEC_FILE}/control"
 SHLIBS="${REPO_DIR}/scripts/packaging/${BRANCH_SUFFIX}/l0_gpu_driver/${SPEC_FILE}/shlibs.local"
+DEV_INSTALL="${REPO_DIR}/scripts/packaging/${BRANCH_SUFFIX}/l0_gpu_driver/${SPEC_FILE}/intel-level-zero-gpu-devel.install"
 
-cp -pR ${REPO_DIR}/scripts/packaging/l0_gpu_driver/${SPEC_FILE}/debian/* $BUILD_DIR/debian/
-cp $COPYRIGHT $BUILD_DIR/debian/
-cp $CONTROL $BUILD_DIR/debian/
+cp -pvR ${REPO_DIR}/scripts/packaging/l0_gpu_driver/${SPEC_FILE}/debian/* $BUILD_DIR/debian/
+cp -v $COPYRIGHT $BUILD_DIR/debian/
+cp -v $CONTROL $BUILD_DIR/debian/
 if [ -f "${SHLIBS}" ]; then
-    cp $SHLIBS $BUILD_DIR/debian/
+    cp -v $SHLIBS $BUILD_DIR/debian/
+fi
+if [ -f "${DEV_INSTALL}" ]; then
+    cp -v $DEV_INSTALL $BUILD_DIR/debian/
 fi
 
 LEVEL_ZERO_DEVEL_NAME=${LEVEL_ZERO_DEVEL_NAME:-level-zero-devel}
@@ -77,10 +83,22 @@ if [ -z "${BRANCH_SUFFIX}" ]; then
         perl -pi -e "s/^ libigdgmm-dev(?=,|$)/ libigdgmm-dev (>=$GMM_DEVEL_VERSION)/" "$BUILD_DIR/debian/control"
     fi
 
-    IGC_VERSION=$(apt-cache policy intel-igc-core | grep Installed | cut -f2- -d ':' | xargs)
+    IGC_VERSION=$(apt-cache policy intel-igc-core-2 | grep Installed | cut -f2- -d ':' | xargs)
     if [ ! -z "${IGC_VERSION}" ]; then
-        perl -pi -e "s/^ intel-igc-core(?=,|$)/ intel-igc-core (=$IGC_VERSION)/" "$BUILD_DIR/debian/control"
+        perl -pi -e "s/^ intel-igc-core-2(?=,|$)/ intel-igc-core-2 (=$IGC_VERSION)/" "$BUILD_DIR/debian/control"
     fi
+fi
+
+echo "NEO_CURRENT_PLATFORMS_SUPPORT: ${NEO_CURRENT_PLATFORMS_SUPPORT}"
+echo "NEO_LEGACY_PLATFORMS_SUPPORT: ${NEO_LEGACY_PLATFORMS_SUPPORT}"
+
+if [[ "${NEO_LEGACY_PLATFORMS_SUPPORT}" == "TRUE" ]] && [[ ! "${NEO_CURRENT_PLATFORMS_SUPPORT}" == "TRUE" ]]; then
+    echo "Building Legacy package"
+    export NEO_OCLOC_VERSION_MODE=0
+    perl -pi -e "s/^Package: intel-level-zero-gpu$/Package: intel-level-zero-gpu-legacy1/" "$BUILD_DIR/debian/control"
+else
+    echo "Building Current/Full package"
+    export NEO_OCLOC_VERSION_MODE=1
 fi
 
 # Update rules file with new version
@@ -88,7 +106,7 @@ perl -pi -e "s/^ver = .*/ver = $NEO_L0_VERSION_PATCH/" $BUILD_DIR/debian/rules
 
 #needs a top level CMAKE file
 cat << EOF | tee $BUILD_DIR/CMakeLists.txt
-cmake_minimum_required (VERSION 3.2 FATAL_ERROR)
+cmake_minimum_required (VERSION 3.13.0 FATAL_ERROR)
 
 project(neo)
 

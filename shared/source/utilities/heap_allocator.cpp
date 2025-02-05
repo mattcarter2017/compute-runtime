@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -36,32 +36,34 @@ uint64_t HeapAllocator::allocateWithCustomAlignment(size_t &sizeToAllocate, size
     uint32_t defragmentCount = 0;
 
     for (;;) {
-        size_t sizeOfFreedChunk = 0;
-        uint64_t ptrReturn = getFromFreedChunks(sizeToAllocate, freedChunks, sizeOfFreedChunk, alignment);
+        uint64_t ptrReturn = 0llu;
 
-        if (ptrReturn == 0llu) {
-            if (sizeToAllocate > sizeThreshold) {
-                const uint64_t misalignment = alignUp(pLeftBound, alignment) - pLeftBound;
-                if (pLeftBound + misalignment + sizeToAllocate <= pRightBound) {
-                    if (misalignment) {
-                        storeInFreedChunks(pLeftBound, static_cast<size_t>(misalignment), freedChunks);
-                        pLeftBound += misalignment;
-                    }
-                    ptrReturn = pLeftBound;
-                    pLeftBound += sizeToAllocate;
+        if (sizeToAllocate > sizeThreshold) {
+            const uint64_t misalignment = alignUp(pLeftBound, alignment) - pLeftBound;
+            if (pLeftBound + misalignment + sizeToAllocate <= pRightBound) {
+                if (misalignment) {
+                    storeInFreedChunks(pLeftBound, static_cast<size_t>(misalignment), freedChunks);
+                    pLeftBound += misalignment;
                 }
-            } else {
-                const uint64_t pStart = pRightBound - sizeToAllocate;
-                const uint64_t misalignment = pStart - alignDown(pStart, alignment);
-                if (pLeftBound + sizeToAllocate + misalignment <= pRightBound) {
-                    if (misalignment) {
-                        pRightBound -= misalignment;
-                        storeInFreedChunks(pRightBound, static_cast<size_t>(misalignment), freedChunks);
-                    }
-                    pRightBound -= sizeToAllocate;
-                    ptrReturn = pRightBound;
-                }
+                ptrReturn = pLeftBound;
+                pLeftBound += sizeToAllocate;
             }
+        } else {
+            const uint64_t pStart = pRightBound - sizeToAllocate;
+            const uint64_t misalignment = pStart - alignDown(pStart, alignment);
+            if (pLeftBound + sizeToAllocate + misalignment <= pRightBound) {
+                if (misalignment) {
+                    pRightBound -= misalignment;
+                    storeInFreedChunks(pRightBound, static_cast<size_t>(misalignment), freedChunks);
+                }
+                pRightBound -= sizeToAllocate;
+                ptrReturn = pRightBound;
+            }
+        }
+
+        size_t sizeOfFreedChunk = 0;
+        if (ptrReturn == 0llu) {
+            ptrReturn = getFromFreedChunks(sizeToAllocate, freedChunks, sizeOfFreedChunk, alignment);
         }
 
         if (ptrReturn != 0llu) {
@@ -75,10 +77,14 @@ uint64_t HeapAllocator::allocateWithCustomAlignment(size_t &sizeToAllocate, size
             return ptrReturn;
         }
 
-        if (defragmentCount == 1)
+        if (defragmentCount == 0) {
+            defragment();
+            defragmentCount++;
+        } else if (alignment > 2 * MemoryConstants::megaByte && pRightBound - pLeftBound >= sizeToAllocate) {
+            alignment = Math::prevPowerOfTwo(static_cast<size_t>(pRightBound - pLeftBound - 1 - sizeToAllocate + 2 * MemoryConstants::pageSize64k));
+        } else {
             return 0llu;
-        defragment();
-        defragmentCount++;
+        }
     }
 }
 
@@ -147,11 +153,19 @@ uint64_t HeapAllocator::getFromFreedChunks(size_t size, std::vector<HeapChunk> &
             DEBUG_BREAK_IF(!(size <= sizeThreshold || (size > sizeThreshold && sizeDelta > sizeThreshold)));
 
             auto ptr = freedChunks[bestFitIndex].ptr + sizeDelta;
-            freedChunks[bestFitIndex].size = sizeDelta;
-
             if (!isAligned(ptr, requiredAlignment)) {
-                return 0llu;
+                auto alignedPtr = alignDown(ptr, requiredAlignment);
+                auto alignedDelta = ptr - alignedPtr;
+
+                sizeOfFreedChunk = size + static_cast<size_t>(alignedDelta);
+                freedChunks[bestFitIndex].size = sizeDelta - static_cast<size_t>(alignedDelta);
+                if (freedChunks[bestFitIndex].size == 0) {
+                    freedChunks.erase(freedChunks.begin() + bestFitIndex);
+                }
+                return alignedPtr;
             }
+
+            freedChunks[bestFitIndex].size = sizeDelta;
             return ptr;
         }
     }

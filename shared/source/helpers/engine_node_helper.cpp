@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -97,6 +97,7 @@ bool isBcsVirtualEngineEnabled(aub_stream::EngineType engineType) {
 aub_stream::EngineType getBcsEngineType(const RootDeviceEnvironment &rootDeviceEnvironment, const DeviceBitfield &deviceBitfield, SelectorCopyEngine &selectorCopyEngine, bool internalUsage) {
     auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
     auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
+    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<GfxCoreHelper>();
     if (debugManager.flags.ForceBcsEngineIndex.get() != -1) {
         auto index = debugManager.flags.ForceBcsEngineIndex.get();
         UNRECOVERABLE_IF(index > 8);
@@ -110,11 +111,7 @@ aub_stream::EngineType getBcsEngineType(const RootDeviceEnvironment &rootDeviceE
     }
 
     if (internalUsage) {
-        if (debugManager.flags.ForceBCSForInternalCopyEngine.get() != -1) {
-            return debugManager.flags.ForceBCSForInternalCopyEngine.get() == 0 ? aub_stream::EngineType::ENGINE_BCS
-                                                                               : static_cast<aub_stream::EngineType>(aub_stream::EngineType::ENGINE_BCS1 + debugManager.flags.ForceBCSForInternalCopyEngine.get() - 1);
-        }
-        return aub_stream::ENGINE_BCS3;
+        return EngineHelpers::mapBcsIndexToEngineType(gfxCoreHelper.getInternalCopyEngineIndex(hwInfo), true);
     }
 
     auto enableSelector = productHelper.isCopyEngineSelectorEnabled(hwInfo);
@@ -259,12 +256,21 @@ aub_stream::EngineType selectLinkCopyEngine(const RootDeviceEnvironment &rootDev
                                                : aub_stream::ENGINE_BCS4;
     const aub_stream::EngineType engine2 = aub_stream::ENGINE_BCS2;
 
-    if (isBcsEnabled(hwInfo, engine1) && isBcsEnabled(hwInfo, engine2)) {
+    auto hpEngine = gfxCoreHelper.getDefaultHpCopyEngine(hwInfo);
+
+    if (isBcsEnabled(hwInfo, engine1) && engine1 != hpEngine &&
+        isBcsEnabled(hwInfo, engine2) && engine2 != hpEngine) {
         // both BCS enabled, round robin
         return selectorCopyEngine.fetch_xor(1u) ? engine1 : engine2;
     } else {
         // one BCS enabled
-        return isBcsEnabled(hwInfo, engine1) ? engine1 : engine2;
+        if (isBcsEnabled(hwInfo, engine1) && (engine1 != hpEngine)) {
+            return engine1;
+        } else if (isBcsEnabled(hwInfo, engine2) && (engine2 != hpEngine)) {
+            return engine2;
+        } else {
+            return productHelper.getDefaultCopyEngine();
+        }
     }
 }
 aub_stream::EngineType mapCcsIndexToEngineType(uint32_t index) {

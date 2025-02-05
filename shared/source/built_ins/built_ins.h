@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,15 +27,6 @@ class SipKernel;
 class MemoryManager;
 class OsContext;
 
-inline constexpr ConstStringRef mediaKernelsBuildOptionsList[] = {
-    "-D cl_intel_device_side_advanced_vme_enable",
-    "-D cl_intel_device_side_avc_vme_enable",
-    "-D cl_intel_device_side_vme_enable",
-    "-D cl_intel_media_block_io",
-    CompilerOptions::fastRelaxedMath};
-
-inline constexpr CompilerOptions::ConstConcatenation<> mediaKernelsBuildOptions{mediaKernelsBuildOptionsList};
-
 struct BuiltinCode {
     enum class ECodeType {
         any = 0,          // for requesting "any" code available - priorities as below
@@ -53,7 +44,7 @@ struct BuiltinCode {
         case BuiltinCode::ECodeType::binary:
             return ".bin";
         case BuiltinCode::ECodeType::intermediate:
-            return ".bc";
+            return ".spv";
         case BuiltinCode::ECodeType::source:
             return ".cl";
         }
@@ -69,7 +60,6 @@ BuiltinResourceT createBuiltinResource(const BuiltinResourceT &r);
 std::string createBuiltinResourceName(EBuiltInOps::Type builtin, const std::string &extension);
 StackVec<std::string, 3> getBuiltinResourceNames(EBuiltInOps::Type builtin, BuiltinCode::ECodeType type, const Device &device);
 const char *getBuiltinAsString(EBuiltInOps::Type builtin);
-const char *getAdditionalBuiltinAsString(EBuiltInOps::Type builtin);
 
 class Storage {
   public:

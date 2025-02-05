@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -113,11 +113,10 @@ struct AUBHelloWorldFixture
 
 using AUBHelloWorld = Test<AUBHelloWorldFixture<AUBHelloWorldFixtureFactory>>;
 
-HWCMDTEST_F(IGFX_GEN8_CORE, AUBHelloWorld, WhenEnqueuingKernelThenAddressesAreAligned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, AUBHelloWorld, WhenEnqueuingKernelThenAddressesAreAligned) {
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::STATE_BASE_ADDRESS STATE_BASE_ADDRESS;
     typedef typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD MEDIA_INTERFACE_DESCRIPTOR_LOAD;
-    typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
 
     cl_uint workDim = 1;
     size_t globalWorkOffset[3] = {0, 0, 0};
@@ -191,7 +190,7 @@ struct AUBHelloWorldIntegrateTest : public AUBHelloWorldFixture<AUBHelloWorldFix
     template <typename FamilyType>
     void writeMemory(GraphicsAllocation *allocation) {
         AUBCommandStreamReceiverHw<FamilyType> *aubCsr = nullptr;
-        if (testMode == TestMode::aubTests) {
+        if (testMode == TestMode::aubTests || testMode == TestMode::aubTestsWithoutOutputFiles) {
             aubCsr = static_cast<AUBCommandStreamReceiverHw<FamilyType> *>(pCommandStreamReceiver);
         } else if (testMode == TestMode::aubTestsWithTbx) {
             auto tbxWithAubCsr = static_cast<CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<FamilyType>> *>(pCommandStreamReceiver);
@@ -238,7 +237,7 @@ HWTEST_P(AUBHelloWorldIntegrateTest, WhenEnqueingKernelThenExpectationsAreMet) {
     auto globalWorkItems = globalWorkSize[0] * globalWorkSize[1] * globalWorkSize[2];
     auto sizeWritten = globalWorkItems * sizeof(float);
 
-    auto pDestGpuAddress = reinterpret_cast<void *>((destBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress()));
+    auto pDestGpuAddress = addrToPtr(ptrOffset(destBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress(), destBuffer->getOffset()));
 
     AUBCommandStreamFixture::expectMemory<FamilyType>(pDestGpuAddress, this->pSrcMemory, sizeWritten);
 
@@ -251,7 +250,7 @@ HWTEST_P(AUBHelloWorldIntegrateTest, WhenEnqueingKernelThenExpectationsAreMet) {
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     AUB,
     AUBHelloWorldIntegrateTest,
     ::testing::Combine(
@@ -276,11 +275,10 @@ struct AUBSimpleArg
     }
 };
 
-HWCMDTEST_F(IGFX_GEN8_CORE, AUBSimpleArg, WhenEnqueingKernelThenAddressesAreAligned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, AUBSimpleArg, WhenEnqueingKernelThenAddressesAreAligned) {
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::STATE_BASE_ADDRESS STATE_BASE_ADDRESS;
     typedef typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD MEDIA_INTERFACE_DESCRIPTOR_LOAD;
-    typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
 
     cl_uint workDim = 1;
     size_t globalWorkOffset[3] = {0, 0, 0};
@@ -419,7 +417,7 @@ HWTEST_P(AUBSimpleArgIntegrateTest, WhenEnqueingKernelThenExpectationsAreMet) {
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     AUB,
     AUBSimpleArgIntegrateTest,
     ::testing::Combine(
@@ -429,7 +427,6 @@ INSTANTIATE_TEST_CASE_P(
 
 struct AUBSimpleArgNonUniformFixture : public KernelAUBFixture<SimpleArgNonUniformKernelFixture> {
     void setUp() {
-        REQUIRE_OCL_21_OR_SKIP(NEO::defaultHwInfo);
         KernelAUBFixture<SimpleArgNonUniformKernelFixture>::setUp();
 
         sizeUserMemory = alignUp(typeItems * typeSize, 64);
@@ -468,7 +465,7 @@ struct AUBSimpleArgNonUniformFixture : public KernelAUBFixture<SimpleArgNonUnifo
         *(expectedData + maxId) = maxId;
 
         outBuffer.reset(Buffer::create(context, CL_MEM_COPY_HOST_PTR, alignUp(sizeUserMemory, 4096), destMemory, retVal));
-        bufferGpuAddress = reinterpret_cast<void *>(outBuffer->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress());
+        bufferGpuAddress = addrToPtr(ptrOffset(outBuffer->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress(), outBuffer->getOffset()));
         kernel->setArg(1, outBuffer.get());
 
         sizeWrittenMemory = maxId * typeSize;
@@ -487,9 +484,6 @@ struct AUBSimpleArgNonUniformFixture : public KernelAUBFixture<SimpleArgNonUnifo
     }
 
     void tearDown() {
-        if (NEO::defaultHwInfo->capabilityTable.supportsOcl21Features == false) {
-            return;
-        }
         if (destMemory) {
             alignedFree(destMemory);
             destMemory = nullptr;
@@ -564,13 +558,13 @@ HWTEST_F(AUBSimpleKernelStatelessTest, givenSimpleKernelWhenStatelessPathIsUsedT
     EXPECT_TRUE(this->kernel->getKernelInfo().kernelDescriptor.kernelAttributes.supportsBuffersBiggerThan4Gb());
 
     this->pCmdQ->flush();
-    expectMemory<FamilyType>(reinterpret_cast<void *>(pBuffer->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress()),
+    expectMemory<FamilyType>(addrToPtr(ptrOffset(pBuffer->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress(), pBuffer->getOffset())),
                              bufferExpected, bufferSize);
 }
 
 using AUBSimpleArgNonUniformTest = Test<AUBSimpleArgNonUniformFixture>;
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork1DimNonUniformGroupThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+
     cl_uint workDim = 1;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 1, 1};
@@ -593,7 +587,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork1DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -602,7 +596,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork1DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNonUniformGroupInXDimensionThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+
     cl_uint workDim = 2;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 32, 1};
@@ -625,7 +619,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -634,7 +628,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNonUniformGroupInYDimensionThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+
     cl_uint workDim = 2;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {32, 39, 1};
@@ -657,7 +651,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -666,7 +660,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNonUniformGroupInXandYDimensionThenExpectFourWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+
     cl_uint workDim = 2;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 39, 1};
@@ -689,7 +683,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(4u, walkerCount);
 
     pCmdQ->flush();
@@ -698,7 +692,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork2DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInXDimensionThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 32, 32};
@@ -721,7 +714,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -730,7 +723,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInYDimensionThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {32, 39, 32};
@@ -753,7 +745,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -762,7 +754,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInZDimensionThenExpectTwoWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {32, 32, 39};
@@ -785,7 +776,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(2u, walkerCount);
 
     pCmdQ->flush();
@@ -794,7 +785,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInXandYDimensionThenExpectFourWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 39, 32};
@@ -817,7 +807,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(4u, walkerCount);
 
     pCmdQ->flush();
@@ -826,7 +816,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInXandZDimensionThenExpectFourWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 32, 39};
@@ -849,7 +838,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(4u, walkerCount);
 
     pCmdQ->flush();
@@ -858,7 +847,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInYandZDimensionThenExpectFourWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {32, 39, 39};
@@ -881,7 +869,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(4u, walkerCount);
 
     pCmdQ->flush();
@@ -890,7 +878,6 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
 }
 
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNonUniformGroupInXandYandZDimensionThenExpectEightWalkers) {
-    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
     cl_uint workDim = 3;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {39, 39, 39};
@@ -913,7 +900,7 @@ HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork3DimNo
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     hwParser.parseCommands<FamilyType>(*pCmdQ);
-    uint32_t walkerCount = hwParser.getCommandCount<DefaultWalkerType>();
+    uint32_t walkerCount = hwParser.getCommandWalkerCount<FamilyType>();
     EXPECT_EQ(8u, walkerCount);
 
     pCmdQ->flush();
@@ -936,7 +923,7 @@ struct AUBBindlessKernel : public KernelAUBFixture<BindlessKernelFixture>,
     DebugManagerStateRestore restorer;
 };
 
-HWTEST2_F(AUBBindlessKernel, DISABLED_givenBindlessCopyKernelWhenEnqueuedThenResultsValidate, IsAtLeastSkl) {
+HWTEST2_F(AUBBindlessKernel, DISABLED_givenBindlessCopyKernelWhenEnqueuedThenResultsValidate, MatchAny) {
     constexpr size_t bufferSize = MemoryConstants::pageSize;
     auto simulatedCsr = AUBFixture::getSimulatedCsr<FamilyType>();
     simulatedCsr->initializeEngine();
@@ -1010,11 +997,11 @@ HWTEST2_F(AUBBindlessKernel, DISABLED_givenBindlessCopyKernelWhenEnqueuedThenRes
     EXPECT_TRUE(this->kernel->getKernelInfo().kernelDescriptor.payloadMappings.explicitArgs[0].as<ArgDescPointer>().isPureStateful());
 
     this->pCmdQ->finish();
-    expectMemory<FamilyType>(reinterpret_cast<void *>(pBufferDst->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress()),
+    expectMemory<FamilyType>(addrToPtr(ptrOffset(pBufferDst->getGraphicsAllocation(device->getRootDeviceIndex())->getGpuAddress(), pBufferDst->getOffset())),
                              bufferDataSrc, bufferSize);
 }
 
-HWTEST2_F(AUBBindlessKernel, DISABLED_givenBindlessCopyImageKernelWhenEnqueuedThenResultsValidate, IsAtLeastSkl) {
+HWTEST2_F(AUBBindlessKernel, DISABLED_givenBindlessCopyImageKernelWhenEnqueuedThenResultsValidate, MatchAny) {
     constexpr unsigned int testWidth = 5;
     constexpr unsigned int testHeight = 1;
     constexpr unsigned int testDepth = 1;

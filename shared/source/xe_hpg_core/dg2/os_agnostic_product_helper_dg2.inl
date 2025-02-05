@@ -8,6 +8,7 @@
 #include "shared/source/command_stream/command_stream_receiver.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/memory_manager/memory_manager.h"
+#include "shared/source/os_interface/product_helper_xe_hpg_and_xe_hpc.inl"
 
 #include "aubstream/product_family.h"
 
@@ -128,11 +129,6 @@ LocalMemoryAccessMode ProductHelperHw<gfxProduct>::getDefaultLocalMemoryAccessMo
 }
 
 template <>
-bool ProductHelperHw<gfxProduct>::isAllocationSizeAdjustmentRequired(const HardwareInfo &hwInfo) const {
-    return DG2::isG10(hwInfo) && GfxCoreHelper::isWorkaroundRequired(REVISION_A0, REVISION_B, hwInfo, *this);
-}
-
-template <>
 std::pair<bool, bool> ProductHelperHw<gfxProduct>::isPipeControlPriorToNonPipelinedStateCommandsWARequired(const HardwareInfo &hwInfo, bool isRcs, const ReleaseHelper *releaseHelper) const {
     auto isAcm = DG2::isG10(hwInfo) || DG2::isG11(hwInfo) || DG2::isG12(hwInfo);
     auto isBasicWARequired = isAcm;
@@ -168,14 +164,9 @@ uint32_t ProductHelperHw<gfxProduct>::computeMaxNeededSubSliceSpace(const Hardwa
     UNRECOVERABLE_IF(highestEnabledSlice == 0);
     UNRECOVERABLE_IF(hwInfo.gtSystemInfo.MaxSlicesSupported == 0);
     auto subSlicesPerSlice = hwInfo.gtSystemInfo.MaxSubSlicesSupported / hwInfo.gtSystemInfo.MaxSlicesSupported;
-    auto maxSubSlice = highestEnabledSlice * subSlicesPerSlice;
+    auto maxSubSlice = std::max(highestEnabledSlice * subSlicesPerSlice, hwInfo.gtSystemInfo.MaxSubSlicesSupported);
 
     return maxSubSlice;
-}
-
-template <>
-bool ProductHelperHw<gfxProduct>::isTimestampWaitSupportedForEvents() const {
-    return true;
 }
 
 template <>
@@ -219,6 +210,11 @@ bool ProductHelperHw<gfxProduct>::isUsmPoolAllocatorSupported() const {
 }
 
 template <>
+bool ProductHelperHw<gfxProduct>::useLocalPreferredForCacheableBuffers() const {
+    return true;
+}
+
+template <>
 std::optional<aub_stream::ProductFamily> ProductHelperHw<gfxProduct>::getAubStreamProductFamily() const {
     return aub_stream::ProductFamily::Dg2;
 };
@@ -244,10 +240,6 @@ template <>
 bool ProductHelperHw<gfxProduct>::isCalculationForDisablingEuFusionWithDpasNeeded(const HardwareInfo &hwInfo) const {
     return DG2::isG10(hwInfo) || DG2::isG11(hwInfo) || DG2::isG12(hwInfo);
 }
-template <>
-bool ProductHelperHw<gfxProduct>::isDummyBlitWaRequired() const {
-    return false;
-}
 
 template <>
 bool ProductHelperHw<gfxProduct>::disableL3CacheForDebug(const HardwareInfo &hwInfo) const {
@@ -257,6 +249,21 @@ bool ProductHelperHw<gfxProduct>::disableL3CacheForDebug(const HardwareInfo &hwI
 template <>
 void ProductHelperHw<gfxProduct>::adjustNumberOfCcs(HardwareInfo &hwInfo) const {
     hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = 1;
+}
+
+template <>
+std::optional<bool> ProductHelperHw<gfxProduct>::isCoherentAllocation(uint64_t patIndex) const {
+    return std::nullopt;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::isDeviceUsmAllocationReuseSupported() const {
+    return false;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::isHostUsmAllocationReuseSupported() const {
+    return true;
 }
 
 } // namespace NEO

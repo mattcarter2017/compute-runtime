@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -38,7 +38,7 @@ struct ModuleImmutableDataFixture : public DeviceFixture {
         using KernelImmutableData::kernelDescriptor;
         using KernelImmutableData::kernelInfo;
         MockImmutableData(uint32_t perHwThreadPrivateMemorySize);
-        MockImmutableData(uint32_t perHwThreadPrivateMemorySize, uint32_t perThreadScratchSize, uint32_t perThreaddPrivateScratchSize);
+        MockImmutableData(uint32_t perHwThreadPrivateMemorySize, uint32_t perThreadScratchSlot0Size, uint32_t perThreadScratchSlot1Size);
         void setDevice(L0::Device *inDevice) {
             device = inDevice;
         }
@@ -77,16 +77,17 @@ struct ModuleImmutableDataFixture : public DeviceFixture {
 
     class MockKernel : public WhiteBox<L0::KernelImp> {
       public:
+        using KernelImp::argumentsResidencyContainer;
         using KernelImp::crossThreadData;
         using KernelImp::crossThreadDataSize;
         using KernelImp::dynamicStateHeapData;
         using KernelImp::dynamicStateHeapDataSize;
+        using KernelImp::internalResidencyContainer;
         using KernelImp::kernelArgHandlers;
         using KernelImp::kernelHasIndirectAccess;
         using KernelImp::kernelImmData;
         using KernelImp::kernelRequiresGenerationOfLocalIdsByRuntime;
         using KernelImp::kernelRequiresUncachedMocsCount;
-        using KernelImp::midThreadPreemptionDisallowedForRayTracingKernels;
         using KernelImp::patchBindlessOffsetsInCrossThreadData;
         using KernelImp::pImplicitArgs;
         using KernelImp::printfBuffer;
@@ -155,7 +156,7 @@ struct MultiDeviceModuleFixture : public MultiDeviceFixture {
 
     const std::string kernelName = "test";
     const uint32_t numKernelArguments = 6;
-    std::vector<std::unique_ptr<L0::Module>> modules;
+    std::vector<std::unique_ptr<WhiteBox<::L0::Module>>> modules;
     std::unique_ptr<WhiteBox<::L0::KernelImp>> kernel;
     std::unique_ptr<ZebinTestData::ZebinWithL0TestCommonModule> zebinData;
 };

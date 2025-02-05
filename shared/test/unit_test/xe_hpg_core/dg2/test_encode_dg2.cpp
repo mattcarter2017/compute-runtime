@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,8 +27,6 @@ using CommandEncodeDG2Test = ::testing::Test;
 
 DG2TEST_F(CommandEncodeDG2Test, whenProgrammingStateComputeModeThenProperFieldsAreSet) {
     using STATE_COMPUTE_MODE = typename FamilyType::STATE_COMPUTE_MODE;
-    using PIXEL_ASYNC_COMPUTE_THREAD_LIMIT = typename STATE_COMPUTE_MODE::PIXEL_ASYNC_COMPUTE_THREAD_LIMIT;
-    using Z_PASS_ASYNC_COMPUTE_THREAD_LIMIT = typename STATE_COMPUTE_MODE::Z_PASS_ASYNC_COMPUTE_THREAD_LIMIT;
     uint8_t buffer[64]{};
     MockExecutionEnvironment executionEnvironment{};
     auto &rootDeviceEnvironment = *executionEnvironment.rootDeviceEnvironments[0];
@@ -59,41 +57,12 @@ DG2TEST_F(CommandEncodeDG2Test, whenProgrammingStateComputeModeThenProperFieldsA
     EXPECT_TRUE(pScm->getLargeGrfMode());
 }
 
-DG2TEST_F(CommandEncodeDG2Test, whenProgramComputeWalkerThenApplyL3WAForDg2G10A0) {
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
+DG2TEST_F(CommandEncodeDG2Test, whenProgramComputeWalkerThenSetL3PrefetchDefaultValue) {
     auto walkerCmd = FamilyType::cmdInitGpgpuWalker;
-    MockExecutionEnvironment executionEnvironment{};
-    auto &compilerProductHelper = executionEnvironment.rootDeviceEnvironments[0]->getHelper<CompilerProductHelper>();
-    auto &rootDeviceEnvironment = *executionEnvironment.rootDeviceEnvironments[0];
-    auto &hwInfo = *rootDeviceEnvironment.getMutableHardwareInfo();
+    auto idd = FamilyType::cmdInitInterfaceDescriptorData;
 
-    std::vector<std::pair<unsigned short, uint16_t>> dg2Configs =
-        {{dg2G10DeviceIds[0], revIdA0},
-         {dg2G10DeviceIds[0], revIdA1},
-         {dg2G10DeviceIds[0], revIdB0},
-         {dg2G10DeviceIds[0], revIdC0},
-         {dg2G11DeviceIds[0], revIdA0},
-         {dg2G11DeviceIds[0], revIdB0},
-         {dg2G11DeviceIds[0], revIdB1},
-         {dg2G12DeviceIds[0], revIdA0}};
-
-    KernelDescriptor kernelDescriptor;
-    EncodeWalkerArgs walkerArgs{KernelExecutionType::defaultType, true, kernelDescriptor, NEO::RequiredDispatchWalkOrder::none, 0};
-
-    for (const auto &[deviceID, revisionID] : dg2Configs) {
-        hwInfo.platform.usRevId = revisionID;
-        hwInfo.platform.usDeviceID = deviceID;
-        hwInfo.ipVersion = compilerProductHelper.getHwIpVersion(hwInfo);
-        rootDeviceEnvironment.releaseHelper = ReleaseHelper::create(hwInfo.ipVersion);
-
-        EncodeDispatchKernel<FamilyType>::encodeAdditionalWalkerFields(rootDeviceEnvironment, walkerCmd, walkerArgs);
-
-        if (DG2::isG10(hwInfo) && revisionID < revIdB0) {
-            EXPECT_TRUE(walkerCmd.getL3PrefetchDisable());
-        } else {
-            EXPECT_FALSE(walkerCmd.getL3PrefetchDisable());
-        }
-    }
+    EncodeDispatchKernel<FamilyType>::overrideDefaultValues(walkerCmd, idd);
+    EXPECT_FALSE(walkerCmd.getL3PrefetchDisable());
 }
 
 using Dg2SbaTest = SbaTest;
@@ -104,11 +73,11 @@ DG2TEST_F(Dg2SbaTest, givenSpecificProductFamilyWhenAppendingSbaThenProgramCorre
     args.setGeneralStateBaseAddress = true;
 
     StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
-    EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WB, sbaCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WB, sbaCmd.getL1CacheControlCachePolicy());
 
     args.isDebuggerActive = true;
     StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
-    EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WBP, sbaCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WBP, sbaCmd.getL1CacheControlCachePolicy());
 }
 
 DG2TEST_F(Dg2SbaTest, givenL1CachingOverrideWhenStateBaseAddressIsProgrammedThenItMatchesTheOverrideValue) {
@@ -122,19 +91,19 @@ DG2TEST_F(Dg2SbaTest, givenL1CachingOverrideWhenStateBaseAddressIsProgrammedThen
 
     StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
 
-    EXPECT_EQ(0u, sbaCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(0u, sbaCmd.getL1CacheControlCachePolicy());
 
     debugManager.flags.ForceStatelessL1CachingPolicy.set(2u);
     updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
     StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
 
-    EXPECT_EQ(2u, sbaCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(2u, sbaCmd.getL1CacheControlCachePolicy());
 
     debugManager.flags.ForceAllResourcesUncached.set(true);
     updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
     StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
 
-    EXPECT_EQ(1u, sbaCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(1u, sbaCmd.getL1CacheControlCachePolicy());
 }

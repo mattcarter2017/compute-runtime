@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,13 +20,15 @@ const char *MetricsLibrary::getFilename() { return "libigdml.so.1"; }
 
 bool MetricsLibrary::getContextData(Device &device, ContextCreateData_1_0 &contextData) {
 
-    auto &osInterface = device.getOsInterface();
+    auto &osInterface = *device.getOsInterface();
     auto drm = osInterface.getDriverModel()->as<NEO::Drm>();
     auto drmFileDescriptor = drm->getFileDescriptor();
     auto &osData = contextData.ClientData->Linux;
 
     osData.Adapter->Type = LinuxAdapterType::DrmFileDescriptor;
     osData.Adapter->DrmFileDescriptor = drmFileDescriptor;
+    callbacks.CommandBufferFlush = &flushCommandBufferCallback;
+    contextData.ClientData->Handle = reinterpret_cast<void *>(&device);
 
     return drmFileDescriptor != -1;
 }

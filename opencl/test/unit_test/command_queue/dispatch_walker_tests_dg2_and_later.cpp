@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,6 +14,7 @@
 #include "shared/test/common/cmd_parse/hw_parse.h"
 #include "shared/test/common/fixtures/linear_stream_fixture.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_allocation_properties.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
@@ -79,21 +80,19 @@ using matcherDG2AndLater = IsAtLeastXeHpgCore;
 HWTEST2_F(WalkerDispatchTestDg2AndLater, givenDebugVariableSetWhenProgramComputeWalkerThenApplyL3PrefetchAppropriately, matcherDG2AndLater) {
     using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
     DebugManagerStateRestore restore;
-    auto walkerCmd = FamilyType::cmdInitGpgpuWalker;
-    MockExecutionEnvironment mockExecutionEnvironment{};
-    auto &rootDeviceEnvironment = *mockExecutionEnvironment.rootDeviceEnvironments[0];
+    auto walkerCmd = FamilyType::template getInitGpuWalker<COMPUTE_WALKER>();
+    auto idd = FamilyType::cmdInitInterfaceDescriptorData;
 
-    KernelDescriptor kernelDescriptor;
-    EncodeWalkerArgs walkerArgs{KernelExecutionType::defaultType, true, kernelDescriptor, NEO::RequiredDispatchWalkOrder::none, 0, 0};
     for (auto forceL3PrefetchForComputeWalker : {false, true}) {
         debugManager.flags.ForceL3PrefetchForComputeWalker.set(forceL3PrefetchForComputeWalker);
-        EncodeDispatchKernel<FamilyType>::encodeAdditionalWalkerFields(rootDeviceEnvironment, walkerCmd, walkerArgs);
+        EncodeDispatchKernel<FamilyType>::overrideDefaultValues(walkerCmd, idd);
         EXPECT_EQ(!forceL3PrefetchForComputeWalker, walkerCmd.getL3PrefetchDisable());
     }
 }
 
 HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenTimestampPacketWhenDispatchingThenProgramPostSyncData, matcherDG2AndLater) {
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
+    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+    using POSTSYNC_DATA = decltype(FamilyType::template getPostSyncType<DefaultWalkerType>());
 
     MockKernelWithInternals kernel1(*device);
     MockKernelWithInternals kernel2(*device);
@@ -126,18 +125,18 @@ HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenTimestampPacketWhenDispatchin
 
     auto expectedMocs = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, device->getRootDeviceEnvironment()) ? gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED) : gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
 
-    auto walker = genCmdCast<COMPUTE_WALKER *>(*hwParser.itorWalker);
-    EXPECT_EQ(FamilyType::POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP, walker->getPostSync().getOperation());
+    auto walker = genCmdCast<DefaultWalkerType *>(*hwParser.itorWalker);
+    EXPECT_EQ(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP, walker->getPostSync().getOperation());
     EXPECT_TRUE(walker->getPostSync().getDataportPipelineFlush());
     EXPECT_TRUE(walker->getPostSync().getDataportSubsliceCacheFlush());
     EXPECT_EQ(expectedMocs, walker->getPostSync().getMocs());
     auto contextStartAddress = TimestampPacketHelper::getContextStartGpuAddress(*timestampPacketContainer.peekNodes()[0]);
     EXPECT_EQ(contextStartAddress, walker->getPostSync().getDestinationAddress());
 
-    auto secondWalkerItor = find<COMPUTE_WALKER *>(++hwParser.itorWalker, hwParser.cmdList.end());
-    auto secondWalker = genCmdCast<COMPUTE_WALKER *>(*secondWalkerItor);
+    auto secondWalkerItor = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(++hwParser.itorWalker, hwParser.cmdList.end());
+    auto secondWalker = genCmdCast<DefaultWalkerType *>(*secondWalkerItor);
 
-    EXPECT_EQ(FamilyType::POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP, secondWalker->getPostSync().getOperation());
+    EXPECT_EQ(POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP, secondWalker->getPostSync().getOperation());
     EXPECT_TRUE(secondWalker->getPostSync().getDataportPipelineFlush());
     EXPECT_TRUE(secondWalker->getPostSync().getDataportSubsliceCacheFlush());
     EXPECT_EQ(expectedMocs, walker->getPostSync().getMocs());
@@ -145,8 +144,45 @@ HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenTimestampPacketWhenDispatchin
     EXPECT_EQ(contextStartAddress, secondWalker->getPostSync().getDestinationAddress());
 }
 
+HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenDebugFlagToDisableL1FlushInPostSyncWhenKernelIsProgrammedThenL1FlushIsNotEnabled, matcherDG2AndLater) {
+    DebugManagerStateRestore restore;
+    NEO::debugManager.flags.ForcePostSyncL1Flush.set(0);
+
+    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+
+    MockKernelWithInternals kernel1(*device);
+
+    device->getUltCommandStreamReceiver<FamilyType>().timestampPacketWriteEnabled = true;
+
+    TimestampPacketContainer timestampPacketContainer;
+    timestampPacketContainer.add(device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator()->getTag());
+    timestampPacketContainer.add(device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator()->getTag());
+
+    MockMultiDispatchInfo multiDispatchInfo(device.get(), std::vector<Kernel *>({kernel1.mockKernel}));
+
+    MockCommandQueue cmdQ(context.get(), device.get(), nullptr, false);
+    auto &cmdStream = cmdQ.getCS(0);
+
+    HardwareInterfaceWalkerArgs walkerArgs = createHardwareInterfaceWalkerArgs(CL_COMMAND_NDRANGE_KERNEL);
+    walkerArgs.currentTimestampPacketNodes = &timestampPacketContainer;
+    HardwareInterface<FamilyType>::template dispatchWalker<typename FamilyType::DefaultWalkerType>(
+        cmdQ,
+        multiDispatchInfo,
+        CsrDependencies(),
+        walkerArgs);
+
+    HardwareParse hwParser;
+    hwParser.parseCommands<FamilyType>(cmdStream, 0);
+    hwParser.findHardwareCommands<FamilyType>();
+    auto walker = genCmdCast<DefaultWalkerType *>(*hwParser.itorWalker);
+
+    EXPECT_FALSE(walker->getPostSync().getDataportPipelineFlush());
+    EXPECT_FALSE(walker->getPostSync().getDataportSubsliceCacheFlush());
+}
+
 HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenDebugVariableEnabledWhenEnqueueingThenWriteWalkerStamp, matcherDG2AndLater) {
-    using COMPUTE_WALKER = typename FamilyType::COMPUTE_WALKER;
+    using WalkerVariant = typename FamilyType::WalkerVariant;
+
     DebugManagerStateRestore restore;
     debugManager.flags.EnableTimestampPacket.set(true);
 
@@ -164,15 +200,19 @@ HWTEST2_F(Dg2AndLaterDispatchWalkerBasicTest, givenDebugVariableEnabledWhenEnque
     hwParser.findHardwareCommands<FamilyType>();
     EXPECT_NE(hwParser.itorWalker, hwParser.cmdList.end());
 
-    auto walker = genCmdCast<COMPUTE_WALKER *>(*hwParser.itorWalker);
-
     auto gmmHelper = device->getGmmHelper();
     auto expectedMocs = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, device->getRootDeviceEnvironment()) ? gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED) : gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
 
-    auto &postSyncData = walker->getPostSync();
-    EXPECT_EQ(FamilyType::POSTSYNC_DATA::OPERATION::OPERATION_WRITE_TIMESTAMP,
-              postSyncData.getOperation());
-    EXPECT_TRUE(postSyncData.getDataportPipelineFlush());
-    EXPECT_TRUE(postSyncData.getDataportSubsliceCacheFlush());
-    EXPECT_EQ(expectedMocs, postSyncData.getMocs());
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*hwParser.itorWalker);
+
+    std::visit([expectedMocs](auto &&walker) {
+        auto &postSyncData = walker->getPostSync();
+        using PostSyncType = std::decay_t<decltype(postSyncData)>;
+
+        EXPECT_EQ(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP, postSyncData.getOperation());
+        EXPECT_TRUE(postSyncData.getDataportPipelineFlush());
+        EXPECT_TRUE(postSyncData.getDataportSubsliceCacheFlush());
+        EXPECT_EQ(expectedMocs, postSyncData.getMocs());
+    },
+               walkerVariant);
 }

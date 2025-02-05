@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,12 +13,14 @@
 #include "shared/source/direct_submission/direct_submission_controller.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/helpers/affinity_mask.h"
+#include "shared/source/helpers/bindless_heaps_helper.h"
 #include "shared/source/helpers/driver_model_type.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/string_helpers.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/memory_manager/os_agnostic_memory_manager.h"
+#include "shared/source/memory_manager/unified_memory_reuse_cleaner.h"
 #include "shared/source/os_interface/debug_env_reader.h"
 #include "shared/source/os_interface/driver_info.h"
 #include "shared/source/os_interface/os_environment.h"
@@ -39,10 +41,19 @@ void ExecutionEnvironment::releaseRootDeviceEnvironmentResources(RootDeviceEnvir
     SipKernel::freeSipKernels(rootDeviceEnvironment, memoryManager.get());
     if (rootDeviceEnvironment->builtins.get()) {
         rootDeviceEnvironment->builtins->freeSipKernels(memoryManager.get());
+        rootDeviceEnvironment->builtins.reset();
     }
+    rootDeviceEnvironment->releaseDummyAllocation();
+    rootDeviceEnvironment->bindlessHeapsHelper.reset();
 }
 
 ExecutionEnvironment::~ExecutionEnvironment() {
+    if (directSubmissionController) {
+        directSubmissionController->stopThread();
+    }
+    if (unifiedMemoryReuseCleaner) {
+        unifiedMemoryReuseCleaner->stopThread();
+    }
     if (memoryManager) {
         memoryManager->commonCleanup();
         for (const auto &rootDeviceEnvironment : this->rootDeviceEnvironments) {
@@ -51,6 +62,7 @@ ExecutionEnvironment::~ExecutionEnvironment() {
     }
     rootDeviceEnvironments.clear();
     mapOfSubDeviceIndices.clear();
+    this->restoreCcsMode();
 }
 
 bool ExecutionEnvironment::initializeMemoryManager() {
@@ -58,19 +70,17 @@ bool ExecutionEnvironment::initializeMemoryManager() {
         return memoryManager->isInitialized();
     }
 
-    int32_t setCommandStreamReceiverType = CommandStreamReceiverType::CSR_HW;
-    if (debugManager.flags.SetCommandStreamReceiver.get() >= 0) {
-        setCommandStreamReceiverType = debugManager.flags.SetCommandStreamReceiver.get();
-    }
+    auto csrType = obtainCsrTypeFromIntegerValue(debugManager.flags.SetCommandStreamReceiver.get(), CommandStreamReceiverType::hardware);
 
-    switch (setCommandStreamReceiverType) {
-    case CommandStreamReceiverType::CSR_TBX:
-    case CommandStreamReceiverType::CSR_TBX_WITH_AUB:
-    case CommandStreamReceiverType::CSR_AUB:
+    switch (csrType) {
+    case CommandStreamReceiverType::tbx:
+    case CommandStreamReceiverType::tbxWithAub:
+    case CommandStreamReceiverType::aub:
+    case CommandStreamReceiverType::nullAub:
         memoryManager = std::make_unique<OsAgnosticMemoryManager>(*this);
         break;
-    case CommandStreamReceiverType::CSR_HW:
-    case CommandStreamReceiverType::CSR_HW_WITH_AUB:
+    case CommandStreamReceiverType::hardware:
+    case CommandStreamReceiverType::hardwareWithAub:
     default: {
         auto driverModelType = DriverModelType::unknown;
         if (this->rootDeviceEnvironments[0]->osInterface && this->rootDeviceEnvironments[0]->osInterface->getDriverModel()) {
@@ -88,16 +98,37 @@ void ExecutionEnvironment::calculateMaxOsContextCount() {
     for (const auto &rootDeviceEnvironment : this->rootDeviceEnvironments) {
         auto hwInfo = rootDeviceEnvironment->getHardwareInfo();
         auto &gfxCoreHelper = rootDeviceEnvironment->getHelper<GfxCoreHelper>();
-        auto osContextCount = static_cast<uint32_t>(gfxCoreHelper.getGpgpuEngineInstances(*rootDeviceEnvironment).size());
+        auto &engineInstances = gfxCoreHelper.getGpgpuEngineInstances(*rootDeviceEnvironment);
+        auto osContextCount = static_cast<uint32_t>(engineInstances.size());
         auto subDevicesCount = GfxCoreHelper::getSubDevicesCount(hwInfo);
-        auto ccsCount = hwInfo->gtSystemInfo.CCSInfo.NumberOfCCSEnabled;
         bool hasRootCsr = subDevicesCount > 1;
 
-        MemoryManager::maxOsContextCount += osContextCount * subDevicesCount + hasRootCsr;
-
-        if (ccsCount > 1 && debugManager.flags.EngineInstancedSubDevices.get()) {
-            MemoryManager::maxOsContextCount += ccsCount * subDevicesCount;
+        uint32_t numRegularEngines = 0;
+        uint32_t numHpEngines = 0;
+        for (const auto &engine : engineInstances) {
+            if (engine.second == EngineUsage::regular) {
+                numRegularEngines++;
+            } else if (engine.second == EngineUsage::highPriority) {
+                numHpEngines++;
+            }
         }
+
+        uint32_t numRootContexts = hasRootCsr ? 1 : 0;
+        uint32_t numSecondaryContexts = 0;
+        if (gfxCoreHelper.areSecondaryContextsSupported()) {
+
+            auto groupCount = gfxCoreHelper.getContextGroupContextsCount();
+            if (rootDeviceEnvironment->osInterface && rootDeviceEnvironment->osInterface->getAggregatedProcessCount() > 1) {
+                groupCount = std::min(groupCount / rootDeviceEnvironment->osInterface->getAggregatedProcessCount(), 2u);
+            }
+            numSecondaryContexts += numRegularEngines * groupCount;
+            numSecondaryContexts += numHpEngines * groupCount;
+            osContextCount -= (numRegularEngines + numHpEngines);
+
+            numRootContexts *= groupCount;
+        }
+
+        MemoryManager::maxOsContextCount += (numSecondaryContexts + osContextCount) * subDevicesCount + numRootContexts;
     }
 }
 
@@ -115,9 +146,24 @@ DirectSubmissionController *ExecutionEnvironment::initializeDirectSubmissionCont
 
     if (initializeDirectSubmissionController && this->directSubmissionController == nullptr) {
         this->directSubmissionController = std::make_unique<DirectSubmissionController>();
+        this->directSubmissionController->startThread();
     }
 
     return directSubmissionController.get();
+}
+
+void ExecutionEnvironment::initializeUnifiedMemoryReuseCleaner() {
+    std::lock_guard<std::mutex> lock(initializeUnifiedMemoryReuseCleanerMutex);
+    auto initializeUnifiedMemoryReuseCleaner = UnifiedMemoryReuseCleaner::isSupported();
+
+    if (debugManager.flags.ExperimentalUSMAllocationReuseCleaner.get() != -1) {
+        initializeUnifiedMemoryReuseCleaner = debugManager.flags.ExperimentalUSMAllocationReuseCleaner.get() == 1;
+    }
+
+    if (initializeUnifiedMemoryReuseCleaner && nullptr == this->unifiedMemoryReuseCleaner) {
+        this->unifiedMemoryReuseCleaner = std::make_unique<UnifiedMemoryReuseCleaner>();
+        this->unifiedMemoryReuseCleaner->startThread();
+    }
 }
 
 void ExecutionEnvironment::prepareRootDeviceEnvironments(uint32_t numRootDevices) {
@@ -143,6 +189,42 @@ void ExecutionEnvironment::prepareRootDeviceEnvironment(const uint32_t rootDevic
     rootDeviceEnvironments[rootDeviceIndexForReInit] = std::make_unique<RootDeviceEnvironment>(*this);
 }
 
+int ExecutionEnvironment::setErrorDescription(const std::string &str) {
+    auto threadId = std::this_thread::get_id();
+    {
+        std::lock_guard<std::mutex> errorDescsLock(errorDescsMutex);
+        if (errorDescs.find(threadId) == errorDescs.end()) {
+            errorDescs[threadId] = str;
+        } else {
+            errorDescs[threadId].clear();
+            errorDescs[threadId] = str;
+        }
+    }
+    return static_cast<int>(str.size());
+}
+
+void ExecutionEnvironment::getErrorDescription(const char **ppString) {
+    auto threadId = std::this_thread::get_id();
+    {
+        std::lock_guard<std::mutex> errorDescsLock(errorDescsMutex);
+        if (errorDescs.find(threadId) == errorDescs.end()) {
+            errorDescs[threadId] = std::string();
+        }
+    }
+    *ppString = errorDescs[threadId].c_str();
+}
+
+int ExecutionEnvironment::clearErrorDescription() {
+    auto threadId = std::this_thread::get_id();
+    {
+        std::lock_guard<std::mutex> errorDescsLock(errorDescsMutex);
+        if (errorDescs.find(threadId) != errorDescs.end()) {
+            errorDescs[threadId].clear();
+        }
+    }
+    return 0;
+}
+
 bool ExecutionEnvironment::getSubDeviceHierarchy(uint32_t index, std::tuple<uint32_t, uint32_t, uint32_t> *subDeviceMap) {
     if (mapOfSubDeviceIndices.find(index) != mapOfSubDeviceIndices.end()) {
         *subDeviceMap = mapOfSubDeviceIndices.at(index);
@@ -153,12 +235,6 @@ bool ExecutionEnvironment::getSubDeviceHierarchy(uint32_t index, std::tuple<uint
 }
 
 void ExecutionEnvironment::parseAffinityMask() {
-
-    // If the device hierarchy is Combined, then skip the affinity mask parsing until level zero device get.
-    if (isCombinedDeviceHierarchy()) {
-        return;
-    }
-
     const auto &affinityMaskString = debugManager.flags.ZE_AFFINITY_MASK.get();
 
     if (affinityMaskString.compare("default") == 0 ||
@@ -166,19 +242,22 @@ void ExecutionEnvironment::parseAffinityMask() {
         return;
     }
 
-    // If the user has requested FLAT device hierarchy models, then report all the sub devices as devices.
-    bool exposeSubDevicesAsApiDevices = isExposingSubDevicesAsDevices();
-    uint32_t numRootDevices = static_cast<uint32_t>(rootDeviceEnvironments.size());
+    // If the user has requested FLAT or COMBINED device hierarchy models, then report all the sub devices as devices.
+    bool exposeSubDevices = this->deviceHierarchyMode != DeviceHierarchyMode::composite;
 
-    RootDeviceIndicesMap mapOfIndices;
     // Reserve at least for a size equal to rootDeviceEnvironments.size() times four,
     // which is enough for typical configurations
+    uint32_t numRootDevices = static_cast<uint32_t>(rootDeviceEnvironments.size());
+    uint32_t numDevices = numRootDevices;
     size_t reservedSizeForIndices = numRootDevices * 4;
+    RootDeviceIndicesMap mapOfIndices;
     mapOfIndices.reserve(reservedSizeForIndices);
     uint32_t hwSubDevicesCount = 0u;
-    if (exposeSubDevicesAsApiDevices) {
-        for (uint32_t currentRootDevice = 0u; currentRootDevice < static_cast<uint32_t>(rootDeviceEnvironments.size()); currentRootDevice++) {
+
+    if (exposeSubDevices) {
+        for (uint32_t currentRootDevice = 0u; currentRootDevice < numRootDevices; currentRootDevice++) {
             auto hwInfo = rootDeviceEnvironments[currentRootDevice]->getHardwareInfo();
+
             hwSubDevicesCount = GfxCoreHelper::getSubDevicesCount(hwInfo);
             uint32_t currentSubDevice = 0;
             mapOfIndices.push_back(std::make_tuple(currentRootDevice, currentSubDevice));
@@ -187,7 +266,7 @@ void ExecutionEnvironment::parseAffinityMask() {
             }
         }
 
-        numRootDevices = static_cast<uint32_t>(mapOfIndices.size());
+        numDevices = static_cast<uint32_t>(mapOfIndices.size());
     }
 
     std::vector<AffinityMaskHelper> affinityMaskHelper(numRootDevices);
@@ -198,65 +277,43 @@ void ExecutionEnvironment::parseAffinityMask() {
     uint32_t deviceIndex = 0;
     for (const auto &entry : affinityMaskEntries) {
         auto subEntries = StringHelpers::split(entry, ".");
-        uint32_t rootDeviceIndex = StringHelpers::toUint32t(subEntries[0]);
+        uint32_t entryIndex = StringHelpers::toUint32t(subEntries[0]);
 
-        // tiles as devices
-        if (exposeSubDevicesAsApiDevices) {
-            if (rootDeviceIndex > numRootDevices) {
-                continue;
-            }
-
-            // FlatHierarchy not supported with AllowSingleTileEngineInstancedSubDevices
+        if (entryIndex >= numDevices) {
+            continue;
+        } else if (exposeSubDevices) {
+            // tiles as devices
             // so ignore X.Y
             if (subEntries.size() > 1) {
                 continue;
             }
 
-            std::tuple<uint32_t, uint32_t> indexKey = mapOfIndices[rootDeviceIndex];
+            std::tuple<uint32_t, uint32_t> indexKey = mapOfIndices[entryIndex];
             auto hwDeviceIndex = std::get<0>(indexKey);
             auto tileIndex = std::get<1>(indexKey);
+
             affinityMaskHelper[hwDeviceIndex].enableGenericSubDevice(tileIndex);
             // Store the Physical Hierarchy for this SubDevice mapped to the Device Index passed to the user.
             mapOfSubDeviceIndices[deviceIndex++] = std::make_tuple(hwDeviceIndex, tileIndex, hwSubDevicesCount);
-            continue;
-        }
-
-        // cards as devices
-        if (rootDeviceIndex < numRootDevices) {
-            auto hwInfo = rootDeviceEnvironments[rootDeviceIndex]->getHardwareInfo();
+        } else {
+            // cards as devices
+            auto hwInfo = rootDeviceEnvironments[entryIndex]->getHardwareInfo();
             auto subDevicesCount = GfxCoreHelper::getSubDevicesCount(hwInfo);
 
             if (subEntries.size() > 1) {
                 uint32_t subDeviceIndex = StringHelpers::toUint32t(subEntries[1]);
 
-                bool enableSecondLevelEngineInstanced = ((subDevicesCount == 1) &&
-                                                         (hwInfo->gtSystemInfo.CCSInfo.NumberOfCCSEnabled > 1) &&
-                                                         debugManager.flags.AllowSingleTileEngineInstancedSubDevices.get());
-
-                if (enableSecondLevelEngineInstanced) {
-                    UNRECOVERABLE_IF(subEntries.size() != 2);
-
-                    if (subDeviceIndex < hwInfo->gtSystemInfo.CCSInfo.NumberOfCCSEnabled) {
-                        // Store the Physical Hierarchy for this SubDevice mapped to the Device Index passed to the user.
-                        mapOfSubDeviceIndices[rootDeviceIndex] = std::make_tuple(rootDeviceIndex, subDeviceIndex, subDevicesCount);
-                        affinityMaskHelper[rootDeviceIndex].enableEngineInstancedSubDevice(0, subDeviceIndex); // Mask: X.Y
-                    }
-                } else if (subDeviceIndex < subDevicesCount) {
+                if (subDeviceIndex < subDevicesCount) {
                     if (subEntries.size() == 2) {
                         // Store the Physical Hierarchy for this SubDevice mapped to the Device Index passed to the user.
-                        mapOfSubDeviceIndices[rootDeviceIndex] = std::make_tuple(rootDeviceIndex, subDeviceIndex, subDevicesCount);
-                        affinityMaskHelper[rootDeviceIndex].enableGenericSubDevice(subDeviceIndex); // Mask: X.Y
+                        mapOfSubDeviceIndices[entryIndex] = std::make_tuple(entryIndex, subDeviceIndex, subDevicesCount);
+                        affinityMaskHelper[entryIndex].enableGenericSubDevice(subDeviceIndex); // Mask: X.Y
                     } else {
                         UNRECOVERABLE_IF(subEntries.size() != 3);
-                        uint32_t ccsIndex = StringHelpers::toUint32t(subEntries[2]);
-
-                        if (ccsIndex < hwInfo->gtSystemInfo.CCSInfo.NumberOfCCSEnabled) {
-                            affinityMaskHelper[rootDeviceIndex].enableEngineInstancedSubDevice(subDeviceIndex, ccsIndex); // Mask: X.Y.Z
-                        }
                     }
                 }
             } else {
-                affinityMaskHelper[rootDeviceIndex].enableAllGenericSubDevices(subDevicesCount); // Mask: X
+                affinityMaskHelper[entryIndex].enableAllGenericSubDevices(subDevicesCount); // Mask: X
             }
         }
     }
@@ -278,17 +335,17 @@ void ExecutionEnvironment::sortNeoDevices() {
     std::sort(rootDeviceEnvironments.begin(), rootDeviceEnvironments.end(), comparePciIdBusNumber);
 }
 
-void ExecutionEnvironment::setDeviceHierarchy(const GfxCoreHelper &gfxCoreHelper) {
+void ExecutionEnvironment::setDeviceHierarchyMode(const GfxCoreHelper &gfxCoreHelper) {
     NEO::EnvironmentVariableReader envReader;
-    std::string hierarchyModel = envReader.getSetting("ZE_FLAT_DEVICE_HIERARCHY", std::string(gfxCoreHelper.getDefaultDeviceHierarchy()));
-    if (strcmp(hierarchyModel.c_str(), "COMPOSITE") == 0) {
-        setExposeSubDevicesAsDevices(false);
-    }
-    if (strcmp(hierarchyModel.c_str(), "FLAT") == 0) {
-        setExposeSubDevicesAsDevices(true);
-    }
-    if (strcmp(hierarchyModel.c_str(), "COMBINED") == 0) {
-        setCombinedDeviceHierarchy(true);
+    std::string deviceHierarchyMode = envReader.getSetting("ZE_FLAT_DEVICE_HIERARCHY", std::string(""));
+    if (strcmp(deviceHierarchyMode.c_str(), "COMPOSITE") == 0) {
+        this->deviceHierarchyMode = DeviceHierarchyMode::composite;
+    } else if (strcmp(deviceHierarchyMode.c_str(), "FLAT") == 0) {
+        this->deviceHierarchyMode = DeviceHierarchyMode::flat;
+    } else if (strcmp(deviceHierarchyMode.c_str(), "COMBINED") == 0) {
+        this->deviceHierarchyMode = DeviceHierarchyMode::combined;
+    } else {
+        this->deviceHierarchyMode = gfxCoreHelper.getDefaultDeviceHierarchy();
     }
 }
 

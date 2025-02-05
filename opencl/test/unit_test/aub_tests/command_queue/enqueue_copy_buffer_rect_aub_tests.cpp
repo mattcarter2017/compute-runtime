@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -76,7 +76,7 @@ HWTEST_P(AUBCopyBufferRect, WhenCopyingThenExpectationsMet) {
 
     auto pSrcMemory = &srcMemory[0];
 
-    auto pDestMemory = reinterpret_cast<cl_uchar *>(dstBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress());
+    auto pDestMemory = reinterpret_cast<cl_uchar *>(ptrOffset(dstBuffer->getGraphicsAllocation(pClDevice->getRootDeviceIndex())->getGpuAddress(), dstBuffer->getOffset()));
 
     size_t regionX = std::min(rowPitch / 2, rowPitch - std::max(srcOrigin0, dstOrigin0));
     size_t regionY = std::min(rowPitch / 2, rowPitch - std::max(srcOrigin1, dstOrigin1));
@@ -134,13 +134,13 @@ HWTEST_P(AUBCopyBufferRect, WhenCopyingThenExpectationsMet) {
 
 static size_t zero[] = {0};
 
-INSTANTIATE_TEST_CASE_P(AUBCopyBufferRect,
-                        AUBCopyBufferRect,
-                        ::testing::Combine(
-                            ::testing::Values(0, 3), // srcOrigin
-                            ::testing::ValuesIn(zero),
-                            ::testing::Values(0, 7),
-                            ::testing::Values(0, 3), // dstPrigin
-                            ::testing::ValuesIn(zero),
-                            ::testing::Values(0, 7),
-                            ::testing::Values(true, false)));
+INSTANTIATE_TEST_SUITE_P(AUBCopyBufferRect,
+                         AUBCopyBufferRect,
+                         ::testing::Combine(
+                             ::testing::Values(0, 3), // srcOrigin
+                             ::testing::ValuesIn(zero),
+                             ::testing::Values(0, 7),
+                             ::testing::Values(0, 3), // dstPrigin
+                             ::testing::ValuesIn(zero),
+                             ::testing::Values(0, 7),
+                             ::testing::Values(true, false)));

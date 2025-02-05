@@ -1,15 +1,19 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/source/helpers/compiler_product_helper.h"
+#include "shared/source/helpers/local_memory_access_modes.h"
 #include "shared/source/helpers/timestamp_packet.h"
 #include "shared/test/common/cmd_parse/hw_parse.h"
 #include "shared/test/common/helpers/engine_descriptor_helper.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_builtins.h"
 #include "shared/test/common/mocks/mock_csr.h"
+#include "shared/test/common/mocks/mock_direct_submission_hw.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
 #include "shared/test/common/utilities/base_object_utils.h"
 
@@ -72,11 +76,95 @@ struct MockBuilder : BuiltinDispatchInfoBuilder {
     Params paramsToUse;
 };
 
+using MultiIoqCmdQSynchronizationTest = CommandQueueHwBlitTest<false>;
+
+HWTEST_F(MultiIoqCmdQSynchronizationTest, givenTwoIoqCmdQsWhenEnqueuesSynchronizedWithMarkersThenCorrectSynchronizationIsApplied) {
+    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+
+    if (pCmdQ->getTimestampPacketContainer() == nullptr) {
+        GTEST_SKIP();
+    }
+
+    auto buffer = std::unique_ptr<Buffer>{BufferHelper<>::create(pContext)};
+    char ptr[1] = {};
+
+    auto pCmdQ2 = createCommandQueue(pClDevice);
+    cl_event outEvent;
+    size_t offset = 0;
+    cl_int status;
+    status = pCmdQ->enqueueWriteBuffer(buffer.get(), CL_FALSE, offset, 1u, ptr, nullptr, 0, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    status = pCmdQ->enqueueMarkerWithWaitList(0, nullptr, &outEvent);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    auto node = castToObject<Event>(outEvent)->getTimestampPacketNodes()->peekNodes().at(0);
+    const auto nodeGpuAddress = TimestampPacketHelper::getContextEndGpuAddress(*node);
+
+    auto cmdQ2Start = pCmdQ2->getCS(0).getUsed();
+    status = pCmdQ2->enqueueMarkerWithWaitList(1, &outEvent, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    auto bcsStart = pCmdQ2->getBcsCommandStreamReceiver(aub_stream::EngineType::ENGINE_BCS)->getCS(0).getUsed();
+    status = pCmdQ2->enqueueReadBuffer(buffer.get(), CL_FALSE, offset, 1u, ptr, nullptr, 0, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    uint64_t bcsSemaphoreAddress = 0x0;
+
+    {
+        LinearStream &bcsStream = pCmdQ2->getBcsCommandStreamReceiver(aub_stream::EngineType::ENGINE_BCS)->getCS(0);
+        HardwareParse bcsHwParser;
+        bcsHwParser.parseCommands<FamilyType>(bcsStream, bcsStart);
+        auto semaphoreCmdBcs = genCmdCast<MI_SEMAPHORE_WAIT *>(*bcsHwParser.cmdList.begin());
+        EXPECT_NE(nullptr, semaphoreCmdBcs);
+        EXPECT_EQ(1u, semaphoreCmdBcs->getSemaphoreDataDword());
+        EXPECT_EQ(MI_SEMAPHORE_WAIT::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, semaphoreCmdBcs->getCompareOperation());
+        bcsSemaphoreAddress = semaphoreCmdBcs->getSemaphoreGraphicsAddress();
+    }
+
+    {
+        LinearStream &cmdQ2Stream = pCmdQ2->getCS(0);
+        HardwareParse ccsHwParser;
+        ccsHwParser.parseCommands<FamilyType>(cmdQ2Stream, cmdQ2Start);
+        const auto semaphoreCcsItor = find<MI_SEMAPHORE_WAIT *>(ccsHwParser.cmdList.begin(), ccsHwParser.cmdList.end());
+        auto semaphoreCmd = genCmdCast<MI_SEMAPHORE_WAIT *>(*semaphoreCcsItor);
+        ASSERT_NE(nullptr, semaphoreCmd);
+        EXPECT_EQ(1u, semaphoreCmd->getSemaphoreDataDword());
+        EXPECT_EQ(nodeGpuAddress, semaphoreCmd->getSemaphoreGraphicsAddress());
+        EXPECT_EQ(MI_SEMAPHORE_WAIT::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, semaphoreCmd->getCompareOperation());
+
+        bool pipeControlForBcsSemaphoreFound = false;
+        auto pipeControlsAfterSemaphore = findAll<PIPE_CONTROL *>(semaphoreCcsItor, ccsHwParser.cmdList.end());
+        for (auto pipeControlIter : pipeControlsAfterSemaphore) {
+            auto pipeControlCmd = genCmdCast<PIPE_CONTROL *>(*pipeControlIter);
+            if (0u == pipeControlCmd->getImmediateData() &&
+                PIPE_CONTROL::POST_SYNC_OPERATION::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA == pipeControlCmd->getPostSyncOperation() &&
+                NEO::UnitTestHelper<FamilyType>::getPipeControlPostSyncAddress(*pipeControlCmd) == bcsSemaphoreAddress) {
+                pipeControlForBcsSemaphoreFound = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(pipeControlForBcsSemaphoreFound);
+    }
+
+    EXPECT_EQ(CL_SUCCESS, pCmdQ->finish());
+    EXPECT_EQ(CL_SUCCESS, pCmdQ2->finish());
+
+    clReleaseEvent(outEvent);
+    // tearDown
+    if (pCmdQ2) {
+        auto blocked = pCmdQ2->isQueueBlocked();
+        UNRECOVERABLE_IF(blocked);
+        pCmdQ2->release();
+    }
+}
+
 struct BuiltinParamsCommandQueueHwTests : public CommandQueueHwTest {
 
     void setUpImpl(EBuiltInOps::Type operation) {
         auto builtIns = new MockBuiltins();
-        pCmdQ->getDevice().getExecutionEnvironment()->rootDeviceEnvironments[pCmdQ->getDevice().getRootDeviceIndex()]->builtins.reset(builtIns);
+        MockRootDeviceEnvironment::resetBuiltins(pCmdQ->getDevice().getExecutionEnvironment()->rootDeviceEnvironments[pCmdQ->getDevice().getRootDeviceIndex()].get(), builtIns);
 
         auto swapBuilder = pClExecutionEnvironment->setBuiltinDispatchInfoBuilder(
             rootDeviceIndex,
@@ -93,7 +181,9 @@ struct BuiltinParamsCommandQueueHwTests : public CommandQueueHwTest {
 
 HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadWriteBufferCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
 
-    setUpImpl(EBuiltInOps::copyBufferToBuffer);
+    auto &compilerProductHelper = pDevice->getCompilerProductHelper();
+    auto builtIn = compilerProductHelper.isHeaplessModeEnabled() ? EBuiltInOps::copyBufferToBufferStatelessHeapless : EBuiltInOps::copyBufferToBuffer;
+    setUpImpl(builtIn);
     BufferDefaults::context = context;
     auto buffer = clUniquePtr(BufferHelper<>::create());
 
@@ -126,44 +216,57 @@ HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadWriteBufferCallWhenBu
 }
 
 HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueWriteImageCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.EnableCopyWithStagingBuffers.set(0);
 
-    setUpImpl(EBuiltInOps::copyBufferToImage3d);
+    bool heaplessAllowed = UnitTestHelper<FamilyType>::isHeaplessAllowed();
 
-    std::unique_ptr<Image> dstImage(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
+    for (auto useHeapless : {false, true}) {
 
-    auto imageDesc = dstImage->getImageDesc();
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 0};
+        if (useHeapless && !heaplessAllowed) {
+            continue;
+        }
+        reinterpret_cast<MockCommandQueueHw<FamilyType> *>(pCmdQ)->heaplessModeEnabled = useHeapless;
+        auto builtInType = EBuiltInOps::adjustImageBuiltinType<EBuiltInOps::copyBufferToImage3d>(useHeapless);
 
-    size_t rowPitch = dstImage->getHostPtrRowPitch();
-    size_t slicePitch = dstImage->getHostPtrSlicePitch();
+        setUpImpl(builtInType);
 
-    char array[3 * MemoryConstants::cacheLineSize];
-    char *ptr = &array[MemoryConstants::cacheLineSize];
-    ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
-    ptr -= 1;
+        std::unique_ptr<Image> dstImage(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
 
-    void *alignedPtr = alignDown(ptr, 4);
-    size_t ptrOffset = ptrDiff(ptr, alignedPtr);
-    Vec3<size_t> offset = {0, 0, 0};
+        auto imageDesc = dstImage->getImageDesc();
+        size_t origin[] = {0, 0, 0};
+        size_t region[] = {imageDesc.image_width, imageDesc.image_height, 0};
 
-    cl_int status = pCmdQ->enqueueWriteImage(dstImage.get(),
-                                             CL_FALSE,
-                                             origin,
-                                             region,
-                                             rowPitch,
-                                             slicePitch,
-                                             ptr,
-                                             nullptr,
-                                             0,
-                                             0,
-                                             nullptr);
-    EXPECT_EQ(CL_SUCCESS, status);
+        size_t rowPitch = dstImage->getHostPtrRowPitch();
+        size_t slicePitch = dstImage->getHostPtrSlicePitch();
 
-    auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
-    EXPECT_EQ(alignedPtr, builtinParams.srcPtr);
-    EXPECT_EQ(ptrOffset, builtinParams.srcOffset.x);
-    EXPECT_EQ(offset, builtinParams.dstOffset);
+        char array[3 * MemoryConstants::cacheLineSize];
+        char *ptr = &array[MemoryConstants::cacheLineSize];
+        ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
+        ptr -= 1;
+
+        void *alignedPtr = alignDown(ptr, 4);
+        size_t ptrOffset = ptrDiff(ptr, alignedPtr);
+        Vec3<size_t> offset = {0, 0, 0};
+
+        cl_int status = pCmdQ->enqueueWriteImage(dstImage.get(),
+                                                 CL_FALSE,
+                                                 origin,
+                                                 region,
+                                                 rowPitch,
+                                                 slicePitch,
+                                                 ptr,
+                                                 nullptr,
+                                                 0,
+                                                 0,
+                                                 nullptr);
+        EXPECT_EQ(CL_SUCCESS, status);
+
+        auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+        EXPECT_EQ(alignedPtr, builtinParams.srcPtr);
+        EXPECT_EQ(ptrOffset, builtinParams.srcOffset.x);
+        EXPECT_EQ(offset, builtinParams.dstOffset);
+    }
 }
 
 HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadImageCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
@@ -209,7 +312,9 @@ HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadImageCallWhenBuiltinP
 
 HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadWriteBufferRectCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
 
-    setUpImpl(EBuiltInOps::copyBufferRect);
+    auto &compilerProductHelper = pDevice->getCompilerProductHelper();
+    auto builtIn = compilerProductHelper.isHeaplessModeEnabled() ? EBuiltInOps::copyBufferRectStatelessHeapless : EBuiltInOps::copyBufferRect;
+    setUpImpl(builtIn);
 
     BufferDefaults::context = context;
     auto buffer = clUniquePtr(BufferHelper<>::create());
@@ -428,6 +533,81 @@ HWTEST_F(IoqCommandQueueHwBlitTest, givenSplitBcsCopyWhenEnqueueReadThenEnqueueB
     EXPECT_EQ(cmdQHw->kernelParams.size.x, 8 * MemoryConstants::megaByte);
 
     const_cast<StackVec<TagNodeBase *, 32u> &>(cmdQHw->timestampPacketContainer->peekNodes()).clear();
+}
+
+HWTEST_F(IoqCommandQueueHwBlitTest, givenSplitBcsCopyWithEventWhenEnqueueReadThenEnableProfiling) {
+    class MyCmdQueue : public MockCommandQueueHw<FamilyType> {
+      public:
+        using BaseClass = MockCommandQueueHw<FamilyType>;
+
+        using BaseClass::MockCommandQueueHw;
+
+        BlitProperties processDispatchForBlitEnqueue(CommandStreamReceiver &blitCommandStreamReceiver,
+                                                     const MultiDispatchInfo &multiDispatchInfo,
+                                                     TimestampPacketDependencies &timestampPacketDependencies,
+                                                     const EventsRequest &eventsRequest,
+                                                     LinearStream *commandStream,
+                                                     uint32_t commandType, bool queueBlocked, bool profilingEnabled, TagNodeBase *multiRootDeviceEventSync) override {
+            profilingDispatch = true;
+            return BaseClass::processDispatchForBlitEnqueue(blitCommandStreamReceiver, multiDispatchInfo, timestampPacketDependencies, eventsRequest, commandStream, commandType, queueBlocked,
+                                                            profilingEnabled, multiRootDeviceEventSync);
+        }
+
+        bool profilingDispatch = false;
+    };
+
+    DebugManagerStateRestore restorer;
+    debugManager.flags.SplitBcsCopy.set(1);
+    debugManager.flags.DoCpuCopyOnReadBuffer.set(0);
+    debugManager.flags.SplitBcsMaskD2H.set(0b1010);
+    debugManager.flags.UpdateTaskCountFromWait.set(3);
+    debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
+    auto memoryManager = static_cast<MockMemoryManager *>(pDevice->getMemoryManager());
+    memoryManager->returnFakeAllocation = true;
+
+    std::unique_ptr<OsContext> osContext1(OsContext::create(pDevice->getExecutionEnvironment()->rootDeviceEnvironments[0]->osInterface.get(), pDevice->getRootDeviceIndex(), 0,
+                                                            EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_BCS1, EngineUsage::regular},
+                                                                                                         PreemptionMode::ThreadGroup, pDevice->getDeviceBitfield())));
+
+    auto csr1 = std::make_unique<CommandStreamReceiverHw<FamilyType>>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex(), pDevice->getDeviceBitfield());
+    csr1->setupContext(*osContext1);
+    csr1->initializeTagAllocation();
+    EngineControl control1(csr1.get(), osContext1.get());
+    std::unique_ptr<OsContext> osContext2(OsContext::create(pDevice->getExecutionEnvironment()->rootDeviceEnvironments[0]->osInterface.get(), pDevice->getRootDeviceIndex(), 0,
+                                                            EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_BCS3, EngineUsage::regular},
+                                                                                                         PreemptionMode::ThreadGroup, pDevice->getDeviceBitfield())));
+    auto csr2 = std::make_unique<CommandStreamReceiverHw<FamilyType>>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex(), pDevice->getDeviceBitfield());
+    csr2->setupContext(*osContext2);
+    csr2->initializeTagAllocation();
+    EngineControl control2(csr2.get(), osContext2.get());
+
+    auto cmdQHw = std::make_unique<MyCmdQueue>(context, pClDevice, nullptr);
+    cmdQHw->setProfilingEnabled();
+
+    cmdQHw->bcsEngines[1] = &control1;
+    cmdQHw->bcsEngines[3] = &control2;
+
+    BcsSplitBufferTraits::context = context;
+    auto buffer = clUniquePtr(BufferHelper<BcsSplitBufferTraits>::create());
+    static_cast<MockGraphicsAllocation *>(buffer->getGraphicsAllocation(0u))->memoryPool = MemoryPool::localMemory;
+    char ptr[1] = {};
+
+    EXPECT_EQ(csr1->peekTaskCount(), 0u);
+    EXPECT_EQ(csr2->peekTaskCount(), 0u);
+    EXPECT_EQ(cmdQHw->getGpgpuCommandStreamReceiver().peekTaskCount(), 0u);
+    EXPECT_EQ(cmdQHw->getBcsCommandStreamReceiver(aub_stream::EngineType::ENGINE_BCS)->peekTaskCount(), 0u);
+
+    cl_event event = nullptr;
+    EXPECT_EQ(CL_SUCCESS, cmdQHw->enqueueReadBuffer(buffer.get(), CL_FALSE, 0, 16 * MemoryConstants::megaByte, ptr, nullptr, 0, nullptr, &event));
+
+    EXPECT_EQ(csr1->peekTaskCount(), 1u);
+    EXPECT_EQ(csr2->peekTaskCount(), 1u);
+
+    EXPECT_TRUE(cmdQHw->profilingDispatch);
+
+    const_cast<StackVec<TagNodeBase *, 32u> &>(cmdQHw->timestampPacketContainer->peekNodes()).clear();
+
+    clReleaseEvent(event);
 }
 
 HWTEST_F(IoqCommandQueueHwBlitTest, givenSplitBcsCopyAndD2HMaskWhenEnqueueReadThenEnqueueBlitSplit) {
@@ -1171,7 +1351,7 @@ HWTEST_F(OoqCommandQueueHwBlitTest, givenBlitBeforeBarrierWhenEnqueueingCommandT
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using XY_COPY_BLT = typename FamilyType::XY_COPY_BLT;
-    using COMPUTE_WALKER = typename FamilyType::DefaultWalkerType;
+    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
 
     if (pCmdQ->getTimestampPacketContainer() == nullptr) {
         GTEST_SKIP();
@@ -1225,7 +1405,7 @@ HWTEST_F(OoqCommandQueueHwBlitTest, givenBlitBeforeBarrierWhenEnqueueingCommandT
             if (semaphore) {
                 semaphoreIndex = index;
             }
-            const auto computeWalker = genCmdCast<COMPUTE_WALKER *>(*itor);
+            const auto computeWalker = genCmdCast<DefaultWalkerType *>(*itor);
             if (computeWalker) {
                 lastComputeWalkerIndex = index;
             }
@@ -1356,4 +1536,37 @@ HWTEST_F(CommandQueueHwTest, GivenBuiltinKernelWhenBuiltinDispatchInfoBuilderIsP
     EXPECT_EQ(builder.paramsToUse.elws.x, dispatchInfo->getEnqueuedWorkgroupSize().x);
     EXPECT_EQ(builder.paramsToUse.offset.x, dispatchInfo->getOffset().x);
     EXPECT_EQ(builder.paramsToUse.kernel, dispatchInfo->getKernel());
+}
+
+HWTEST_F(IoqCommandQueueHwBlitTest, givenImageWithHostPtrWhenCreateImageThenStopRegularBcs) {
+    REQUIRE_IMAGES_OR_SKIP(defaultHwInfo);
+    auto &engine = pDevice->getEngine(aub_stream::EngineType::ENGINE_BCS, EngineUsage::regular);
+    auto mockCsr = reinterpret_cast<NEO::UltCommandStreamReceiver<FamilyType> *>(engine.commandStreamReceiver);
+    mockCsr->blitterDirectSubmissionAvailable = true;
+    mockCsr->blitterDirectSubmission = std::make_unique<MockDirectSubmissionHw<FamilyType, BlitterDispatcher<FamilyType>>>(*mockCsr);
+    auto directSubmission = reinterpret_cast<MockDirectSubmissionHw<FamilyType, BlitterDispatcher<FamilyType>> *>(mockCsr->blitterDirectSubmission.get());
+    directSubmission->initialize(true);
+
+    EXPECT_TRUE(directSubmission->ringStart);
+    std::unique_ptr<Image> image(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
+    EXPECT_FALSE(directSubmission->ringStart);
+}
+
+HWTEST_F(IoqCommandQueueHwBlitTest, givenBufferWithHostPtrWhenCreateBufferThenStopRegularBcs) {
+    DebugManagerStateRestore restorer{};
+    debugManager.flags.ForceLocalMemoryAccessMode.set(static_cast<int32_t>(LocalMemoryAccessMode::cpuAccessDisallowed));
+
+    auto memoryManager = static_cast<MockMemoryManager *>(pDevice->getMemoryManager());
+    memoryManager->localMemorySupported[pDevice->getRootDeviceIndex()] = true;
+
+    auto &engine = pDevice->getEngine(aub_stream::EngineType::ENGINE_BCS, EngineUsage::regular);
+    auto mockCsr = reinterpret_cast<NEO::UltCommandStreamReceiver<FamilyType> *>(engine.commandStreamReceiver);
+    mockCsr->blitterDirectSubmissionAvailable = true;
+    mockCsr->blitterDirectSubmission = std::make_unique<MockDirectSubmissionHw<FamilyType, BlitterDispatcher<FamilyType>>>(*mockCsr);
+    auto directSubmission = reinterpret_cast<MockDirectSubmissionHw<FamilyType, BlitterDispatcher<FamilyType>> *>(mockCsr->blitterDirectSubmission.get());
+    directSubmission->initialize(true);
+
+    EXPECT_TRUE(directSubmission->ringStart);
+    auto buffer = std::unique_ptr<Buffer>(BufferHelper<BufferUseHostPtr<>>::create(context));
+    EXPECT_FALSE(directSubmission->ringStart);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -316,7 +316,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
                                                    size_t size,
                                                    cl_uint numEventsInWaitList,
                                                    const cl_event *eventWaitList,
-                                                   cl_event *event) {
+                                                   cl_event *event, CommandStreamReceiver *csrParam) {
 
     if ((dstPtr == nullptr) || (srcPtr == nullptr)) {
         return CL_INVALID_VALUE;
@@ -340,9 +340,11 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
 
     auto pageFaultManager = context->getMemoryManager()->getPageFaultManager();
     if (dstSvmData && pageFaultManager) {
+        UNRECOVERABLE_IF(dstAllocation == nullptr);
         pageFaultManager->moveAllocationToGpuDomain(reinterpret_cast<void *>(dstAllocation->getGpuAddress()));
     }
     if (srcSvmData && pageFaultManager) {
+        UNRECOVERABLE_IF(srcAllocation == nullptr);
         pageFaultManager->moveAllocationToGpuDomain(reinterpret_cast<void *>(srcAllocation->getGpuAddress()));
     }
 
@@ -354,11 +356,12 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
         isStatelessRequired |= forceStateless(dstSvmData->size);
     }
 
-    auto builtInType = EBuiltInOps::copyBufferToBuffer;
-    if (isStatelessRequired) {
-        builtInType = EBuiltInOps::copyBufferToBufferStateless;
-    }
+    const bool useHeapless = this->getHeaplessModeEnabled();
+    auto builtInType = EBuiltInOps::adjustBuiltinType<EBuiltInOps::copyBufferToBuffer>(isStatelessRequired, useHeapless);
 
+    auto selectCsr = [csrParam, this](CsrSelectionArgs &csrSelectionArgs) -> CommandStreamReceiver & {
+        return csrParam ? *csrParam : selectCsrForBuiltinOperation(csrSelectionArgs);
+    };
     MultiDispatchInfo dispatchInfo;
     BuiltinOpParams operationParams;
     Surface *surfaces[2];
@@ -366,7 +369,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
 
     if (copyType == SvmToHost) {
         CsrSelectionArgs csrSelectionArgs{CL_COMMAND_SVM_MEMCPY, srcAllocation, {}, device->getRootDeviceIndex(), &size};
-        CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+        CommandStreamReceiver &csr = selectCsr(csrSelectionArgs);
 
         GeneralSurface srcSvmSurf(srcAllocation);
         HostPtrSurface dstHostPtrSurf(dstGpuPtr, size);
@@ -393,7 +396,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
         dispatchResult = dispatchBcsOrGpgpuEnqueue<CL_COMMAND_READ_BUFFER>(dispatchInfo, surfaces, builtInType, numEventsInWaitList, eventWaitList, event, blockingCopy, csr);
     } else if (copyType == HostToSvm) {
         CsrSelectionArgs csrSelectionArgs{CL_COMMAND_SVM_MEMCPY, {}, dstAllocation, device->getRootDeviceIndex(), &size};
-        CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+        CommandStreamReceiver &csr = selectCsr(csrSelectionArgs);
 
         HostPtrSurface srcHostPtrSurf(const_cast<void *>(srcGpuPtr), size, true);
         GeneralSurface dstSvmSurf(dstAllocation);
@@ -418,7 +421,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
         dispatchResult = dispatchBcsOrGpgpuEnqueue<CL_COMMAND_WRITE_BUFFER>(dispatchInfo, surfaces, builtInType, numEventsInWaitList, eventWaitList, event, blockingCopy, csr);
     } else if (copyType == SvmToSvm) {
         CsrSelectionArgs csrSelectionArgs{CL_COMMAND_SVM_MEMCPY, srcAllocation, dstAllocation, device->getRootDeviceIndex(), &size};
-        CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+        CommandStreamReceiver &csr = selectCsr(csrSelectionArgs);
 
         GeneralSurface srcSvmSurf(srcAllocation);
         GeneralSurface dstSvmSurf(dstAllocation);
@@ -432,7 +435,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
         dispatchResult = dispatchBcsOrGpgpuEnqueue<CL_COMMAND_SVM_MEMCPY>(dispatchInfo, surfaces, builtInType, numEventsInWaitList, eventWaitList, event, blockingCopy, csr);
     } else {
         CsrSelectionArgs csrSelectionArgs{CL_COMMAND_SVM_MEMCPY, &size};
-        CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+        CommandStreamReceiver &csr = selectCsr(csrSelectionArgs);
 
         HostPtrSurface srcHostPtrSurf(const_cast<void *>(srcGpuPtr), size);
         HostPtrSurface dstHostPtrSurf(dstGpuPtr, size);
@@ -502,18 +505,17 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemFill(void *svmPtr,
 
     if (patternSize == 1) {
         int patternInt = (uint32_t)((*(uint8_t *)pattern << 24) | (*(uint8_t *)pattern << 16) | (*(uint8_t *)pattern << 8) | *(uint8_t *)pattern);
-        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(int), &patternInt, sizeof(int));
+        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(uint32_t), &patternInt, sizeof(uint32_t));
     } else if (patternSize == 2) {
         int patternInt = (uint32_t)((*(uint16_t *)pattern << 16) | *(uint16_t *)pattern);
-        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(int), &patternInt, sizeof(int));
+        memcpy_s(patternAllocation->getUnderlyingBuffer(), sizeof(uint32_t), &patternInt, sizeof(uint32_t));
     } else {
         memcpy_s(patternAllocation->getUnderlyingBuffer(), patternSize, pattern, patternSize);
     }
 
-    auto builtInType = EBuiltInOps::fillBuffer;
-    if (forceStateless(svmData->size)) {
-        builtInType = EBuiltInOps::fillBufferStateless;
-    }
+    const bool useStateless = forceStateless(svmData->size);
+    const bool useHeapless = this->getHeaplessModeEnabled();
+    auto builtInType = EBuiltInOps::adjustBuiltinType<EBuiltInOps::fillBuffer>(useStateless, useHeapless);
 
     auto &builder = BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(builtInType,
                                                                             this->getClDevice());

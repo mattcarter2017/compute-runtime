@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,20 +15,11 @@
 #include <iostream>
 #include <memory>
 
-const char *clProgram = R"==(
-__kernel void increment_by_one(__global uchar *dst, __global uchar *src) {
-    unsigned int gid = get_global_id(0);
-    dst[gid] = (uchar)(src[gid] + 1);
-}
-)==";
-
 void createModule(ze_context_handle_t &context, ze_module_handle_t &module, ze_device_handle_t &device) {
     // Prepare spirV
     std::string buildLog;
-    auto spirV = LevelZeroBlackBoxTests::compileToSpirV(clProgram, "", buildLog);
-    if (buildLog.size() > 0) {
-        std::cout << "Build log " << buildLog;
-    }
+    auto spirV = LevelZeroBlackBoxTests::compileToSpirV(LevelZeroBlackBoxTests::openCLKernelsSource, "", buildLog);
+    LevelZeroBlackBoxTests::printBuildLog(buildLog);
     SUCCESS_OR_TERMINATE((0 == spirV.size()));
 
     ze_module_desc_t moduleDesc = {ZE_STRUCTURE_TYPE_MODULE_DESC};
@@ -43,11 +34,11 @@ void createModule(ze_context_handle_t &context, ze_module_handle_t &module, ze_d
 
         char *strLog = (char *)malloc(szLog);
         zeModuleBuildLogGetString(buildlog, &szLog, strLog);
-        std::cout << "Build log:" << strLog << std::endl;
+        LevelZeroBlackBoxTests::printBuildLog(strLog);
 
         free(strLog);
         SUCCESS_OR_TERMINATE(zeModuleBuildLogDestroy(buildlog));
-        std::cout << "\nZello Fence Results validation FAILED. Module creation error."
+        std::cerr << "\nZello Fence Results validation FAILED. Module creation error."
                   << std::endl;
         SUCCESS_OR_TERMINATE_BOOL(false);
     }
@@ -98,11 +89,11 @@ bool testFence(ze_context_handle_t &context, ze_device_handle_t &device) {
 
     // Create commandQueue and cmdList
     ze_command_queue_desc_t cmdQueueDesc = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
-    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device);
+    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device, false);
     cmdQueueDesc.index = 0;
     cmdQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
     SUCCESS_OR_TERMINATE(zeCommandQueueCreate(context, device, &cmdQueueDesc, &cmdQueue));
-    SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, device, cmdList));
+    SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, device, cmdList, false));
 
     // Create module and kernel
     createModule(context, module, device);
@@ -140,11 +131,7 @@ bool testFence(ze_context_handle_t &context, ze_device_handle_t &device) {
     dispatchTraits.groupCountX = numThreads / groupSizeX;
     dispatchTraits.groupCountY = 1u;
     dispatchTraits.groupCountZ = 1u;
-    if (LevelZeroBlackBoxTests::verbose) {
-        std::cerr << "Number of groups : (" << dispatchTraits.groupCountX << ", "
-                  << dispatchTraits.groupCountY << ", " << dispatchTraits.groupCountZ << ")"
-                  << std::endl;
-    }
+    LevelZeroBlackBoxTests::printGroupCount(dispatchTraits);
 
     SUCCESS_OR_TERMINATE_BOOL(dispatchTraits.groupCountX * groupSizeX == allocSize);
     SUCCESS_OR_TERMINATE(zeCommandListAppendLaunchKernel(
@@ -164,8 +151,9 @@ bool testFence(ze_context_handle_t &context, ze_device_handle_t &device) {
 
     // Wait for fence to be signaled
     SUCCESS_OR_TERMINATE(zeFenceHostSynchronize(fence, std::numeric_limits<uint64_t>::max()));
-    if (LevelZeroBlackBoxTests::verbose)
+    if (LevelZeroBlackBoxTests::verbose) {
         std::cout << "zeFenceHostSynchronize success" << std::endl;
+    }
 
     // Tear down
     SUCCESS_OR_TERMINATE(zeFenceReset(fence));

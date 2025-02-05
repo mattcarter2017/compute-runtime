@@ -12,15 +12,17 @@
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/bit_helpers.h"
+#include "shared/source/memory_manager/allocation_properties.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/os_context.h"
 #include "shared/source/utilities/logger.h"
+#include "shared/source/utilities/logger_neo_only.h"
 
 namespace NEO {
 void GraphicsAllocation::setAllocationType(AllocationType allocationType) {
     if (this->allocationType != allocationType) {
         this->allocationType = allocationType;
-        fileLoggerInstance().logAllocation(this);
+        logAllocation(fileLoggerInstance(), this, nullptr);
     }
 }
 
@@ -55,7 +57,7 @@ GraphicsAllocation::GraphicsAllocation(uint32_t rootDeviceIndex, size_t numGmms,
 GraphicsAllocation::~GraphicsAllocation() = default;
 
 void GraphicsAllocation::updateTaskCount(TaskCountType newTaskCount, uint32_t contextId) {
-    UNRECOVERABLE_IF(contextId >= usageInfos.size());
+    OPTIONAL_UNRECOVERABLE_IF(contextId >= usageInfos.size());
     if (usageInfos[contextId].taskCount == objectNotUsed) {
         registeredContextsNum++;
     }
@@ -66,6 +68,10 @@ void GraphicsAllocation::updateTaskCount(TaskCountType newTaskCount, uint32_t co
 }
 
 std::string GraphicsAllocation::getAllocationInfoString() const {
+    return "";
+}
+
+std::string GraphicsAllocation::getPatIndexInfoString(const ProductHelper &) const {
     return "";
 }
 
@@ -103,7 +109,7 @@ void GraphicsAllocation::setTbxWritable(bool writable, uint32_t banks) {
 }
 
 bool GraphicsAllocation::isCompressionEnabled() const {
-    return (getDefaultGmm() && getDefaultGmm()->isCompressionEnabled);
+    return (getDefaultGmm() && getDefaultGmm()->isCompressionEnabled());
 }
 
 bool GraphicsAllocation::isTbxWritable(uint32_t banks) const {
@@ -132,6 +138,33 @@ void GraphicsAllocation::updateCompletionDataForAllocationAndFragments(uint64_t 
         auto residencyData = fragmentsStorage.fragmentStorageData[allocationId].residency;
         residencyData->updateCompletionData(newFenceValue, contextId);
     }
+}
+
+bool GraphicsAllocation::hasAllocationReadOnlyType() {
+    if (allocationType == AllocationType::kernelIsa ||
+        allocationType == AllocationType::kernelIsaInternal ||
+        allocationType == AllocationType::commandBuffer ||
+        allocationType == AllocationType::ringBuffer) {
+        return true;
+    }
+
+    if (debugManager.flags.ReadOnlyAllocationsTypeMask.get() != 0) {
+        UNRECOVERABLE_IF(allocationType == AllocationType::unknown);
+        auto maskVal = debugManager.flags.ReadOnlyAllocationsTypeMask.get();
+        if (maskVal & (1llu << (static_cast<int64_t>(getAllocationType()) - 1))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GraphicsAllocation::checkAllocationTypeReadOnlyRestrictions(const AllocationProperties &properties) {
+    if (getAllocationType() == AllocationType::commandBuffer &&
+        (properties.flags.cantBeReadOnly | properties.flags.multiOsContextCapable)) {
+        setAsCantBeReadOnly(true);
+        return;
+    }
+    setAsCantBeReadOnly(!hasAllocationReadOnlyType());
 }
 
 constexpr TaskCountType GraphicsAllocation::objectNotUsed;

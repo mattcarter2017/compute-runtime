@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,7 +23,7 @@
 namespace NEO {
 
 OsContext *OsContextLinux::create(OSInterface *osInterface, uint32_t rootDeviceIndex, uint32_t contextId, const EngineDescriptor &engineDescriptor) {
-    if (osInterface) {
+    if (osInterface && osInterface->getDriverModel()->getDriverModelType() == DriverModelType::drm) {
         return new OsContextLinux(*osInterface->getDriverModel()->as<Drm>(), rootDeviceIndex, contextId, engineDescriptor);
     }
     return new OsContext(rootDeviceIndex, contextId, engineDescriptor);
@@ -36,7 +36,7 @@ OsContextLinux::OsContextLinux(Drm &drm, uint32_t rootDeviceIndex, uint32_t cont
     fenceVal.fill(0u);
 }
 
-bool OsContextLinux::initializeContext() {
+bool OsContextLinux::initializeContext(bool allocateInterrupt) {
     auto hwInfo = drm.getRootDeviceEnvironment().getHardwareInfo();
     auto defaultEngineType = getChosenEngineType(*hwInfo);
 
@@ -60,17 +60,26 @@ bool OsContextLinux::initializeContext() {
                 [[maybe_unused]] auto ret = drm.createDrmVirtualMemory(drmVmId);
                 DEBUG_BREAK_IF(drmVmId == 0);
                 DEBUG_BREAK_IF(ret != 0);
-                if (ret != 0) {
-                    return false;
-                }
 
+                if (ret != 0) {
+                    drmVmId = 0;
+                }
                 UNRECOVERABLE_IF(this->drmVmIds.size() <= deviceIndex);
                 this->drmVmIds[deviceIndex] = drmVmId;
             }
 
-            auto drmContextId = drm.getIoctlHelper()->createDrmContext(drm, *this, drmVmId, deviceIndex);
+            auto drmContextId = drm.getIoctlHelper()->createDrmContext(drm, *this, drmVmId, deviceIndex, allocateInterrupt);
             if (drmContextId < 0) {
                 return false;
+            }
+
+            if (drm.isPerContextVMRequired() && this->drmVmIds[deviceIndex] == 0) {
+                drmVmId = 0;
+                [[maybe_unused]] auto ret = drm.queryVmId(drmContextId, drmVmId);
+                DEBUG_BREAK_IF(drmVmId == 0);
+                DEBUG_BREAK_IF(ret != 0);
+
+                this->drmVmIds[deviceIndex] = drmVmId;
             }
 
             this->drmContextIds.push_back(drmContextId);
@@ -108,7 +117,7 @@ void OsContextLinux::waitForBind(uint32_t drmIterator) {
         auto fenceValue = this->fenceVal[drmIterator];
         lock.unlock();
 
-        drm.waitUserFence(0u, fenceAddress, fenceValue, Drm::ValueWidth::u64, -1, drm.getIoctlHelper()->getWaitUserFenceSoftFlag());
+        drm.waitUserFence(0u, fenceAddress, fenceValue, Drm::ValueWidth::u64, -1, drm.getIoctlHelper()->getWaitUserFenceSoftFlag(), false, NEO::InterruptId::notUsed, nullptr);
 
     } else {
         drm.waitForBind(drmIterator);

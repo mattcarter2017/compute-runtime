@@ -1,16 +1,20 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "shared/source/helpers/common_types.h"
+#include "shared/source/helpers/constants.h"
+#include "shared/source/helpers/ptr_math.h"
 #include "shared/source/helpers/timestamp_packet_constants.h"
 #include "shared/source/helpers/timestamp_packet_container.h"
 #include "shared/source/memory_manager/multi_graphics_allocation.h"
 #include "shared/source/os_interface/os_time.h"
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 
 #include <atomic>
@@ -21,7 +25,10 @@
 #include <mutex>
 #include <vector>
 
-struct _ze_event_handle_t {};
+struct _ze_event_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_EVENT;
+};
 
 struct _ze_event_pool_handle_t {};
 
@@ -55,9 +62,24 @@ struct IpcEventPoolData {
     bool isDeviceEventPoolAllocation = false;
     bool isHostVisibleEventPoolAllocation = false;
     bool isImplicitScalingCapable = false;
+    bool isEventPoolKernelMappedTsFlagSet = false;
+};
+
+struct IpcCounterBasedEventData {
+    uint64_t deviceHandle = 0;
+    uint64_t hostHandle = 0;
+    uint64_t counterValue = 0;
+    uint32_t rootDeviceIndex = 0;
+    uint32_t counterOffset = 0;
+    uint32_t devicePartitions = 0;
+    uint32_t hostPartitions = 0;
+    uint32_t counterBasedFlags = 0;
+    uint32_t signalScopeFlags = 0;
+    uint32_t waitScopeFlags = 0;
 };
 #pragma pack()
 static_assert(sizeof(IpcEventPoolData) <= ZE_MAX_IPC_HANDLE_SIZE, "IpcEventPoolData is bigger than ZE_MAX_IPC_HANDLE_SIZE");
+static_assert(sizeof(IpcCounterBasedEventData) <= ZE_MAX_IPC_HANDLE_SIZE, "IpcCounterBasedEventData is bigger than ZE_MAX_IPC_HANDLE_SIZE");
 
 namespace EventPacketsCount {
 inline constexpr uint32_t maxKernelSplit = 3;
@@ -66,12 +88,16 @@ inline constexpr uint32_t eventPackets = maxKernelSplit * NEO ::TimestampPacketC
 
 struct EventDescriptor {
     NEO::MultiGraphicsAllocation *eventPoolAllocation = nullptr;
+    const void *extensions = nullptr;
     uint32_t totalEventSize = 0;
     uint32_t maxKernelCount = 0;
     uint32_t maxPacketsCount = 0;
     uint32_t counterBasedFlags = 0;
+    uint32_t index = 0;
+    uint32_t signalScope = 0;
+    uint32_t waitScope = 0;
     bool timestampPool = false;
-    bool kerneMappedTsPoolFlag = false;
+    bool kernelMappedTsPoolFlag = false;
     bool importedIpcPool = false;
     bool ipcPool = false;
 };
@@ -79,16 +105,19 @@ struct EventDescriptor {
 struct Event : _ze_event_handle_t {
     virtual ~Event() = default;
     virtual ze_result_t destroy();
-    virtual ze_result_t hostSignal() = 0;
+    virtual ze_result_t hostSignal(bool allowCounterBased) = 0;
     virtual ze_result_t hostSynchronize(uint64_t timeout) = 0;
     virtual ze_result_t queryStatus() = 0;
     virtual ze_result_t reset() = 0;
     virtual ze_result_t queryKernelTimestamp(ze_kernel_timestamp_result_t *dstptr) = 0;
     virtual ze_result_t queryTimestampsExp(Device *device, uint32_t *count, ze_kernel_timestamp_result_t *timestamps) = 0;
     virtual ze_result_t queryKernelTimestampsExt(Device *device, uint32_t *pCount, ze_event_query_kernel_timestamps_results_ext_properties_t *pResults) = 0;
+    virtual ze_result_t getEventPool(ze_event_pool_handle_t *phEventPool) = 0;
+    virtual ze_result_t getSignalScope(ze_event_scope_flags_t *pSignalScope) = 0;
+    virtual ze_result_t getWaitScope(ze_event_scope_flags_t *pWaitScope) = 0;
 
     enum State : uint32_t {
-        STATE_SIGNALED = 0u,
+        STATE_SIGNALED = 2u,
         HOST_CACHING_DISABLED_PERMANENT = std::numeric_limits<uint32_t>::max() - 2,
         HOST_CACHING_DISABLED = std::numeric_limits<uint32_t>::max() - 1,
         STATE_CLEARED = std::numeric_limits<uint32_t>::max(),
@@ -104,17 +133,27 @@ struct Event : _ze_event_handle_t {
         implicitlyDisabled
     };
 
+    static bool standaloneInOrderTimestampAllocationEnabled();
+
     template <typename TagSizeT>
     static Event *create(EventPool *eventPool, const ze_event_desc_t *desc, Device *device);
 
     template <typename TagSizeT>
-    static Event *create(const EventDescriptor &eventDescriptor, const ze_event_desc_t *desc, Device *device);
+    static Event *create(const EventDescriptor &eventDescriptor, Device *device, ze_result_t &result);
 
     static Event *fromHandle(ze_event_handle_t handle) { return static_cast<Event *>(handle); }
 
+    static ze_result_t openCounterBasedIpcHandle(const IpcCounterBasedEventData &ipcData, ze_event_handle_t *eventHandle,
+                                                 DriverHandleImp *driver, ContextImp *context, uint32_t numDevices, ze_device_handle_t *deviceHandles);
+
+    ze_result_t getCounterBasedIpcHandle(IpcCounterBasedEventData &ipcData);
+
     inline ze_event_handle_t toHandle() { return this; }
 
-    MOCKABLE_VIRTUAL NEO::GraphicsAllocation &getAllocation(Device *device) const;
+    MOCKABLE_VIRTUAL NEO::GraphicsAllocation *getAllocation(Device *device) const;
+
+    void setEventPool(EventPool *eventPool) { this->eventPool = eventPool; }
+    EventPool *peekEventPool() { return this->eventPool; }
 
     MOCKABLE_VIRTUAL uint64_t getGpuAddress(Device *device) const;
     virtual uint32_t getPacketsInUse() const = 0;
@@ -122,7 +161,7 @@ struct Event : _ze_event_handle_t {
     virtual uint64_t getPacketAddress(Device *device) = 0;
     MOCKABLE_VIRTUAL void resetPackets(bool resetAllPackets);
     virtual void resetKernelCountAndPacketUsedCount() = 0;
-    void *getHostAddress() const { return hostAddress; }
+    void *getHostAddress() const;
     virtual void setPacketsInUse(uint32_t value) = 0;
     uint32_t getCurrKernelDataIndex() const { return kernelCount - 1; }
     MOCKABLE_VIRTUAL void setGpuStartTimestamp();
@@ -189,6 +228,9 @@ struct Event : _ze_event_handle_t {
     }
     void zeroKernelCount() {
         kernelCount = 0;
+    }
+    void setKernelCount(uint32_t newKernelCount) {
+        kernelCount = newKernelCount;
     }
     bool getL3FlushForCurrenKernel() {
         return l3FlushAppliedOnKernel.test(kernelCount - 1);
@@ -258,17 +300,16 @@ struct Event : _ze_event_handle_t {
     bool isCounterBasedExplicitlyEnabled() const { return (counterBasedMode == CounterBasedMode::explicitlyEnabled); }
     void enableCounterBasedMode(bool apiRequest, uint32_t flags);
     void disableImplicitCounterBasedMode();
-    NEO::GraphicsAllocation *getInOrderExecDataAllocation() const;
     uint64_t getInOrderExecSignalValueWithSubmissionCounter() const;
     uint64_t getInOrderExecBaseSignalValue() const { return inOrderExecSignalValue; }
     uint32_t getInOrderAllocationOffset() const { return inOrderAllocationOffset; }
     void setLatestUsedCmdQueue(CommandQueue *newCmdQ);
     NEO::TimeStampData *peekReferenceTs() {
-        return &referenceTs;
+        return static_cast<NEO::TimeStampData *>(ptrOffset(getHostAddress(), getMaxPacketsCount() * getSinglePacketSize()));
     }
     void setReferenceTs(uint64_t currentCpuTimeStamp);
     const CommandQueue *getLatestUsedCmdQueue() const { return latestUsedCmdQueue; }
-    bool hasKerneMappedTsCapability = false;
+    bool hasKernelMappedTsCapability = false;
     std::shared_ptr<NEO::InOrderExecInfo> &getInOrderExecInfo() { return inOrderExecInfo; }
     void enableKmdWaitMode() { kmdWaitMode = true; }
     void enableInterruptMode() { interruptMode = true; }
@@ -277,21 +318,43 @@ struct Event : _ze_event_handle_t {
     void unsetInOrderExecInfo();
     uint32_t getCounterBasedFlags() const { return counterBasedFlags; }
 
+    uint32_t getPacketsToWait() const {
+        return this->signalAllEventPackets ? getMaxPacketsCount() : getPacketsInUse();
+    }
+
+    void setExternalInterruptId(uint32_t interruptId) { externalInterruptId = interruptId; }
+
+    void resetInOrderTimestampNode(NEO::TagNodeBase *newNode);
+
+    bool hasInOrderTimestampNode() const { return inOrderTimestampNode != nullptr; }
+
+    bool isIpcImported() const { return isFromIpcPool; }
+
+    void setMitigateHostVisibleSignal() {
+        this->mitigateHostVisibleSignal = true;
+    }
+
+    virtual ze_result_t hostEventSetValue(State eventState) = 0;
+
   protected:
     Event(int index, Device *device) : device(device), index(index) {}
 
+    ze_result_t enableExtensions(const EventDescriptor &eventDescriptor);
+
     void unsetCmdQueue();
+    void releaseTempInOrderTimestampNodes();
+
+    EventPool *eventPool = nullptr;
 
     uint64_t globalStartTS = 1;
     uint64_t globalEndTS = 1;
     uint64_t contextStartTS = 1;
     uint64_t contextEndTS = 1;
-    NEO::TimeStampData referenceTs{};
 
     uint64_t inOrderExecSignalValue = 0;
     uint32_t inOrderAllocationOffset = 0;
 
-    std::chrono::microseconds gpuHangCheckPeriod{500'000};
+    std::chrono::microseconds gpuHangCheckPeriod{CommonConstants::gpuHangCheckTimeInUS};
     std::bitset<EventPacketsCount::maxKernelSplit> l3FlushAppliedOnKernel;
 
     size_t contextStartOffset = 0u;
@@ -310,18 +373,21 @@ struct Event : _ze_event_handle_t {
     MetricCollectorEventNotify *metricNotification = nullptr;
     NEO::MultiGraphicsAllocation *eventPoolAllocation = nullptr;
     StackVec<NEO::CommandStreamReceiver *, 1> csrs;
-    void *hostAddress = nullptr;
+    void *hostAddressFromPool = nullptr;
     Device *device = nullptr;
     std::weak_ptr<Kernel> kernelWithPrintf = std::weak_ptr<Kernel>{};
     std::mutex *kernelWithPrintfDeviceMutex = nullptr;
     std::shared_ptr<NEO::InOrderExecInfo> inOrderExecInfo;
     CommandQueue *latestUsedCmdQueue = nullptr;
+    NEO::TagNodeBase *inOrderTimestampNode = nullptr;
 
     uint32_t maxKernelCount = 0;
     uint32_t kernelCount = 1u;
     uint32_t maxPacketCount = 0;
     uint32_t totalEventSize = 0;
     uint32_t counterBasedFlags = 0;
+    uint32_t externalInterruptId = NEO::InterruptId::notUsed;
+
     CounterBasedMode counterBasedMode = CounterBasedMode::initiallyDisabled;
 
     ze_event_scope_flags_t signalScope = 0u;
@@ -337,6 +403,8 @@ struct Event : _ze_event_handle_t {
     bool isFromIpcPool = false;
     bool kmdWaitMode = false;
     bool interruptMode = false;
+    bool isSharableCounterBased = false;
+    bool mitigateHostVisibleSignal = false;
     uint64_t timestampRefreshIntervalInNanoSec = 0;
 };
 
@@ -352,6 +420,8 @@ struct EventPool : _ze_event_pool_handle_t {
     MOCKABLE_VIRTUAL ze_result_t getIpcHandle(ze_ipc_event_pool_handle_t *ipcHandle);
     MOCKABLE_VIRTUAL ze_result_t closeIpcHandle();
     MOCKABLE_VIRTUAL ze_result_t createEvent(const ze_event_desc_t *desc, ze_event_handle_t *eventHandle);
+    ze_result_t getContextHandle(ze_context_handle_t *phContext);
+    ze_result_t getFlags(ze_event_pool_flags_t *pFlags);
 
     static EventPool *fromHandle(ze_event_pool_handle_t handle) {
         return static_cast<EventPool *>(handle);
@@ -377,7 +447,7 @@ struct EventPool : _ze_event_pool_handle_t {
         return false;
     }
 
-    bool isEventPoolKerneMappedTsFlagSet() const {
+    bool isEventPoolKernelMappedTsFlagSet() const {
         if (eventPoolFlags & ZE_EVENT_POOL_FLAG_KERNEL_MAPPED_TIMESTAMP) {
             return true;
         }

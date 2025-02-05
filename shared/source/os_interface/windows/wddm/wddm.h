@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -46,7 +46,6 @@ struct WorkaroundTable;
 enum class HeapIndex : uint32_t;
 
 unsigned int readEnablePreemptionRegKey();
-unsigned int getPid();
 bool isShutdownInProgress();
 CREATECONTEXT_PVTDATA initPrivateData(OsContextWin &osContext);
 
@@ -66,12 +65,12 @@ class Wddm : public DriverModel {
 
     MOCKABLE_VIRTUAL bool evict(const D3DKMT_HANDLE *handleList, uint32_t numOfHandles, uint64_t &sizeToTrim, bool evictNeeded);
     MOCKABLE_VIRTUAL bool makeResident(const D3DKMT_HANDLE *handles, uint32_t count, bool cantTrimFurther, uint64_t *numberOfBytesToTrim, size_t totalSize);
-    MOCKABLE_VIRTUAL bool mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr);
+    MOCKABLE_VIRTUAL bool mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr, AllocationType type);
     bool mapGpuVirtualAddress(AllocationStorageData *allocationStorageData);
     MOCKABLE_VIRTUAL NTSTATUS reserveGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS baseAddress, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_SIZE_T size, D3DGPU_VIRTUAL_ADDRESS *reservedAddress);
     MOCKABLE_VIRTUAL bool createContext(OsContextWin &osContext);
     MOCKABLE_VIRTUAL void applyAdditionalContextFlags(CREATECONTEXT_PVTDATA &privateData, OsContextWin &osContext);
-    MOCKABLE_VIRTUAL void applyAdditionalMapGPUVAFields(D3DDDI_MAPGPUVIRTUALADDRESS &mapGPUVA, Gmm *gmm);
+    MOCKABLE_VIRTUAL void applyAdditionalMapGPUVAFields(D3DDDI_MAPGPUVIRTUALADDRESS &mapGPUVA, Gmm *gmm, AllocationType type);
     MOCKABLE_VIRTUAL uint64_t freeGmmGpuVirtualAddress(Gmm *gmm, D3DGPU_VIRTUAL_ADDRESS &gpuPtr, uint64_t size);
     MOCKABLE_VIRTUAL bool freeGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS &gpuPtr, uint64_t size);
     MOCKABLE_VIRTUAL NTSTATUS createAllocation(const void *alignedCpuPtr, const Gmm *gmm, D3DKMT_HANDLE &outHandle, D3DKMT_HANDLE &outResourceHandle, uint64_t *outSharedHandle);
@@ -79,9 +78,9 @@ class Wddm : public DriverModel {
     MOCKABLE_VIRTUAL NTSTATUS createAllocationsAndMapGpuVa(OsHandleStorage &osHandles);
     MOCKABLE_VIRTUAL bool destroyAllocations(const D3DKMT_HANDLE *handles, uint32_t allocationCount, D3DKMT_HANDLE resourceHandle);
     MOCKABLE_VIRTUAL bool verifySharedHandle(D3DKMT_HANDLE osHandle);
-    MOCKABLE_VIRTUAL bool openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc);
+    MOCKABLE_VIRTUAL bool openSharedHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc);
     MOCKABLE_VIRTUAL bool verifyNTHandle(HANDLE handle);
-    bool openNTHandle(HANDLE handle, WddmAllocation *alloc);
+    bool openNTHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc);
     MOCKABLE_VIRTUAL void *lockResource(const D3DKMT_HANDLE &handle, bool applyMakeResidentPriorToLock, size_t size);
     MOCKABLE_VIRTUAL void unlockResource(const D3DKMT_HANDLE &handle);
     MOCKABLE_VIRTUAL void kmDafLock(D3DKMT_HANDLE handle);
@@ -160,7 +159,7 @@ class Wddm : public DriverModel {
     }
 
     unsigned int getEnablePreemptionRegValue();
-    MOCKABLE_VIRTUAL uint64_t *getPagingFenceAddress() {
+    MOCKABLE_VIRTUAL volatile uint64_t *getPagingFenceAddress() {
         return pagingFenceAddress;
     }
     WddmResidentAllocationsContainer *getTemporaryResourcesContainer() {
@@ -170,7 +169,17 @@ class Wddm : public DriverModel {
     GmmMemory *getGmmMemory() const {
         return gmmMemory.get();
     }
-    MOCKABLE_VIRTUAL void waitOnPagingFenceFromCpu(bool isKmdWaitNeeded);
+
+    uint64_t getCurrentPagingFenceValue() {
+        return currentPagingFenceValue.load();
+    }
+
+    void waitOnPagingFenceFromCpu(uint64_t pagingFenceValueToWait, bool isKmdWaitNeeded);
+
+    MOCKABLE_VIRTUAL void waitOnPagingFenceFromCpu(bool isKmdWaitNeeded) {
+        waitOnPagingFenceFromCpu(getCurrentPagingFenceValue(), isKmdWaitNeeded);
+    }
+
     MOCKABLE_VIRTUAL void delayPagingFenceFromCpu(int64_t delayTime);
 
     void setGmmInputArgs(void *args) override;
@@ -188,7 +197,11 @@ class Wddm : public DriverModel {
     const RootDeviceEnvironment &getRootDeviceEnvironment() const { return rootDeviceEnvironment; }
     const HardwareInfo *getHardwareInfo() const override { return rootDeviceEnvironment.getHardwareInfo(); }
 
-    uint32_t getTimestampFrequency() const { return timestampFrequency; }
+    MOCKABLE_VIRTUAL uint32_t getTimestampFrequency() const { return timestampFrequency; }
+
+    MOCKABLE_VIRTUAL bool perfOpenEuStallStream(uint32_t sampleRate, uint32_t minBufferSize);
+    MOCKABLE_VIRTUAL bool perfDisableEuStallStream();
+    MOCKABLE_VIRTUAL bool perfReadEuStallStream(uint8_t *pRawData, size_t *pRawDataSize);
 
     PhysicalDevicePciBusInfo getPciBusInfo() const override;
 
@@ -244,6 +257,7 @@ class Wddm : public DriverModel {
     void setNewResourceBoundToPageTable();
     void setProcessPowerThrottling();
     void setThreadPriority();
+    bool getReadOnlyFlagValue(const void *alignedCpuPtr) const;
 
     GMM_GFX_PARTITIONING gfxPartition{};
     ADAPTER_BDF adapterBDF{};
@@ -261,6 +275,9 @@ class Wddm : public DriverModel {
     std::unique_ptr<FeatureTable> featureTable;
     std::unique_ptr<WorkaroundTable> workaroundTable;
 
+    std::unique_ptr<SKU_FEATURE_TABLE_KMD> gfxFeatureTable;
+    std::unique_ptr<WA_TABLE_KMD> gfxWorkaroundTable;
+
     std::unique_ptr<HwDeviceIdWddm> hwDeviceId;
     std::unique_ptr<GmmMemory> gmmMemory;
     std::unique_ptr<KmDafListener> kmDafListener;
@@ -272,7 +289,7 @@ class Wddm : public DriverModel {
     static GetSystemInfoFcn getSystemInfo;
     RootDeviceEnvironment &rootDeviceEnvironment;
 
-    uint64_t *pagingFenceAddress = nullptr;
+    volatile uint64_t *pagingFenceAddress = nullptr;
     int64_t pagingFenceDelayTime = 0;
 
     uintptr_t maximumApplicationAddress = 0;

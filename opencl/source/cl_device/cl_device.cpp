@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,6 +35,7 @@ ClDevice::ClDevice(Device &device, ClDevice &rootClDevice, Platform *platform) :
     driverInfo.reset(DriverInfo::create(&device.getHardwareInfo(), osInterface));
     initGTPinHelper();
     initializeCaps();
+    initializeMaxPoolCount();
 
     OpenClCFeaturesContainer emptyOpenClCFeatures;
     compilerExtensions = convertEnabledExtensionsToCompilerInternalOptions(deviceInfo.deviceExtensions, emptyOpenClCFeatures);
@@ -50,7 +51,7 @@ ClDevice::ClDevice(Device &device, ClDevice &rootClDevice, Platform *platform) :
         pClSubDevice->decRefApi();
         pClSubDevice->internalParentDevice = this;
 
-        if (!device.getExecutionEnvironment()->isExposingSubDevicesAsDevices()) {
+        if (device.getExecutionEnvironment()->getDeviceHierarchyMode() == DeviceHierarchyMode::composite) {
             auto &deviceInfo = pClSubDevice->deviceInfo;
             deviceInfo.parentDevice = this;
             deviceInfo.partitionType[0] = CL_DEVICE_PARTITION_BY_AFFINITY_DOMAIN;
@@ -117,15 +118,6 @@ ClDevice *ClDevice::getSubDevice(uint32_t deviceId) const {
 }
 
 ClDevice *ClDevice::getNearestGenericSubDevice(uint32_t deviceId) {
-    /*
-     * EngineInstanced: Upper level
-     * Generic SubDevice: 'this'
-     * RootCsr Device: Next level SubDevice (generic)
-     */
-
-    if (getDevice().isEngineInstanced()) {
-        return rootClDevice.getNearestGenericSubDevice(Math::log2(static_cast<uint32_t>(getDeviceBitfield().to_ulong())));
-    }
 
     if (subDevices.empty() || !getDevice().hasRootCsr()) {
         return this;

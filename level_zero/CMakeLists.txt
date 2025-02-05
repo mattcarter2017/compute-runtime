@@ -1,10 +1,8 @@
 #
-# Copyright (C) 2020-2024 Intel Corporation
+# Copyright (C) 2020-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
-
-include(cmake/verify_l0_support.cmake)
 
 if(BUILD_WITH_L0)
   set(TARGET_NAME_L0 ze_intel_gpu)
@@ -14,14 +12,16 @@ if(BUILD_WITH_L0)
     get_filename_component(LEVEL_ZERO_ROOT "${LEVEL_ZERO_ROOT}" ABSOLUTE)
   else()
     get_filename_component(LEVEL_ZERO_ROOT_tmp "${NEO_SOURCE_DIR}/../level_zero" ABSOLUTE)
-    # Level Zero Headers if read from the git repo are in include/core & include/tools.
-    # To support the installation path of level_zero headers which is include/level_zero/*
-    # the header files are combined into the path include/level_zero/* in the commands below.
+    # Level Zero Headers have all includes in include folder and its subdirectories,
+    # while devel/sdk package has all the includes in include/level_zero subdirectory.
     if(IS_DIRECTORY "${LEVEL_ZERO_ROOT_tmp}")
       set(CUSTOM_L0_INCLUDE_PATH "${LEVEL_ZERO_ROOT_tmp}/include/level_zero/")
       file(GLOB LEVEL_ZERO_SOURCE_HEADERS
            "${LEVEL_ZERO_ROOT_tmp}/include/*.h"
       )
+      if(IS_DIRECTORY "${LEVEL_ZERO_ROOT_tmp}/include/loader")
+        list(APPEND LEVEL_ZERO_SOURCE_HEADERS ${LEVEL_ZERO_ROOT_tmp}/include/loader)
+      endif()
       file(MAKE_DIRECTORY ${CUSTOM_L0_INCLUDE_PATH})
       file(COPY ${LEVEL_ZERO_SOURCE_HEADERS} DESTINATION ${CUSTOM_L0_INCLUDE_PATH})
       set(LEVEL_ZERO_ROOT "${LEVEL_ZERO_ROOT_tmp}")
@@ -44,11 +44,6 @@ if(BUILD_WITH_L0)
     set(BUILD_WITH_L0 FALSE PARENT_SCOPE)
     return()
   endif()
-
-  add_definitions(-DL0_PROJECT_VERSION_MAJOR="${PROJECT_VERSION_MAJOR}")
-  add_definitions(-DL0_PROJECT_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
-  add_definitions(-DL0_PROJECT_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
-  add_definitions(-DNEO_VERSION_BUILD="${NEO_VERSION_BUILD}")
 
   add_definitions(-DZE_ENABLE_OCL_INTEROP=1)
 
@@ -199,14 +194,21 @@ if(BUILD_WITH_L0)
   endif()
 
   include_directories(${COMPUTE_RUNTIME_DIR}/third_party/opencl_headers)
+  if(UNIX AND DEFINED NEO_SPDLOG_DIR)
+    set_source_files_properties(
+                                ${CMAKE_CURRENT_SOURCE_DIR}/experimental/source/log_utility/linux/linux_logging.cpp
+                                PROPERTIES INCLUDE_DIRECTORIES ${NEO_SPDLOG_DIR}
+    )
+  endif()
+
   if(CUSTOM_L0_INCLUDE_PATH)
     include_directories(${CUSTOM_L0_INCLUDE_PATH}/../)
   else()
     include_directories(${LevelZero_INCLUDE_DIRS})
   endif()
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core/source/cmdlist${BRANCH_DIR_SUFFIX})
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core/source/cmdlist/cmdlist_extended${BRANCH_DIR_SUFFIX})
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core/source/cmdqueue/cmdqueue_extended${BRANCH_DIR_SUFFIX})
-  include_directories(ddi${BRANCH_DIR_SUFFIX})
+  include_directories(ddi)
 
   # Create our shared library/DLL
   configure_file(ze_intel_gpu_version.h.in ${NEO_BUILD_DIR}/ze_intel_gpu_version.h)
@@ -217,10 +219,12 @@ if(BUILD_WITH_L0)
               ${NEO_SHARED_DIRECTORY}/dll/device_dll.cpp
               ${NEO_SHARED_DIRECTORY}/dll/direct_submission_controller_enabled.cpp
               ${NEO_SHARED_DIRECTORY}/dll/options_dll.cpp
+              ${NEO_SHARED_DIRECTORY}/dll/unified_memory_reuse_cleaner_enabled.cpp
               ${NEO_SHARED_DIRECTORY}/gmm_helper/page_table_mngr.cpp
               ${NEO_SHARED_DIRECTORY}/gmm_helper/resource_info.cpp
               ${NEO_SHARED_DIRECTORY}/helpers/abort.cpp
               ${NEO_SHARED_DIRECTORY}/helpers/debug_helpers.cpp
+              ${NEO_SHARED_DIRECTORY}/helpers/file_io.cpp
               ${NEO_SHARED_DIRECTORY}/utilities/cpuintrinsics.cpp
               ${NEO_SHARED_DIRECTORY}/utilities/debug_settings_reader_creator.cpp
               ${NEO_SHARED_DIRECTORY}/utilities/io_functions.cpp
@@ -235,10 +239,11 @@ if(BUILD_WITH_L0)
                    PRIVATE
                    ${NEO_SHARED_DIRECTORY}/aub/aub_stream_interface.cpp
     )
+    target_link_libraries(${TARGET_NAME_L0} PRIVATE ${AUB_STREAM_PROJECT_NAME})
   else()
     target_sources(${TARGET_NAME_L0}
                    PRIVATE
-                   ${NEO_SHARED_DIRECTORY}/aub/aub_stream_interface_stub.cpp
+                   $<TARGET_OBJECTS:aub_stream_stubs>
     )
 
   endif()
@@ -249,13 +254,13 @@ if(BUILD_WITH_L0)
                    ${NEO_SHARED_DIRECTORY}/dll/wddm/create_gdi.cpp
                    ${NEO_SHARED_DIRECTORY}/dll/wddm/wddm_create.cpp
                    ${NEO_SHARED_DIRECTORY}/dll/windows/debugger_l0_windows.cpp
-                   ${NEO_SHARED_DIRECTORY}/dll/windows/environment_variables.cpp
-                   ${NEO_SHARED_DIRECTORY}/dll/windows/options_windows.cpp
+                   ${NEO_SHARED_DIRECTORY}/dll/windows${BRANCH_DIR_SUFFIX}/options_windows.cpp
                    ${NEO_SHARED_DIRECTORY}/dll/windows/os_interface.cpp
                    ${NEO_SHARED_DIRECTORY}/gmm_helper/windows/gmm_memory_base.cpp
                    ${NEO_SHARED_DIRECTORY}/gmm_helper/windows/gmm_memory.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/windows/gmm_interface_win.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/windows/sys_calls.cpp
+                   ${NEO_SHARED_DIRECTORY}/os_interface/windows/sys_calls_winmm.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/windows/os_interface_win.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/windows/os_memory_virtual_alloc.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/windows/wddm/wddm_calls.cpp
@@ -267,12 +272,6 @@ if(BUILD_WITH_L0)
       message(STATUS "Setting L0 Resource Info")
       target_sources(${TARGET_NAME_L0} PRIVATE ${L0_DLL_RC_FILE})
     endif()
-    set_target_properties(${TARGET_NAME_L0} PROPERTIES
-                          DEBUG_OUTPUT_NAME "${TARGET_NAME_L0}${NEO_BITS}"
-                          RELEASE_OUTPUT_NAME "${TARGET_NAME_L0}${NEO_BITS}"
-                          RELEASEINTERNAL_OUTPUT_NAME "${TARGET_NAME_L0}${NEO_BITS}"
-                          OUTPUT_NAME "${TARGET_NAME_L0}${NEO_BITS}"
-    )
     add_dependencies(${TARGET_NAME_L0} ${GMM_TARGET_NAME})
   else()
     target_sources(${TARGET_NAME_L0}
@@ -282,7 +281,7 @@ if(BUILD_WITH_L0)
                    ${NEO_SHARED_DIRECTORY}/dll/devices/devices_base.inl
                    ${NEO_SHARED_DIRECTORY}/dll/linux/debugger_l0_dll_linux.cpp
                    ${NEO_SHARED_DIRECTORY}/dll/linux/drm_neo_create.cpp
-                   ${NEO_SHARED_DIRECTORY}/dll/linux/options_linux.cpp
+                   ${NEO_SHARED_DIRECTORY}/dll/linux${BRANCH_DIR_SUFFIX}/options_linux.cpp
                    ${NEO_SHARED_DIRECTORY}/dll/linux/os_interface.cpp
                    ${NEO_SHARED_DIRECTORY}/os_interface/linux/gmm_interface_linux.cpp
     )
@@ -295,6 +294,13 @@ if(BUILD_WITH_L0)
       )
     endif()
   endif()
+
+  set_target_properties(${TARGET_NAME_L0} PROPERTIES
+                        DEBUG_OUTPUT_NAME "${TARGET_NAME_L0}${IGDRCL_OPTION__BITS}${NEO__SO_NAME_SUFFIX}"
+                        RELEASE_OUTPUT_NAME "${TARGET_NAME_L0}${IGDRCL_OPTION__BITS}${NEO__SO_NAME_SUFFIX}"
+                        RELEASEINTERNAL_OUTPUT_NAME "${TARGET_NAME_L0}${IGDRCL_OPTION__BITS}${NEO__SO_NAME_SUFFIX}"
+                        OUTPUT_NAME "${TARGET_NAME_L0}${IGDRCL_OPTION__BITS}${NEO__SO_NAME_SUFFIX}"
+  )
 
   if(DEFINED AUB_STREAM_PROJECT_NAME)
     target_sources(${TARGET_NAME_L0}
@@ -338,6 +344,7 @@ if(BUILD_WITH_L0)
   add_subdirectory_unique(source)
 
   hide_subdir(experimental)
+  hide_subdir(include)
   set(L0_RELEASE_LIB_NAME "${TARGET_NAME_L0}_lib")
   if(NOT NEO_SKIP_L0_UNIT_TESTS)
     if(DONT_CARE_OF_VIRTUALS)
@@ -355,8 +362,15 @@ if(BUILD_WITH_L0)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/api "${NEO_BUILD_DIR}/${LIB_NAME}/api")
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/core/source "${NEO_BUILD_DIR}/${LIB_NAME}/core/source")
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/experimental "${NEO_BUILD_DIR}/${LIB_NAME}/experimental")
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/include "${NEO_BUILD_DIR}/${LIB_NAME}/include")
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/tools/source "${NEO_BUILD_DIR}/${LIB_NAME}tools/source")
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/sysman/source "${NEO_BUILD_DIR}/${LIB_NAME}sysman/source")
+
+    if(DEFINED NEO_SPDLOG_DIR)
+      target_include_directories(${LIB_NAME} PRIVATE "experimental/source/log_utility")
+    else()
+      target_include_directories(${LIB_NAME} PRIVATE "experimental/source/log_utility_stub")
+    endif()
 
     if(${MOCKABLE})
       get_property(COMPUTE_RUNTIME_DEFINITIONS
@@ -390,6 +404,7 @@ if(BUILD_WITH_L0)
                                ${IGC_OCL_ADAPTOR_DIR}
                                ${NEO__IGC_INCLUDE_DIR}
                                ${KHRONOS_HEADERS_DIR}
+                               ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
     if(WIN32 OR NOT DISABLE_WDDM_LINUX)
@@ -533,12 +548,6 @@ if(BUILD_WITH_L0)
 
   endif()
 
-  if(UNIX)
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/zet_intel_gpu_debug.h"
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/level_zero
-            PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-    )
-  endif()
 else()
   message(STATUS "Skipping level zero")
   set(BUILD_WITH_L0 FALSE PARENT_SCOPE)

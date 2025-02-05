@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 
 #include "level_zero/sysman/source/api/pci/sysman_pci_imp.h"
 #include "level_zero/sysman/source/api/pci/sysman_pci_utils.h"
+#include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
 #include "level_zero/sysman/source/shared/linux/zes_os_sysman_imp.h"
 #include "level_zero/sysman/source/sysman_const.h"
@@ -25,12 +26,11 @@ namespace Sysman {
 const std::string LinuxPciImp::deviceDir("device");
 const std::string LinuxPciImp::resourceFile("device/resource");
 
-ze_result_t LinuxPciImp::getProperties(zes_pci_properties_t *properties) {
-    properties->haveBandwidthCounters = false;
-    properties->havePacketCounters = false;
-    properties->haveReplayCounters = false;
-    return ZE_RESULT_SUCCESS;
+ze_result_t LinuxPciImp::getProperties(zes_pci_properties_t *pProperties) {
+    auto pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
+    return pSysmanProductHelper->getPciProperties(pProperties);
 }
+
 ze_result_t LinuxPciImp::getPciBdf(zes_pci_properties_t &pciProperties) {
     std::string bdfDir;
     ze_result_t result = pSysfsAccess->readSymLink(deviceDir, bdfDir);
@@ -54,8 +54,14 @@ void LinuxPciImp::getMaxLinkCaps(double &maxLinkSpeed, int32_t &maxLinkWidth) {
     maxLinkSpeed = 0;
     maxLinkWidth = -1;
 
+    auto isIntegratedDevice = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getHardwareInfo()->capabilityTable.isIntegratedDevice;
+    if (isIntegratedDevice) {
+        return;
+    }
+
     std::string pciConfigNode = {};
-    if (!isIntegratedDevice) {
+    auto pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
+    if (pSysmanProductHelper->isUpstreamPortConnected()) {
         pSysfsAccess->getRealPath(deviceDir, pciConfigNode);
         std::string cardBusPath = pLinuxSysmanImp->getPciCardBusDirectoryPath(pciConfigNode);
         pciConfigNode = cardBusPath + "/config";
@@ -74,8 +80,8 @@ void LinuxPciImp::getMaxLinkCaps(double &maxLinkSpeed, int32_t &maxLinkWidth) {
     }
 
     uint16_t linkCaps = L0::Sysman::PciUtil::getWordFromConfig(linkCapPos, configMemory.data());
-    maxLinkSpeed = convertPciGenToLinkSpeed(BITS(linkCaps, 0, 4));
-    maxLinkWidth = BITS(linkCaps, 4, 6);
+    maxLinkSpeed = convertPciGenToLinkSpeed(bits(linkCaps, 0, 4));
+    maxLinkWidth = bits(linkCaps, 4, 6);
 
     return;
 }
@@ -182,7 +188,7 @@ uint16_t LinuxPciImp::getLinkCapabilityPos(uint8_t *configMem) {
         id = L0::Sysman::PciUtil::getByteFromConfig(pos + PCI_CAP_LIST_ID, configMem);
         if (id == PCI_CAP_ID_EXP) {
             capRegister = L0::Sysman::PciUtil::getWordFromConfig(pos + PCI_CAP_FLAGS, configMem);
-            type = BITS(capRegister, 4, 4);
+            type = bits(capRegister, 4, 4);
 
             // Root Complex Integrated end point and
             // Root Complex Event collector will not implement link capabilities
@@ -251,11 +257,11 @@ bool LinuxPciImp::resizableBarEnabled(uint32_t barIndex) {
 
     // Only first Control register(at offset 008h, as shown above), could tell about number of resizable Bars
     controlRegister = L0::Sysman::PciUtil::getDwordFromConfig(rebarCapabilityPos + PCI_REBAR_CTRL, configMemory.data());
-    nBars = BITS(controlRegister, 5, 3); // control register's bits 5,6 and 7 contain number of resizable bars information
+    nBars = bits(controlRegister, 5, 3); // control register's bits 5,6 and 7 contain number of resizable bars information
     for (auto barNumber = 0u; barNumber < nBars; barNumber++) {
         uint32_t barId = 0;
         controlRegister = L0::Sysman::PciUtil::getDwordFromConfig(rebarCapabilityPos + PCI_REBAR_CTRL, configMemory.data());
-        barId = BITS(controlRegister, 0, 3); // Control register's bit 0,1,2 tells the index of bar
+        barId = bits(controlRegister, 0, 3); // Control register's bit 0,1,2 tells the index of bar
         if (barId == barIndex) {
             isBarResizable = true;
             break;
@@ -279,7 +285,7 @@ bool LinuxPciImp::resizableBarEnabled(uint32_t barIndex) {
 
     // Control register's bit 8 to 13 indicates current BAR size in encoded form.
     // Example, real value of current size could be 2^currentSize MB
-    auto currentSize = BITS(controlRegister, 8, 6);
+    auto currentSize = bits(controlRegister, 8, 6);
 
     // If current size is equal to larget possible BAR size, it indicates resizable BAR is enabled.
     return (currentSize == largestPossibleBarSize);
@@ -288,6 +294,11 @@ bool LinuxPciImp::resizableBarEnabled(uint32_t barIndex) {
 ze_result_t LinuxPciImp::getState(zes_pci_state_t *state) {
     NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s() returning UNSUPPORTED_FEATURE \n", __FUNCTION__);
     return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+ze_result_t LinuxPciImp::getStats(zes_pci_stats_t *stats) {
+    auto pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
+    return pSysmanProductHelper->getPciStats(stats, pLinuxSysmanImp);
 }
 
 bool LinuxPciImp::getPciConfigMemory(std::string pciPath, std::vector<uint8_t> &configMem) {
@@ -311,7 +322,6 @@ bool LinuxPciImp::getPciConfigMemory(std::string pciPath, std::vector<uint8_t> &
 LinuxPciImp::LinuxPciImp(OsSysman *pOsSysman) {
     pLinuxSysmanImp = static_cast<LinuxSysmanImp *>(pOsSysman);
     pSysfsAccess = &pLinuxSysmanImp->getSysfsAccess();
-    isIntegratedDevice = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getHardwareInfo()->capabilityTable.isIntegratedDevice;
 }
 
 OsPci *OsPci::create(OsSysman *pOsSysman) {

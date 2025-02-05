@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,6 +32,7 @@ namespace NEO {
 
 extern const char legacyPlatformName[];
 
+struct HardwareInfo;
 struct RuntimeCapabilityTable;
 
 enum class AILEnumeration : uint32_t {
@@ -40,6 +41,8 @@ enum class AILEnumeration : uint32_t {
     disableHostPtrTracking,
     enableLegacyPlatformName,
     disableDirectSubmission,
+    handleDivergentBarriers,
+    disableBindlessAddressing,
 };
 
 class AILConfiguration;
@@ -60,27 +63,59 @@ class AILConfiguration {
 
     MOCKABLE_VIRTUAL bool initProcessExecutableName();
 
-    virtual void apply(RuntimeCapabilityTable &runtimeCapabilityTable);
+    virtual void apply(HardwareInfo &hwInfo);
 
     virtual void modifyKernelIfRequired(std::string &kernel) = 0;
 
-    virtual bool isFallbackToPatchtokensRequired(const std::string &kernelSources) = 0;
-
     virtual bool isContextSyncFlagRequired() = 0;
+
+    virtual bool is256BPrefetchDisableRequired() = 0;
+
+    virtual bool drainHostptrs() = 0;
+
+    virtual bool isBufferPoolEnabled() = 0;
 
     virtual ~AILConfiguration() = default;
 
     virtual bool useLegacyValidationLogic() = 0;
 
+    virtual bool forceRcs() = 0;
+
+    virtual bool handleDivergentBarriers() = 0;
+
+    virtual bool disableBindlessAddressing() = 0;
+
+    virtual bool limitAmountOfDeviceMemoryForRecycling() = 0;
+
+    virtual bool isRunAloneContextRequired() = 0;
+
+    virtual bool isFallbackToPatchtokensRequired() = 0;
+
+    virtual bool isAdjustMicrosecondResolutionRequired() = 0;
+
+    virtual uint32_t getMicrosecondResolution() = 0;
+
   protected:
-    virtual void applyExt(RuntimeCapabilityTable &runtimeCapabilityTable) = 0;
+    virtual void applyExt(HardwareInfo &hwInfo) = 0;
     std::string processName;
 
     bool sourcesContain(const std::string &sources, std::string_view contentToFind) const;
     MOCKABLE_VIRTUAL bool isKernelHashCorrect(const std::string &kernelSources, uint64_t expectedHash) const;
+    virtual void setHandleDivergentBarriers(bool val) = 0;
+    virtual void setDisableBindlessAddressing(bool val) = 0;
 };
 
 extern const std::set<std::string_view> applicationsContextSyncFlag;
+extern const std::set<std::string_view> applicationsForceRcsDg2;
+extern const std::set<std::string_view> applicationsBufferPoolDisabled;
+extern const std::set<std::string_view> applicationsBufferPoolDisabledXe;
+extern const std::set<std::string_view> applicationsOverfetchDisabled;
+extern const std::set<std::string_view> applicationsDrainHostptrsDisabled;
+extern const std::set<std::string_view> applicationsDeviceUSMRecyclingLimited;
+extern const std::set<std::string_view> applicationsFallbackToPatchtokensRequiredDg2;
+extern const std::set<std::string_view> applicationsMicrosecontResolutionAdjustment;
+
+extern const uint32_t microsecondAdjustment;
 
 template <PRODUCT_FAMILY product>
 class AILConfigurationHw : public AILConfiguration {
@@ -90,12 +125,31 @@ class AILConfigurationHw : public AILConfiguration {
         return ailConfiguration;
     }
 
-    void applyExt(RuntimeCapabilityTable &runtimeCapabilityTable) override;
+    void applyExt(HardwareInfo &hwInfo) override;
 
     void modifyKernelIfRequired(std::string &kernel) override;
-    bool isFallbackToPatchtokensRequired(const std::string &kernelSources) override;
     bool isContextSyncFlagRequired() override;
+    bool is256BPrefetchDisableRequired() override;
+    bool drainHostptrs() override;
+    bool isBufferPoolEnabled() override;
     bool useLegacyValidationLogic() override;
+    bool forceRcs() override;
+    bool handleDivergentBarriers() override;
+    bool disableBindlessAddressing() override;
+    bool limitAmountOfDeviceMemoryForRecycling() override;
+    bool isRunAloneContextRequired() override;
+    bool isFallbackToPatchtokensRequired() override;
+    bool isAdjustMicrosecondResolutionRequired() override;
+    uint32_t getMicrosecondResolution() override;
+
+    bool shouldForceRcs = false;
+    bool shouldHandleDivergentBarriers = false;
+    bool shouldDisableBindlessAddressing = false;
+    bool shouldAdjustMicrosecondResolution = false;
+
+  protected:
+    void setHandleDivergentBarriers(bool val) override;
+    void setDisableBindlessAddressing(bool val) override;
 };
 
 template <PRODUCT_FAMILY product>

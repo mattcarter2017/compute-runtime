@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -43,6 +43,7 @@ SysmanDeviceImp::SysmanDeviceImp(NEO::ExecutionEnvironment *executionEnvironment
     pPci = new PciImp(pOsSysman);
     pFanHandleContext = new FanHandleContext(pOsSysman);
     pEvents = new EventsImp(pOsSysman);
+    pVfManagementHandleContext = new VfManagementHandleContext(pOsSysman);
 }
 
 SysmanDeviceImp::~SysmanDeviceImp() {
@@ -64,6 +65,7 @@ SysmanDeviceImp::~SysmanDeviceImp() {
     freeResource(pFanHandleContext);
     freeResource(pOsSysman);
     freeResource(pEvents);
+    freeResource(pVfManagementHandleContext);
     executionEnvironment->decRefInternal();
 }
 
@@ -72,8 +74,25 @@ ze_result_t SysmanDeviceImp::init() {
     return result;
 }
 
+double SysmanDeviceImp::getTimerResolution() {
+    getRootDeviceEnvironmentRef().initOsTime();
+    return getRootDeviceEnvironment().osTime.get()->getDynamicDeviceTimerResolution();
+}
+
 ze_result_t SysmanDeviceImp::deviceGetProperties(zes_device_properties_t *pProperties) {
     return pGlobalOperations->deviceGetProperties(pProperties);
+}
+
+ze_result_t SysmanDeviceImp::deviceGetSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) {
+    return pGlobalOperations->deviceGetSubDeviceProperties(pCount, pSubdeviceProps);
+}
+
+ze_bool_t SysmanDeviceImp::getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) {
+    return pGlobalOperations->getDeviceInfoByUuid(uuid, onSubdevice, subdeviceId);
+}
+
+ze_result_t SysmanDeviceImp::deviceEnumEnabledVF(uint32_t *pCount, zes_vf_handle_t *phVFhandle) {
+    return pVfManagementHandleContext->vfManagementGet(pCount, phVFhandle);
 }
 
 ze_result_t SysmanDeviceImp::processesGetState(uint32_t *pCount, zes_process_state_t *pProcesses) {
@@ -173,7 +192,7 @@ ze_result_t SysmanDeviceImp::pciGetBars(uint32_t *pCount, zes_pci_bar_properties
 }
 
 ze_result_t SysmanDeviceImp::pciGetStats(zes_pci_stats_t *pStats) {
-    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    return pPci->pciGetStats(pStats);
 }
 
 ze_result_t SysmanDeviceImp::fanGet(uint32_t *pCount, zes_fan_handle_t *phFan) {

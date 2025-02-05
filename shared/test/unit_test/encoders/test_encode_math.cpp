@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -182,7 +182,8 @@ HWTEST_F(CommandEncoderMathTest, givenOffsetAndValueWhenEncodeBitwiseAndValIsCal
     constexpr uint32_t regOffset = 0x2000u;
     constexpr uint32_t immVal = 0xbaau;
     constexpr uint64_t dstAddress = 0xDEADCAF0u;
-    EncodeMathMMIO<FamilyType>::encodeBitwiseAndVal(cmdContainer, regOffset, immVal, dstAddress, false);
+    void *storeRegMem = nullptr;
+    EncodeMathMMIO<FamilyType>::encodeBitwiseAndVal(cmdContainer, regOffset, immVal, dstAddress, false, &storeRegMem, false);
 
     CmdParse<FamilyType>::parseCommandBuffer(commands,
                                              ptrOffset(cmdContainer.getCommandStream()->getCpuBase(), 0),
@@ -214,13 +215,13 @@ HWTEST_F(CommandEncoderMathTest, givenOffsetAndValueWhenEncodeBitwiseAndValIsCal
     itor++;
     EXPECT_NE(commands.end(), itor);
     auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
-    EXPECT_EQ(cmdMem->getRegisterAddress(), RegisterOffsets::csGprR15);
+    EXPECT_EQ(cmdMem, storeRegMem);
+    EXPECT_EQ(cmdMem->getRegisterAddress(), RegisterOffsets::csGprR12);
     EXPECT_EQ(cmdMem->getMemoryAddress(), dstAddress);
 }
 
 HWTEST_F(CommandEncoderMathTest, WhenSettingGroupSizeIndirectThenCommandsAreCorrect) {
     using MI_MATH = typename FamilyType::MI_MATH;
-    using MI_MATH_ALU_INST_INLINE = typename FamilyType::MI_MATH_ALU_INST_INLINE;
     using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
 
     CommandContainer cmdContainer;
@@ -245,8 +246,6 @@ HWTEST_F(CommandEncoderMathTest, WhenSettingGroupSizeIndirectThenCommandsAreCorr
 }
 
 HWTEST_F(CommandEncoderMathTest, WhenSettingGroupCountIndirectThenCommandsAreCorrect) {
-    using MI_MATH = typename FamilyType::MI_MATH;
-    using MI_MATH_ALU_INST_INLINE = typename FamilyType::MI_MATH_ALU_INST_INLINE;
     using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
 
     CommandContainer cmdContainer;
@@ -294,7 +293,7 @@ HWTEST_F(CommandEncodeAluTests, whenProgrammingIncrementOperationThenUseCorrectA
     uint8_t buffer[bufferSize] = {};
     LinearStream cmdStream(buffer, bufferSize);
 
-    EncodeMathMMIO<FamilyType>::encodeIncrement(cmdStream, incRegister);
+    EncodeMathMMIO<FamilyType>::encodeIncrement(cmdStream, incRegister, false);
 
     EXPECT_EQ(bufferSize, cmdStream.getUsed());
 
@@ -341,7 +340,7 @@ HWTEST_F(CommandEncodeAluTests, whenProgrammingDecrementOperationThenUseCorrectA
     uint8_t buffer[bufferSize] = {};
     LinearStream cmdStream(buffer, bufferSize);
 
-    EncodeMathMMIO<FamilyType>::encodeDecrement(cmdStream, decRegister);
+    EncodeMathMMIO<FamilyType>::encodeDecrement(cmdStream, decRegister, false);
 
     EXPECT_EQ(bufferSize, cmdStream.getUsed());
 

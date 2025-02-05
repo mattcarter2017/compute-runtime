@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -75,7 +75,7 @@ XE_HPC_CORETEST_F(GfxCoreHelperTestsXeHpcCore, givenSingleTileBdA0CsrWhenAllocat
     auto commandStreamReceiver = clDevice->getSubDevice(tileIndex)->getDefaultEngine().commandStreamReceiver;
     auto &heap = commandStreamReceiver->getIndirectHeap(IndirectHeap::Type::indirectObject, MemoryConstants::pageSize64k);
     auto heapAllocation = heap.getGraphicsAllocation();
-    if (commandStreamReceiver->canUse4GbHeaps) {
+    if (commandStreamReceiver->canUse4GbHeaps()) {
         EXPECT_EQ(AllocationType::internalHeap, heapAllocation->getAllocationType());
     } else {
         EXPECT_EQ(AllocationType::linearStream, heapAllocation->getAllocationType());
@@ -679,7 +679,7 @@ using LriHelperTestsXeHpcCore = ::testing::Test;
 
 XE_HPC_CORETEST_F(LriHelperTestsXeHpcCore, whenProgrammingLriCommandThenExpectMmioRemapEnableCorrectlySet) {
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint32_t address = 0x8888;
@@ -691,7 +691,7 @@ XE_HPC_CORETEST_F(LriHelperTestsXeHpcCore, whenProgrammingLriCommandThenExpectMm
     expectedLri.setDataDword(data);
     expectedLri.setMmioRemapEnable(true);
 
-    LriHelper<FamilyType>::program(&stream, address, data, true);
+    LriHelper<FamilyType>::program(&stream, address, data, true, false);
     MI_LOAD_REGISTER_IMM *lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(buffer.get());
     ASSERT_NE(nullptr, lri);
 
@@ -800,10 +800,4 @@ XE_HPC_CORETEST_F(GfxCoreHelperTestsXeHpcCore, givenCommandBufferAllocationWhenS
 
     gfxCoreHelper.setExtraAllocationData(allocData, allTilesAllocProperties, pDevice->getRootDeviceEnvironment());
     EXPECT_FALSE(allocData.flags.useSystemMemory);
-}
-
-XE_HPC_CORETEST_F(GfxCoreHelperTestsXeHpcCore, WhenGettingDeviceIpVersionThenMakeCorrectDeviceIpVersion) {
-    auto &clGfxCoreHelper = getHelper<ClGfxCoreHelper>();
-
-    EXPECT_EQ(ClGfxCoreHelperMock::makeDeviceIpVersion(12, 8, 1), clGfxCoreHelper.getDeviceIpVersion(*defaultHwInfo));
 }

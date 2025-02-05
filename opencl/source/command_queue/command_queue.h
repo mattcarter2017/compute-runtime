@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -45,6 +45,7 @@ struct BuiltinOpParams;
 struct CsrSelectionArgs;
 struct MultiDispatchInfo;
 struct TimestampPacketDependencies;
+struct StagingTransferStatus;
 
 enum class QueuePriority {
     low,
@@ -122,7 +123,7 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
                                   void *userData, cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) = 0;
 
     virtual cl_int enqueueSVMMemcpy(cl_bool blockingCopy, void *dstPtr, const void *srcPtr, size_t size, cl_uint numEventsInWaitList,
-                                    const cl_event *eventWaitList, cl_event *event) = 0;
+                                    const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver *csrParam) = 0;
 
     virtual cl_int enqueueSVMMemFill(void *svmPtr, const void *pattern, size_t patternSize,
                                      size_t size, cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) = 0;
@@ -147,6 +148,10 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
                                     size_t rowPitch, size_t slicePitch, void *ptr, GraphicsAllocation *mapAllocation,
                                     cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) = 0;
 
+    virtual cl_int enqueueReadImageImpl(Image *srcImage, cl_bool blockingRead, const size_t *origin, const size_t *region,
+                                        size_t rowPitch, size_t slicePitch, void *ptr, GraphicsAllocation *mapAllocation,
+                                        cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver &csr) = 0;
+
     virtual cl_int enqueueWriteBuffer(Buffer *buffer, cl_bool blockingWrite, size_t offset, size_t cb,
                                       const void *ptr, GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
                                       const cl_event *eventWaitList, cl_event *event) = 0;
@@ -155,6 +160,15 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
                                      const size_t *region, size_t inputRowPitch, size_t inputSlicePitch,
                                      const void *ptr, GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
                                      const cl_event *eventWaitList, cl_event *event) = 0;
+
+    virtual cl_int enqueueWriteBufferImpl(Buffer *buffer, cl_bool blockingWrite, size_t offset, size_t cb,
+                                          const void *ptr, GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
+                                          const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver &csr) = 0;
+
+    virtual cl_int enqueueWriteImageImpl(Image *dstImage, cl_bool blockingWrite, const size_t *origin,
+                                         const size_t *region, size_t inputRowPitch, size_t inputSlicePitch,
+                                         const void *ptr, GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList,
+                                         const cl_event *eventWaitList, cl_event *event, CommandStreamReceiver &csr) = 0;
 
     virtual cl_int enqueueCopyBufferRect(Buffer *srcBuffer, Buffer *dstBuffer, const size_t *srcOrigin, const size_t *dstOrigin,
                                          const size_t *region, size_t srcRowPitch, size_t srcSlicePitch, size_t dstRowPitch, size_t dstSlicePitch,
@@ -383,8 +397,18 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
     void handlePostCompletionOperations(bool checkQueueCompletion);
 
     bool getHeaplessModeEnabled() const { return this->heaplessModeEnabled; }
+    bool getHeaplessStateInitEnabled() const { return this->heaplessStateInitEnabled; }
 
     bool isBcsSplitInitialized() const { return this->bcsSplitInitialized; }
+    bool isBcs() const { return isCopyOnly; };
+
+    cl_int enqueueStagingBufferMemcpy(cl_bool blockingCopy, void *dstPtr, const void *srcPtr, size_t size, cl_event *event);
+    cl_int enqueueStagingImageTransfer(cl_command_type commandType, Image *dstImage, cl_bool blockingCopy, const size_t *globalOrigin, const size_t *globalRegion,
+                                       size_t inputRowPitch, size_t inputSlicePitch, const void *ptr, cl_event *event);
+    cl_int enqueueStagingWriteBuffer(Buffer *buffer, cl_bool blockingCopy, size_t offset, size_t size, const void *ptr, cl_event *event);
+
+    bool isValidForStagingBufferCopy(Device &device, void *dstPtr, const void *srcPtr, size_t size, bool hasDependencies);
+    bool isValidForStagingTransfer(MemObj *memObj, const void *ptr, bool hasDependencies);
 
   protected:
     void *enqueueReadMemObjForMap(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &errcodeRet);
@@ -427,6 +451,9 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
     void unregisterBcsCsrClient(CommandStreamReceiver &bcsCsr);
 
     void unregisterGpgpuAndBcsCsrClients();
+
+    cl_int postStagingTransferSync(const StagingTransferStatus &status, cl_event *event, const cl_event profilingEvent, bool isSingleTransfer, bool isBlocking, cl_command_type commandType);
+    cl_event *assignEventForStaging(cl_event *userEvent, cl_event *profilingEvent, bool isFirstTransfer, bool isLastTransfer) const;
 
     Context *context = nullptr;
     ClDevice *device = nullptr;
@@ -480,6 +507,8 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
     bool splitBarrierRequired = false;
     bool gpgpuCsrClientRegistered = false;
     bool heaplessModeEnabled = false;
+    bool heaplessStateInitEnabled = false;
+    bool isForceStateless = false;
 };
 
 template <typename PtrType>

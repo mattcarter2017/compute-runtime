@@ -34,7 +34,8 @@ enum class DecodeError : uint8_t {
     success,
     undefined,
     invalidBinary,
-    unhandledBinary
+    unhandledBinary,
+    unkownZeinfoAttribute
 };
 
 enum class GeneratorType : uint8_t {
@@ -146,12 +147,12 @@ inline SingleDeviceBinary unpackSingleDeviceBinary(const ArrayRef<const uint8_t>
 }
 
 template <DeviceBinaryFormat format>
-std::vector<uint8_t> packDeviceBinary(const SingleDeviceBinary binary, std::string &outErrReason, std::string &outWarning);
+std::vector<uint8_t> packDeviceBinary(const SingleDeviceBinary &binary, std::string &outErrReason, std::string &outWarning);
 
 template <>
-std::vector<uint8_t> packDeviceBinary<DeviceBinaryFormat::oclElf>(const SingleDeviceBinary, std::string &, std::string &);
+std::vector<uint8_t> packDeviceBinary<DeviceBinaryFormat::oclElf>(const SingleDeviceBinary &, std::string &, std::string &);
 
-std::vector<uint8_t> packDeviceBinary(const SingleDeviceBinary binary, std::string &outErrReason, std::string &outWarning);
+std::vector<uint8_t> packDeviceBinary(const SingleDeviceBinary &binary, std::string &outErrReason, std::string &outWarning);
 
 inline bool isAnyPackedDeviceBinaryFormat(const ArrayRef<const uint8_t> binary) {
     if (isDeviceBinaryFormat<DeviceBinaryFormat::oclElf>(binary)) {

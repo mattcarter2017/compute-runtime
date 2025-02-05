@@ -16,10 +16,13 @@
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/helpers/engine_descriptor_helper.h"
+#include "shared/test/common/helpers/gtest_helpers.h"
+#include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/libult/linux/drm_mock.h"
 #include "shared/test/common/libult/linux/drm_query_mock.h"
 #include "shared/test/common/mocks/linux/mock_drm_allocation.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_io_functions.h"
 #include "shared/test/common/test_macros/test.h"
 
 using namespace NEO;
@@ -81,6 +84,7 @@ TEST(IoctlHelperPrelimTest, whenGettingVmBindAvailabilityThenProperValueIsReturn
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
 
+    const auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getProductHelper();
     IoctlHelperPrelim20 ioctlHelper{drm};
 
     for (auto &ioctlValue : {0, EINVAL}) {
@@ -89,12 +93,17 @@ TEST(IoctlHelperPrelimTest, whenGettingVmBindAvailabilityThenProperValueIsReturn
             drm.context.vmBindQueryValue = hasVmBind;
             drm.context.vmBindQueryCalled = 0u;
 
-            if (ioctlValue == 0) {
-                EXPECT_EQ(hasVmBind, ioctlHelper.isVmBindAvailable());
+            if (productHelper.isNewResidencyModelSupported()) {
+                if (ioctlValue == 0) {
+                    EXPECT_EQ(hasVmBind, ioctlHelper.isVmBindAvailable());
+                } else {
+                    EXPECT_FALSE(ioctlHelper.isVmBindAvailable());
+                }
+                EXPECT_EQ(1u, drm.context.vmBindQueryCalled);
             } else {
                 EXPECT_FALSE(ioctlHelper.isVmBindAvailable());
+                EXPECT_EQ(0u, drm.context.vmBindQueryCalled);
             }
-            EXPECT_EQ(1u, drm.context.vmBindQueryCalled);
         }
     }
 }
@@ -131,13 +140,36 @@ TEST(IoctlHelperPrelimTest, whenVmUnbindIsCalledThenProperValueIsReturnedBasedOn
     }
 }
 
+TEST_F(IoctlHelperPrelimFixture, givenPrelimEnableEuDebugThenReturnCorrectValue) {
+    VariableBackup<size_t> mockFreadReturnBackup(&IoFunctions::mockFreadReturn, 1);
+    std::unique_ptr<char[]> buffer = std::make_unique<char[]>(IoFunctions::mockFreadReturn);
+    VariableBackup<char *> mockFreadBufferBackup(&IoFunctions::mockFreadBuffer, buffer.get());
+
+    buffer[0] = '1';
+    int prelimEnableEuDebug = drm->getEuDebugSysFsEnable();
+
+    EXPECT_EQ(1, prelimEnableEuDebug);
+}
+
+TEST_F(IoctlHelperPrelimFixture, givenPrelimEnableEuDebugWithInvalidPathThenReturnDefaultValue) {
+    VariableBackup<size_t> mockFreadReturnBackup(&IoFunctions::mockFreadReturn, 1);
+    std::unique_ptr<char[]> buffer = std::make_unique<char[]>(IoFunctions::mockFreadReturn);
+    VariableBackup<char *> mockFreadBufferBackup(&IoFunctions::mockFreadBuffer, buffer.get());
+
+    buffer[0] = '1';
+    VariableBackup<FILE *> mockFopenReturnBackup(&IoFunctions::mockFopenReturned, nullptr);
+    int prelimEnableEuDebug = drm->getEuDebugSysFsEnable();
+
+    EXPECT_EQ(0, prelimEnableEuDebug);
+}
+
 TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCreateGemExtThenReturnSuccess) {
     drm->ioctlCallsCount = 0;
     auto ioctlHelper = drm->getIoctlHelper();
     uint32_t handle = 0;
     MemRegionsVec memClassInstance = {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0}};
     uint32_t numOfChunks = 0;
-    auto ret = ioctlHelper->createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, std::nullopt, std::nullopt);
+    auto ret = ioctlHelper->createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, std::nullopt, std::nullopt, std::nullopt);
 
     EXPECT_EQ(1u, handle);
     EXPECT_EQ(0, ret);
@@ -161,7 +193,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCreateGemExtWithChunkingThenGet
     uint32_t handle = 0;
     uint32_t getNumOfChunks = 2;
     MemRegionsVec memClassInstance = {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0}};
-    ioctlHelper->createGemExt(memClassInstance, allocSize, handle, 0, {}, -1, true, getNumOfChunks, std::nullopt, std::nullopt);
+    ioctlHelper->createGemExt(memClassInstance, allocSize, handle, 0, {}, -1, true, getNumOfChunks, std::nullopt, std::nullopt, std::nullopt);
     std::string output = testing::internal::GetCapturedStdout();
     std::string expectedOutput("GEM_CREATE_EXT BO-1 with BOChunkingSize 65536, chunkingParamRegion.param.data 65536, numOfChunks 2\n");
     EXPECT_EQ(expectedOutput, output);
@@ -178,7 +210,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCreateGemExtWithChunkingAndAllo
     uint32_t handle = 0;
     uint32_t getNumOfChunks = 2;
     MemRegionsVec memClassInstance = {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0}};
-    EXPECT_THROW(ioctlHelper->createGemExt(memClassInstance, allocSize, handle, 0, {}, -1, true, getNumOfChunks, std::nullopt, std::nullopt), std::runtime_error);
+    EXPECT_THROW(ioctlHelper->createGemExt(memClassInstance, allocSize, handle, 0, {}, -1, true, getNumOfChunks, std::nullopt, std::nullopt, std::nullopt), std::runtime_error);
 }
 
 TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCreateGemExtWithDebugFlagThenPrintDebugInfo) {
@@ -190,7 +222,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCreateGemExtWithDebugFlagThenPr
     uint32_t handle = 0;
     MemRegionsVec memClassInstance = {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0}};
     uint32_t numOfChunks = 0;
-    ioctlHelper->createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, std::nullopt, std::nullopt);
+    ioctlHelper->createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, std::nullopt, std::nullopt, std::nullopt);
 
     std::string output = testing::internal::GetCapturedStdout();
     std::string expectedOutput("Performing GEM_CREATE_EXT with { size: 1024, param: 0x1000000010001, memory class: 1, memory instance: 0 }\nGEM_CREATE_EXT has returned: 0 BO-1 with size: 1024\n");
@@ -208,7 +240,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenCallIoctlThenProperIoctlRegiste
 TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenClosAllocThenReturnCorrectRegion) {
     drm->ioctlCallsCount = 0;
     auto ioctlHelper = drm->getIoctlHelper();
-    auto cacheRegion = ioctlHelper->closAlloc();
+    auto cacheRegion = ioctlHelper->closAlloc(NEO::CacheLevel::level3);
 
     EXPECT_EQ(CacheRegion::region1, cacheRegion);
     EXPECT_EQ(1u, drm->ioctlCallsCount);
@@ -218,7 +250,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsAndInvalidIoctlReturnValWhenClosAll
     drm->ioctlRetVal = -1;
     drm->ioctlCallsCount = 0;
     auto ioctlHelper = drm->getIoctlHelper();
-    auto cacheRegion = ioctlHelper->closAlloc();
+    auto cacheRegion = ioctlHelper->closAlloc(NEO::CacheLevel::level3);
 
     EXPECT_EQ(CacheRegion::none, cacheRegion);
     EXPECT_EQ(1u, drm->ioctlCallsCount);
@@ -269,7 +301,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimsWhenWaitUserFenceThenCorrectValueRe
     uint64_t value = 0x98765ull;
     auto ioctlHelper = drm->getIoctlHelper();
     for (uint32_t i = 0u; i < 4; i++) {
-        auto ret = ioctlHelper->waitUserFence(10u, gpuAddress, value, i, -1, 0u);
+        auto ret = ioctlHelper->waitUserFence(10u, gpuAddress, value, i, -1, 0u, false, NEO::InterruptId::notUsed, nullptr);
         EXPECT_EQ(0, ret);
     }
 }
@@ -542,7 +574,7 @@ TEST_F(IoctlHelperPrelimFixture,
 
     drm->ioctlCallsCount = 0;
     MockBufferObject bo(0u, drm.get(), 3, 0, 0, 1);
-    bo.isChunked = 1;
+    bo.setChunked(true);
     bo.setSize(1024);
     MockDrmAllocation allocation(0u, AllocationType::buffer, MemoryPool::localMemory);
     allocation.bufferObjects[0] = &bo;
@@ -571,7 +603,7 @@ TEST_F(IoctlHelperPrelimFixture,
 
     drm->ioctlCallsCount = 0;
     MockBufferObject bo(0u, drm.get(), 3, 0, 0, 1);
-    bo.isChunked = 1;
+    bo.setChunked(true);
     bo.setSize(1024);
     MockDrmAllocation allocation(0u, AllocationType::buffer, MemoryPool::localMemory);
     allocation.bufferObjects[0] = &bo;
@@ -639,6 +671,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimWhenQueryEngineInfoWithDeviceMemoryT
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 1}, 1024, 0},
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 2}, 1024, 0}};
     drm->memoryInfo.reset(new MemoryInfo(memRegions, *drm));
+    drm->memoryInfoQueried = true;
     EXPECT_TRUE(drm->queryEngineInfo());
     EXPECT_EQ(3u, drm->ioctlCallsCount);
     auto hwInfo = drm->getRootDeviceEnvironment().getHardwareInfo();
@@ -669,13 +702,14 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimWhenQueryEngineInfoThenCorrectCCSFla
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0}, 1024, 0},
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 1}, 1024, 0}};
     drm->memoryInfo.reset(new MemoryInfo(memRegions, *drm));
+    drm->memoryInfoQueried = true;
     EXPECT_TRUE(drm->queryEngineInfo());
     EXPECT_EQ(3u, drm->ioctlCallsCount);
     auto hwInfo = drm->getRootDeviceEnvironment().getHardwareInfo();
     auto ccsInfo = hwInfo->gtSystemInfo.CCSInfo;
     EXPECT_TRUE(ccsInfo.IsValid);
-    EXPECT_EQ(1u, ccsInfo.NumberOfCCSEnabled);
-    EXPECT_EQ(1u, ccsInfo.Instances.CCSEnableMask);
+    EXPECT_EQ_VAL(1u, ccsInfo.NumberOfCCSEnabled);
+    EXPECT_EQ_VAL(1u, ccsInfo.Instances.CCSEnableMask);
 }
 
 TEST_F(IoctlHelperPrelimFixture, givenPrelimWhenSysmanQueryEngineInfoThenAdditionalEnginesUsed) {
@@ -709,6 +743,7 @@ TEST_F(IoctlHelperPrelimFixture, givenPrelimWhenQueryEngineInfoAndFailIoctlThenF
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 1}, 1024, 0},
         {{drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 2}, 1024, 0}};
     drm->memoryInfo.reset(new MemoryInfo(memRegions, *drm));
+    drm->memoryInfoQueried = true;
     EXPECT_FALSE(drm->queryEngineInfo());
 
     EXPECT_EQ(3u, drm->ioctlCallsCount);
@@ -786,7 +821,7 @@ TEST_F(IoctlHelperPrelimFixture, givenProgramDebuggingAndContextDebugSupportedWh
     executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo()->platform.eProductFamily = defaultHwInfo->platform.eProductFamily;
 
     OsContextLinux osContext(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular}));
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     EXPECT_NE(static_cast<uint32_t>(-1), drm->passedContextDebugId);
     if (executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo()->gtSystemInfo.CCSInfo.NumberOfCCSEnabled > 0) {
@@ -795,7 +830,7 @@ TEST_F(IoctlHelperPrelimFixture, givenProgramDebuggingAndContextDebugSupportedWh
     }
 
     OsContextLinux osContext2(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::cooperative}));
-    osContext2.ensureContextInitialized();
+    osContext2.ensureContextInitialized(false);
 
     EXPECT_NE(static_cast<uint32_t>(-1), drm->passedContextDebugId);
     EXPECT_TRUE(drm->capturedCooperativeContextRequest);
@@ -807,7 +842,7 @@ TEST_F(IoctlHelperPrelimFixture, givenProgramDebuggingModeAndContextDebugSupport
     drm->callBaseCreateDrmContext = false;
 
     OsContextLinux osContext(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular}));
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     EXPECT_NE(static_cast<uint32_t>(-1), drm->passedContextDebugId);
 
@@ -820,13 +855,13 @@ TEST_F(IoctlHelperPrelimFixture, givenProgramDebuggingModeAndContextDebugSupport
     executionEnvironment->setDebuggingMode(NEO::DebuggingMode::offline);
 
     OsContextLinux osContext2(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular}));
-    osContext2.ensureContextInitialized();
+    osContext2.ensureContextInitialized(false);
 
     EXPECT_NE(static_cast<uint32_t>(-1), drm->passedContextDebugId);
     EXPECT_FALSE(drm->capturedCooperativeContextRequest);
 
     OsContextLinux osContext3(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::cooperative}));
-    osContext3.ensureContextInitialized();
+    osContext3.ensureContextInitialized(false);
 
     EXPECT_NE(static_cast<uint32_t>(-1), drm->passedContextDebugId);
     EXPECT_TRUE(drm->capturedCooperativeContextRequest);
@@ -846,7 +881,7 @@ TEST(IoctlHelperPrelimTest, givenProgramDebuggingAndContextDebugSupportedWhenIni
     executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo()->platform.eProductFamily = defaultHwInfo->platform.eProductFamily;
 
     OsContextLinux osContext(*drm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular}));
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     EXPECT_FALSE(drm->receivedGemVmControl.flags & PRELIM_I915_VM_CREATE_FLAGS_DISABLE_SCRATCH);
     EXPECT_TRUE(drm->receivedGemVmControl.flags & PRELIM_I915_VM_CREATE_FLAGS_USE_VM_BIND);

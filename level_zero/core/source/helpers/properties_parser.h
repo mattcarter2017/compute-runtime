@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,11 +7,15 @@
 
 #pragma once
 
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/surface_format_info.h"
 
+#include "level_zero/driver_experimental/ze_bindless_image_exp.h"
+#include "level_zero/driver_experimental/zex_common.h"
 #include <level_zero/ze_api.h>
 
 #include <cstdint>
+#include <optional>
 
 namespace L0 {
 inline NEO::ImageType convertType(const ze_image_type_t type) {
@@ -54,12 +58,15 @@ struct StructuresLookupTable {
         NEO::ImageDescriptor imageDescriptor;
         uint32_t planeIndex;
         bool isPlanarExtension;
+        void *pitchedPtr;
+        const ze_sampler_desc_t *samplerDesc;
     } imageProperties;
 
     struct SharedHandleType {
-        void *ntHnadle;
+        void *ntHandle;
         int fd;
         bool isSupportedHandle;
+        bool isOpaqueFDHandle;
         bool isDMABUFHandle;
         bool isNTHandle;
     } sharedHandleType;
@@ -71,6 +78,8 @@ struct StructuresLookupTable {
     bool compressedHint;
     bool uncompressedHint;
     bool rayTracingMemory;
+    bool bindlessImage;
+    bool sampledImage;
 };
 
 inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupTable, const void *desc) {
@@ -83,7 +92,11 @@ inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupT
         } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_FD) {
             lookupTable.isSharedHandle = true;
             const ze_external_memory_import_fd_t *linuxExternalMemoryImportDesc = reinterpret_cast<const ze_external_memory_import_fd_t *>(extendedDesc);
-            if (linuxExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF) {
+            if (linuxExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD) {
+                lookupTable.sharedHandleType.isSupportedHandle = true;
+                lookupTable.sharedHandleType.isOpaqueFDHandle = true;
+                lookupTable.sharedHandleType.fd = linuxExternalMemoryImportDesc->fd;
+            } else if (linuxExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF) {
                 lookupTable.sharedHandleType.isSupportedHandle = true;
                 lookupTable.sharedHandleType.isDMABUFHandle = true;
                 lookupTable.sharedHandleType.fd = linuxExternalMemoryImportDesc->fd;
@@ -94,10 +107,12 @@ inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupT
         } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_WIN32) {
             lookupTable.isSharedHandle = true;
             const ze_external_memory_import_win32_handle_t *windowsExternalMemoryImportDesc = reinterpret_cast<const ze_external_memory_import_win32_handle_t *>(extendedDesc);
-            if (windowsExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32) {
+            if ((windowsExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32) ||
+                (windowsExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_D3D12_HEAP) ||
+                (windowsExternalMemoryImportDesc->flags == ZE_EXTERNAL_MEMORY_TYPE_FLAG_D3D12_RESOURCE)) {
                 lookupTable.sharedHandleType.isSupportedHandle = true;
                 lookupTable.sharedHandleType.isNTHandle = true;
-                lookupTable.sharedHandleType.ntHnadle = windowsExternalMemoryImportDesc->handle;
+                lookupTable.sharedHandleType.ntHandle = windowsExternalMemoryImportDesc->handle;
             } else {
                 lookupTable.sharedHandleType.isSupportedHandle = false;
                 return ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION;
@@ -112,6 +127,19 @@ inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupT
             lookupTable.areImageProperties = true;
             lookupTable.imageProperties.isPlanarExtension = true;
             lookupTable.imageProperties.planeIndex = imageViewDesc->planeIndex;
+        } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_BINDLESS_IMAGE_EXP_DESC) {
+            const ze_image_bindless_exp_desc_t *imageBindlessDesc =
+                reinterpret_cast<const ze_image_bindless_exp_desc_t *>(extendedDesc);
+            lookupTable.bindlessImage = imageBindlessDesc->flags & ZE_IMAGE_BINDLESS_EXP_FLAG_BINDLESS;
+            lookupTable.sampledImage = imageBindlessDesc->flags & ZE_IMAGE_BINDLESS_EXP_FLAG_SAMPLED_IMAGE;
+        } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_PITCHED_IMAGE_EXP_DESC) {
+            const ze_image_pitched_exp_desc_t *pitchedDesc = reinterpret_cast<const ze_image_pitched_exp_desc_t *>(extendedDesc);
+            lookupTable.areImageProperties = true;
+            lookupTable.imageProperties.pitchedPtr = pitchedDesc->ptr;
+        } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_SAMPLER_DESC) {
+            const ze_sampler_desc_t *samplerDesc = reinterpret_cast<const ze_sampler_desc_t *>(extendedDesc);
+            lookupTable.areImageProperties = true;
+            lookupTable.imageProperties.samplerDesc = samplerDesc;
         } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_RELAXED_ALLOCATION_LIMITS_EXP_DESC) {
             const ze_relaxed_allocation_limits_exp_desc_t *relaxedLimitsDesc =
                 reinterpret_cast<const ze_relaxed_allocation_limits_exp_desc_t *>(extendedDesc);
@@ -122,7 +150,9 @@ inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupT
         } else if (extendedDesc->stype == ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_EXPORT_DESC) {
             const ze_external_memory_export_desc_t *externalMemoryExportDesc =
                 reinterpret_cast<const ze_external_memory_export_desc_t *>(extendedDesc);
-            if (externalMemoryExportDesc->flags & ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF || externalMemoryExportDesc->flags & ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32) {
+            if (externalMemoryExportDesc->flags & ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF ||
+                externalMemoryExportDesc->flags & ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD ||
+                externalMemoryExportDesc->flags & ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32) {
                 lookupTable.exportMemory = true;
             } else {
                 return ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION;
@@ -151,5 +181,14 @@ inline ze_result_t prepareL0StructuresLookupTable(StructuresLookupTable &lookupT
     }
 
     return ZE_RESULT_SUCCESS;
+}
+
+inline std::optional<NEO::SynchronizedDispatchMode> getSyncDispatchMode(const ze_base_desc_t *desc) {
+    if (desc->stype == ZE_STRUCTURE_TYPE_SYNCHRONIZED_DISPATCH_EXP_DESC) { // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
+        auto syncDispatch = reinterpret_cast<const ze_synchronized_dispatch_exp_desc_t *>(desc);
+        return (syncDispatch->flags == ZE_SYNCHRONIZED_DISPATCH_ENABLED_EXP_FLAG ? NEO::SynchronizedDispatchMode::full : NEO::SynchronizedDispatchMode::limited);
+    }
+
+    return std::nullopt;
 }
 } // namespace L0

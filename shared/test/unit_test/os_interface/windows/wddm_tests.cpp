@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -89,6 +89,15 @@ TEST_F(WddmTests, whenCreatingContextWithPowerHintSuccessIsReturned) {
     EXPECT_TRUE(wddm->createContext(*newContext));
 }
 
+TEST_F(WddmTests, whenCreatingContextThenUmdTypeInPrivateDataIsSetToOpenCL) {
+    init();
+    auto newContext = osContext.get();
+    wddm->createContext(*newContext);
+    auto data = getCreateContextDataFcn();
+    auto umdType = reinterpret_cast<CREATECONTEXT_PVTDATA *>(data->pPrivateDriverData)->UmdContextType;
+    EXPECT_EQ(umdType, UMD_OCL);
+}
+
 TEST_F(WddmTests, whenftrEuDebugIsFalseThenDebuggingEnabledReturnsFalse) {
     init();
     EXPECT_FALSE(wddm->isDebugAttachAvailable());
@@ -98,7 +107,7 @@ TEST_F(WddmTests, whenProgramDebugIsEnabledAndCreatingContextWithInternalEngineT
     executionEnvironment->setDebuggingMode(NEO::DebuggingMode::online);
     wddm->init();
     OsContextWin osContext(*wddm, 0, 5u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::EngineType::ENGINE_RCS, EngineUsage::internal}));
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
     EXPECT_FALSE(osContext.isDebuggableContext());
 }
 
@@ -107,7 +116,7 @@ TEST_F(WddmTests, WhenCallingInitializeContextWithContextCreateDisabledFlagEnabl
     VariableBackup<std::unordered_map<std::string, std::string> *> mockableEnvValuesBackup(&IoFunctions::mockableEnvValues, &mockableEnvs);
     init();
     auto newContext = osContext.get();
-    EXPECT_TRUE(newContext->ensureContextInitialized());
+    EXPECT_TRUE(newContext->ensureContextInitialized(false));
     EXPECT_EQ(0u, newContext->getWddmContextHandle());
 }
 
@@ -148,7 +157,7 @@ TEST(WddmNewRsourceTest, whenSetNewResourcesBoundToPageTableThenSetInContextFrom
     executionEnvironment.initializeMemoryManager();
     auto csr1 = std::unique_ptr<CommandStreamReceiver>(createCommandStream(executionEnvironment, 0, 1));
     auto csr2 = std::unique_ptr<CommandStreamReceiver>(createCommandStream(executionEnvironment, 1, 1));
-    EngineDescriptor engineDesc({aub_stream::ENGINE_CCS, EngineUsage::regular}, 1, PreemptionMode::Disabled, false, false);
+    EngineDescriptor engineDesc({aub_stream::ENGINE_CCS, EngineUsage::regular}, 1, PreemptionMode::Disabled, false);
     executionEnvironment.memoryManager->createAndRegisterOsContext(csr1.get(), engineDesc);
     executionEnvironment.memoryManager->createAndRegisterOsContext(csr2.get(), engineDesc);
 
@@ -232,75 +241,97 @@ TEST_F(WddmTests, givenDebugFlagForceEvictOnlyIfNecessaryAllValuesThenForceSetti
 }
 
 TEST_F(WddmTests, GivengtSystemInfoSliceInfoHasEnabledSlicesAtHigherIndicesThenExpectTopologyMapCreateAndReturnTrue) {
-    VariableBackup<HardwareInfo> backupHwInfo(defaultHwInfo.get());
-    defaultHwInfo.get()->gtSystemInfo.MaxSlicesSupported = 2;
-    defaultHwInfo.get()->gtSystemInfo.IsDynamicallyPopulated = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceCount = 1; // Only one slice enabled
+    {
+        auto hwInfo = *defaultHwInfo;
+        hwInfo.gtSystemInfo.MaxSlicesSupported = 2;
+        hwInfo.gtSystemInfo.SliceCount = 1; // Only one slice enabled
+        hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
 
-    for (auto &sliceInfo : defaultHwInfo->gtSystemInfo.SliceInfo) {
-        sliceInfo.Enabled = false;
+        for (auto &sliceInfo : hwInfo.gtSystemInfo.SliceInfo) {
+            sliceInfo.Enabled = false;
+        }
+
+        hwInfo.gtSystemInfo.SliceInfo[3].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[3].DualSubSliceEnabledCount = 1;
+        hwInfo.gtSystemInfo.SliceInfo[3].DSSInfo[0].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[0].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[0].EuEnabledCount = 4;
+        hwInfo.gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[1].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[1].EuEnabledCount = 4;
+
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
     }
-
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DualSubSliceEnabledCount = 1;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DSSInfo[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[0].EuEnabledCount = 4;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[1].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[3].DSSInfo[0].SubSlice[1].EuEnabledCount = 4;
-
-    const HardwareInfo *hwInfo = defaultHwInfo.get();
-    std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo->platform,
-                                                         &hwInfo->gtSystemInfo,
-                                                         hwInfo->capabilityTable.gpuAddressSpace));
 
     EXPECT_TRUE(wddm->init());
     const auto &topologyMap = wddm->getTopologyMap();
     EXPECT_EQ(topologyMap.size(), 1u);
+    {
+        auto hwInfo = *defaultHwInfo;
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
+    }
 }
 
 TEST_F(WddmTests, GivenProperTopologyDataWhenInitializingWddmThenExpectTopologyMapCreateAndReturnTrue) {
-    VariableBackup<HardwareInfo> backupHwInfo(defaultHwInfo.get());
-    defaultHwInfo.get()->gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
-    defaultHwInfo.get()->gtSystemInfo.IsDynamicallyPopulated = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceCount = 1; // Only one slice enabled
+    {
+        auto hwInfo = *defaultHwInfo;
+        hwInfo.gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
+        hwInfo.gtSystemInfo.SliceCount = 1; // Only one slice enabled
+        hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
 
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 1;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].EuEnabledCount = 4;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].EuEnabledCount = 4;
+        hwInfo.gtSystemInfo.SliceInfo[0].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 1;
+        hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].EuEnabledCount = 4;
+        hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].Enabled = true;
+        hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].EuEnabledCount = 4;
 
-    const HardwareInfo *hwInfo = defaultHwInfo.get();
-    std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo->platform,
-                                                         &hwInfo->gtSystemInfo,
-                                                         hwInfo->capabilityTable.gpuAddressSpace));
-
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
+    }
     EXPECT_TRUE(wddm->init());
     const auto &topologyMap = wddm->getTopologyMap();
     EXPECT_EQ(topologyMap.size(), 1u);
+    {
+        auto hwInfo = *defaultHwInfo;
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
+    }
 }
 
-TEST_F(WddmTests, GivenNoSubsliceEnabledAndDebugFlagsEnabledWhenInitializingWddmThenExpectTopologyMapNotCreated) {
-    VariableBackup<HardwareInfo> backupHwInfo(defaultHwInfo.get());
-    defaultHwInfo.get()->gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
-    defaultHwInfo.get()->gtSystemInfo.SliceCount = 1; // Only one slice enabled
-    defaultHwInfo.get()->gtSystemInfo.IsDynamicallyPopulated = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 1;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].Enabled = false;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].Enabled = false;
+TEST_F(WddmTests, GivenNoSubsliceEnabledWhenInitializingWddmThenExpectIntializationFailureAndTopologyMapNotCreated) {
+    {
+        auto hwInfo = *defaultHwInfo;
+        hwInfo.gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
+        hwInfo.gtSystemInfo.SliceCount = 1; // Only one slice enabled
+        hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
 
-    const HardwareInfo *hwInfo = defaultHwInfo.get();
-    std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo->platform,
-                                                         &hwInfo->gtSystemInfo,
-                                                         hwInfo->capabilityTable.gpuAddressSpace));
-
-    EXPECT_TRUE(wddm->init());
+        for (auto slice = 0; slice < GT_MAX_SLICE; slice++) {
+            hwInfo.gtSystemInfo.SliceInfo[slice].DualSubSliceEnabledCount = 1;
+            hwInfo.gtSystemInfo.SliceInfo[slice].DSSInfo[0].Enabled = true;
+            hwInfo.gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[0].Enabled = false;
+            hwInfo.gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[1].Enabled = false;
+            hwInfo.gtSystemInfo.SliceInfo[slice].SubSliceInfo[0].Enabled = false;
+        }
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
+    }
+    EXPECT_FALSE(wddm->init());
     const auto &topologyMap = wddm->getTopologyMap();
     EXPECT_TRUE(topologyMap.empty());
+    {
+        auto hwInfo = *defaultHwInfo;
+        std::unique_ptr<OsLibrary> mockGdiDll(setAdapterInfo(&hwInfo.platform,
+                                                             &hwInfo.gtSystemInfo,
+                                                             hwInfo.capabilityTable.gpuAddressSpace));
+    }
 }
 
 TEST_F(WddmTests, GivenProperTopologyDataWhenQueryingTopologyThenExpectTrue) {
@@ -379,13 +410,15 @@ TEST_F(WddmTests, GivenNoSubsliceEnabledWhenQueryingTopologyThenExpectFalse) {
     defaultHwInfo.get()->gtSystemInfo.SliceCount = 1;
     defaultHwInfo.get()->gtSystemInfo.IsDynamicallyPopulated = true;
 
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 1;
-    // Lets say, DSS 0 is disabled and dss 1 is enabled, thus overall DSS enable count is 1
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = false;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[1].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].Enabled = false;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].Enabled = false;
-
+    for (auto slice = 0; slice < GT_MAX_SLICE; slice++) {
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DualSubSliceEnabledCount = 1;
+        // Lets say, DSS 0 is disabled and dss 1 is enabled, thus overall DSS enable count is 1
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].Enabled = false;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[1].Enabled = true;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[0].Enabled = false;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[1].Enabled = false;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].SubSliceInfo[0].Enabled = false;
+    }
     wddm->rootDeviceEnvironment.setHwInfoAndInitHelpers(defaultHwInfo.get());
     EXPECT_FALSE(wddm->buildTopologyMapping());
 }
@@ -397,11 +430,14 @@ TEST_F(WddmTests, GivenNoEuThreadsEnabledWhenQueryingTopologyThenExpectFalse) {
     defaultHwInfo.get()->gtSystemInfo.SliceCount = 1;
     defaultHwInfo.get()->gtSystemInfo.IsDynamicallyPopulated = true;
 
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 1;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].Enabled = true;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[0].EuEnabledCount = 0;
-    defaultHwInfo.get()->gtSystemInfo.SliceInfo[0].DSSInfo[0].SubSlice[1].Enabled = false;
+    for (auto slice = 0; slice < GT_MAX_SLICE; slice++) {
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DualSubSliceEnabledCount = 1;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].Enabled = true;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[0].Enabled = true;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[0].EuEnabledCount = 0;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].DSSInfo[0].SubSlice[1].Enabled = false;
+        defaultHwInfo.get()->gtSystemInfo.SliceInfo[slice].SubSliceInfo[0].Enabled = false;
+    }
     wddm->rootDeviceEnvironment.setHwInfoAndInitHelpers(defaultHwInfo.get());
     EXPECT_FALSE(wddm->buildTopologyMapping());
 }
@@ -414,6 +450,83 @@ TEST_F(WddmTests, GivenNoSliceEnabledWhenQueryingTopologyThenExpectFalse) {
     }
     wddm->rootDeviceEnvironment.setHwInfoAndInitHelpers(defaultHwInfo.get());
     EXPECT_FALSE(wddm->buildTopologyMapping());
+}
+
+TEST_F(WddmTests, GivenOnlySubsliceEnabledWhenQueryingTopologyThenExpectTrue) {
+    HardwareInfo hwInfo = *defaultHwInfo.get();
+    hwInfo.gtSystemInfo.MultiTileArchInfo.TileCount = 1;
+    hwInfo.gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
+    hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
+    hwInfo.gtSystemInfo.SliceCount = 1; // Only one slice enabled
+
+    for (auto &sliceInfo : hwInfo.gtSystemInfo.SliceInfo) {
+        sliceInfo.Enabled = false;
+    }
+
+    hwInfo.gtSystemInfo.SliceInfo[0].Enabled = true;
+    hwInfo.gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 0;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceEnabledCount = 2;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[0].Enabled = false; // SS[0] disabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[1].Enabled = true;  // SS[1] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[1].EuEnabledCount = 4;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[2].Enabled = false; // SS[2] disabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[3].Enabled = true;  // SS[3] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[3].EuEnabledCount = 4;
+
+    wddm->rootDeviceEnvironment.setHwInfoAndInitHelpers(&hwInfo);
+    EXPECT_TRUE(wddm->buildTopologyMapping());
+    const auto &topologyMap = wddm->getTopologyMap();
+    EXPECT_EQ(topologyMap.size(), 1u);
+    EXPECT_EQ(topologyMap.at(0).sliceIndices.size(), 1u);
+    EXPECT_EQ(topologyMap.at(0).sliceIndices[0], 0);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices.size(), 2u);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices[0], 1);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices[1], 3);
+}
+
+TEST_F(WddmTests, GivenBothSublicesAndDualSubslicesEnabledWhenQueryingTopologyThenOnlyDSSInfoCounted) {
+    HardwareInfo hwInfo = *defaultHwInfo.get();
+    hwInfo.gtSystemInfo.MultiTileArchInfo.TileCount = 1;
+    hwInfo.gtSystemInfo.MaxSlicesSupported = GT_MAX_SLICE;
+    hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
+    hwInfo.gtSystemInfo.SliceCount = 1; // Only one slice enabled
+
+    for (auto &sliceInfo : hwInfo.gtSystemInfo.SliceInfo) {
+        sliceInfo.Enabled = false;
+    }
+
+    hwInfo.gtSystemInfo.SliceInfo[0].Enabled = true;
+    hwInfo.gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 2;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[0].Enabled = false; // DSS[0] disabled
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[1].Enabled = true;  // DSS[1] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[1].SubSlice[0].Enabled = false;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[1].SubSlice[1].Enabled = true;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[1].SubSlice[1].EuEnabledCount = 4;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[2].Enabled = false; // DSS[2] disabled
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[3].Enabled = true;  // DSS[3] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[3].SubSlice[0].Enabled = true;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[3].SubSlice[1].Enabled = true;
+    hwInfo.gtSystemInfo.SliceInfo[0].DSSInfo[3].SubSlice[1].EuEnabledCount = 4;
+
+    hwInfo.gtSystemInfo.SliceInfo[0].DualSubSliceEnabledCount = 2;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceEnabledCount = 2;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[0].Enabled = false; // SS[0] disabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[1].Enabled = true;  // SS[1] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[1].EuEnabledCount = 4;
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[2].Enabled = true; // SS[2] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[3].Enabled = true; // SS[3] enabled
+    hwInfo.gtSystemInfo.SliceInfo[0].SubSliceInfo[3].EuEnabledCount = 4;
+
+    wddm->rootDeviceEnvironment.setHwInfoAndInitHelpers(&hwInfo);
+    EXPECT_TRUE(wddm->buildTopologyMapping());
+    const auto &topologyMap = wddm->getTopologyMap();
+    EXPECT_EQ(topologyMap.size(), 1u);
+    EXPECT_EQ(topologyMap.at(0).sliceIndices.size(), 1u);
+    EXPECT_EQ(topologyMap.at(0).sliceIndices[0], 0);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices.size(), 3u);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices[0], 3);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices[1], 6);
+    EXPECT_EQ(topologyMap.at(0).subsliceIndices[2], 7);
 }
 
 TEST_F(WddmTests, GivenPlatformSupportsEvictIfNecessaryWhenAdjustingEvictNeededTrueThenExpectTrue) {
@@ -458,9 +571,15 @@ TEST_F(WddmTests, GivenPlatformNotSupportEvictIfNecessaryWhenAdjustingEvictNeede
     EXPECT_TRUE(value);
 }
 
+TEST_F(WddmTests, whenCallingEvictWithNoAllocationsThenDontCallGdi) {
+    uint64_t sizeToTrim = 0;
+    wddm->callBaseEvict = true;
+    EXPECT_TRUE(wddm->evict(nullptr, 0, sizeToTrim, false));
+    bool value = wddm->adjustEvictNeededParameter(false);
+    EXPECT_TRUE(value);
+}
+
 TEST_F(WddmTests, GivenWddmWhenMapGpuVaCalledThenGmmClientCallsMapGpuVa) {
-    NEO::AllocationData allocData = {};
-    allocData.type = NEO::AllocationType::buffer;
     wddm->callBaseDestroyAllocations = false;
     wddm->pagingQueue = PAGINGQUEUE_HANDLE;
     auto memoryManager = std::make_unique<MockWddmMemoryManager>(*executionEnvironment);
@@ -476,7 +595,7 @@ TEST_F(WddmTests, givenCheckDeviceStateSetToTrueAndForceExecutionStateWhenSubmit
 
     wddm->checkDeviceState = true;
     uint64_t pagingFenceValue = 0u;
-    VariableBackup<uint64_t *> pagingFenceBackup(&wddm->pagingFenceAddress, &pagingFenceValue);
+    VariableBackup<volatile uint64_t *> pagingFenceBackup(&wddm->pagingFenceAddress, &pagingFenceValue);
     auto executionState = D3DKMT_DEVICEEXECUTION_ERROR_OUTOFMEMORY;
     setMockDeviceExecutionStateFcn(executionState);
     ::testing::internal::CaptureStderr();
@@ -791,7 +910,7 @@ struct WddmSkipResourceCleanupFixtureWithMockGdiDll : public GdiDllFixture, publ
         auto &gfxCoreHelper = rootDeviceEnvironment->getHelper<GfxCoreHelper>();
         auto engine = gfxCoreHelper.getGpgpuEngineInstances(*rootDeviceEnvironment)[0];
         osContext = std::make_unique<OsContextWin>(*osInterface->getDriverModel()->as<Wddm>(), 0, 0u, EngineDescriptorHelper::getDefaultDescriptor(engine, preemptionMode));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
     }
 
     void tearDown() {
@@ -851,7 +970,7 @@ TEST_F(WddmSkipResourceCleanupFixtureTests, givenWaitForSynchronizationObjectFro
 }
 
 TEST(WddmAllocationTest, whenAllocationIsShareableThenSharedHandleToModifyIsSharedHandleOfAllocation) {
-    WddmAllocation allocation(0, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, true, 1u);
     auto sharedHandleToModify = allocation.getSharedHandleToModify();
     EXPECT_NE(nullptr, sharedHandleToModify);
     *sharedHandleToModify = 1234u;
@@ -862,7 +981,7 @@ TEST(WddmAllocationTest, whenAllocationIsShareableThenSharedHandleToModifyIsShar
 }
 
 TEST(WddmAllocationTest, whenAllocationIsNotShareableThenItDoesntReturnSharedHandleToModifyAndCantPeekInternalHandle) {
-    WddmAllocation allocation(0, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, false, 1u);
+    WddmAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, MemoryConstants::pageSize, nullptr, MemoryPool::memoryNull, false, 1u);
     auto sharedHandleToModify = allocation.getSharedHandleToModify();
     EXPECT_EQ(nullptr, sharedHandleToModify);
     uint64_t handle = 0;
@@ -882,4 +1001,52 @@ TEST_F(WddmTests, whenInitializeFailureThenInitOsInterfaceWddmFails) {
     EXPECT_FALSE(rootDeviceEnvironment->initOsInterface(std::move(hwDeviceId), 0u));
 }
 
+TEST_F(WddmTests, givenHostMemoryPassedToCreateAllocationThenAllocationCreatedWithReadOnlyFlagPassed) {
+    wddm->init();
+    setCapturingCreateAllocationFlagsFcn();
+
+    static const int constMem[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    D3DKMT_HANDLE handle, resHandle;
+    GmmRequirements gmmRequirements{};
+    Gmm gmm(executionEnvironment->rootDeviceEnvironments[0]->getGmmHelper(), constMem, 10, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements);
+
+    EXPECT_EQ(STATUS_SUCCESS, wddm->createAllocation(constMem, &gmm, handle, resHandle, nullptr));
+    D3DKMT_CREATEALLOCATIONFLAGS createAllocationFlags{};
+    uint32_t createAllocation2NumCalled = 0;
+    getCapturedCreateAllocationFlagsFcn(createAllocationFlags, createAllocation2NumCalled);
+    EXPECT_EQ(createAllocationFlags.ReadOnly, wddm->getReadOnlyFlagValue(constMem));
+    EXPECT_EQ(1u, createAllocation2NumCalled);
+}
+
+TEST_F(WddmTests, givenHostMemoryPassedToCreateAllocationsAndMapGpuVaThenAllocationCreatedWithReadOnlyFlagPassed) {
+    wddm->init();
+    wddm->callBaseMapGpuVa = false;
+    setCapturingCreateAllocationFlagsFcn();
+
+    static const int constMem[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    GmmRequirements gmmRequirements{};
+    Gmm gmm(executionEnvironment->rootDeviceEnvironments[0]->getGmmHelper(), constMem, 10, 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements);
+
+    OsHandleStorage handleStorage;
+    OsHandleWin osHandle;
+    auto maxOsContextCount = 1u;
+    ResidencyData residency(maxOsContextCount);
+
+    handleStorage.fragmentCount = 1;
+    handleStorage.fragmentStorageData[0].cpuPtr = constMem;
+    handleStorage.fragmentStorageData[0].fragmentSize = 10;
+    handleStorage.fragmentStorageData[0].freeTheFragment = false;
+    handleStorage.fragmentStorageData[0].osHandleStorage = &osHandle;
+    handleStorage.fragmentStorageData[0].residency = &residency;
+    osHandle.gmm = &gmm;
+
+    EXPECT_EQ(STATUS_SUCCESS, wddm->createAllocationsAndMapGpuVa(handleStorage));
+    D3DKMT_CREATEALLOCATIONFLAGS createAllocationFlags{};
+    uint32_t createAllocation2NumCalled = 0;
+    getCapturedCreateAllocationFlagsFcn(createAllocationFlags, createAllocation2NumCalled);
+    EXPECT_EQ(createAllocationFlags.ReadOnly, wddm->getReadOnlyFlagValue(constMem));
+    EXPECT_EQ(1u, createAllocation2NumCalled);
+}
 } // namespace NEO

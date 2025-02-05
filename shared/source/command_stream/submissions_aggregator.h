@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,15 @@ class Event;
 class FlushStampTracker;
 class GraphicsAllocation;
 
+struct PagingFenceSemaphoreInfo {
+    bool requiresBlockingResidencyHandling = true;
+    uint64_t pagingFenceValue = 0u;
+
+    bool requiresProgrammingSemaphore() {
+        return !requiresBlockingResidencyHandling && pagingFenceValue > 0u;
+    }
+};
+
 struct BatchBuffer {
     BatchBuffer(GraphicsAllocation *commandBufferAllocation,
                 size_t startOffset,
@@ -34,7 +43,8 @@ struct BatchBuffer {
                 uint32_t numCsrClients,
                 bool hasStallingCmds,
                 bool hasRelaxedOrderingDependencies,
-                bool dispatchMonitorFence);
+                bool dispatchMonitorFence,
+                bool taskCountUpdateOnly);
     BatchBuffer() {}
     GraphicsAllocation *commandBufferAllocation = nullptr;
     ResidencyContainer *allocationsForResidency = nullptr;
@@ -53,11 +63,13 @@ struct BatchBuffer {
     void *endCmdPtr = nullptr;
     uint32_t numCsrClients = 0;
 
+    PagingFenceSemaphoreInfo pagingFenceSemInfo{};
+
     bool hasStallingCmds = false;
     bool hasRelaxedOrderingDependencies = false;
-    bool ringBufferRestartRequest = false;
     bool disableFlatRingBuffer = false;
     bool dispatchMonitorFence = false;
+    bool taskCountUpdateOnly = false;
 };
 
 struct CommandBuffer : public IDNode<CommandBuffer> {

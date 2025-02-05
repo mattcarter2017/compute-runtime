@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,7 +20,6 @@ void StateComputeModeProperties::setPropertiesAll(bool requiresCoherency, uint32
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
     clearIsDirty();
 
-    setCoherencyProperty(requiresCoherency);
     setGrfNumberProperty(numGrfRequired);
     setThreadArbitrationProperty(threadArbitrationPolicy);
 
@@ -39,10 +38,16 @@ void StateComputeModeProperties::setPropertiesAll(bool requiresCoherency, uint32
     if (pixelAsyncComputeThreadLimit != -1 && this->scmPropertiesSupport.pixelAsyncComputeThreadLimit) {
         this->pixelAsyncComputeThreadLimit.set(pixelAsyncComputeThreadLimit);
     }
-    setDevicePreemptionProperty(devicePreemptionMode);
 
-    setPropertiesExtraPerContext();
-    setPropertiesExtraPerKernel();
+    int32_t memoryAllocationForScratchAndMidthreadPreemptionBuffers = -1;
+    if (debugManager.flags.ForceScratchAndMTPBufferSizeMode.get() != -1) {
+        memoryAllocationForScratchAndMidthreadPreemptionBuffers = debugManager.flags.ForceScratchAndMTPBufferSizeMode.get();
+    }
+    if (this->scmPropertiesSupport.allocationForScratchAndMidthreadPreemption) {
+        this->memoryAllocationForScratchAndMidthreadPreemptionBuffers.set(memoryAllocationForScratchAndMidthreadPreemptionBuffers);
+    }
+
+    setPropertiesPerContext(requiresCoherency, devicePreemptionMode, false);
 }
 
 void StateComputeModeProperties::copyPropertiesAll(const StateComputeModeProperties &properties) {
@@ -54,6 +59,8 @@ void StateComputeModeProperties::copyPropertiesAll(const StateComputeModePropert
     pixelAsyncComputeThreadLimit.set(properties.pixelAsyncComputeThreadLimit.value);
     threadArbitrationPolicy.set(properties.threadArbitrationPolicy.value);
     devicePreemptionMode.set(properties.devicePreemptionMode.value);
+    memoryAllocationForScratchAndMidthreadPreemptionBuffers.set(properties.memoryAllocationForScratchAndMidthreadPreemptionBuffers.value);
+    enableVariableRegisterSizeAllocation.set(properties.enableVariableRegisterSizeAllocation.value);
 
     copyPropertiesExtra(properties);
 }
@@ -62,8 +69,6 @@ void StateComputeModeProperties::copyPropertiesGrfNumberThreadArbitration(const 
     largeGrfMode.isDirty = false;
     threadArbitrationPolicy.isDirty = false;
 
-    clearIsDirtyExtraPerKernel();
-
     largeGrfMode.set(properties.largeGrfMode.value);
     threadArbitrationPolicy.set(properties.threadArbitrationPolicy.value);
 
@@ -71,20 +76,33 @@ void StateComputeModeProperties::copyPropertiesGrfNumberThreadArbitration(const 
 }
 
 bool StateComputeModeProperties::isDirty() const {
-    return isCoherencyRequired.isDirty || largeGrfMode.isDirty || zPassAsyncComputeThreadLimit.isDirty ||
-           pixelAsyncComputeThreadLimit.isDirty || threadArbitrationPolicy.isDirty || devicePreemptionMode.isDirty || isDirtyExtra();
+    return isCoherencyRequired.isDirty ||
+           largeGrfMode.isDirty ||
+           zPassAsyncComputeThreadLimit.isDirty ||
+           pixelAsyncComputeThreadLimit.isDirty ||
+           threadArbitrationPolicy.isDirty ||
+           devicePreemptionMode.isDirty ||
+           memoryAllocationForScratchAndMidthreadPreemptionBuffers.isDirty ||
+           enableVariableRegisterSizeAllocation.isDirty ||
+           isDirtyExtra();
 }
 
 void StateComputeModeProperties::clearIsDirty() {
-    isCoherencyRequired.isDirty = false;
     largeGrfMode.isDirty = false;
     zPassAsyncComputeThreadLimit.isDirty = false;
     pixelAsyncComputeThreadLimit.isDirty = false;
     threadArbitrationPolicy.isDirty = false;
+    memoryAllocationForScratchAndMidthreadPreemptionBuffers.isDirty = false;
+
+    clearIsDirtyPerContext();
+}
+
+void StateComputeModeProperties::clearIsDirtyPerContext() {
+    isCoherencyRequired.isDirty = false;
     devicePreemptionMode.isDirty = false;
+    enableVariableRegisterSizeAllocation.isDirty = false;
 
     clearIsDirtyExtraPerContext();
-    clearIsDirtyExtraPerKernel();
 }
 
 void StateComputeModeProperties::setCoherencyProperty(bool requiresCoherency) {
@@ -142,24 +160,32 @@ void StateComputeModeProperties::resetState() {
     this->pixelAsyncComputeThreadLimit.value = StreamProperty::initValue;
     this->threadArbitrationPolicy.value = StreamProperty::initValue;
     this->devicePreemptionMode.value = StreamProperty::initValue;
+    this->memoryAllocationForScratchAndMidthreadPreemptionBuffers.value = StreamProperty::initValue;
+    this->enableVariableRegisterSizeAllocation.value = StreamProperty::initValue;
+
     resetStateExtra();
 }
 
-void StateComputeModeProperties::setPropertiesCoherencyDevicePreemption(bool requiresCoherency, PreemptionMode devicePreemptionMode, bool clearDirtyState) {
+void StateComputeModeProperties::setPropertiesPerContext(bool requiresCoherency, PreemptionMode devicePreemptionMode, bool clearDirtyState) {
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
 
     if (!clearDirtyState) {
-        this->isCoherencyRequired.isDirty = false;
-        this->devicePreemptionMode.isDirty = false;
-        clearIsDirtyExtraPerContext();
+        clearIsDirtyPerContext();
     }
     setCoherencyProperty(requiresCoherency);
     setDevicePreemptionProperty(devicePreemptionMode);
+
+    if (this->scmPropertiesSupport.enableVariableRegisterSizeAllocation) {
+        this->enableVariableRegisterSizeAllocation.set(this->scmPropertiesSupport.enableVariableRegisterSizeAllocation);
+    }
+
+    if (this->scmPropertiesSupport.pipelinedEuThreadArbitration) {
+        setPipelinedEuThreadArbitration();
+    }
+
     setPropertiesExtraPerContext();
     if (clearDirtyState) {
-        this->isCoherencyRequired.isDirty = false;
-        this->devicePreemptionMode.isDirty = false;
-        clearIsDirtyExtraPerContext();
+        clearIsDirtyPerContext();
     }
 }
 
@@ -168,11 +194,9 @@ void StateComputeModeProperties::setPropertiesGrfNumberThreadArbitration(uint32_
 
     this->threadArbitrationPolicy.isDirty = false;
     this->largeGrfMode.isDirty = false;
-    clearIsDirtyExtraPerKernel();
 
     setGrfNumberProperty(numGrfRequired);
     setThreadArbitrationProperty(threadArbitrationPolicy);
-    setPropertiesExtraPerKernel();
 }
 
 void FrontEndProperties::initSupport(const RootDeviceEnvironment &rootDeviceEnvironment) {
@@ -191,7 +215,7 @@ void FrontEndProperties::resetState() {
     this->singleSliceDispatchCcsMode.value = StreamProperty::initValue;
 }
 
-void FrontEndProperties::setPropertiesAll(bool isCooperativeKernel, bool disableEuFusion, bool disableOverdispatch, int32_t engineInstancedDevice) {
+void FrontEndProperties::setPropertiesAll(bool isCooperativeKernel, bool disableEuFusion, bool disableOverdispatch) {
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
     clearIsDirty();
 
@@ -206,22 +230,15 @@ void FrontEndProperties::setPropertiesAll(bool isCooperativeKernel, bool disable
     if (this->frontEndPropertiesSupport.disableOverdispatch) {
         this->disableOverdispatch.set(disableOverdispatch);
     }
-
-    if (this->frontEndPropertiesSupport.singleSliceDispatchCcsMode) {
-        this->singleSliceDispatchCcsMode.set(engineInstancedDevice);
-    }
 }
 
-void FrontEndProperties::setPropertySingleSliceDispatchCcsMode(int32_t engineInstancedDevice) {
+void FrontEndProperties::setPropertySingleSliceDispatchCcsMode() {
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
 
     this->singleSliceDispatchCcsMode.isDirty = false;
-    if (this->frontEndPropertiesSupport.singleSliceDispatchCcsMode) {
-        this->singleSliceDispatchCcsMode.set(engineInstancedDevice);
-    }
 }
 
-void FrontEndProperties::setPropertiesDisableOverdispatchEngineInstanced(bool disableOverdispatch, int32_t engineInstancedDevice, bool clearDirtyState) {
+void FrontEndProperties::setPropertiesDisableOverdispatch(bool disableOverdispatch, bool clearDirtyState) {
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
 
     if (!clearDirtyState) {
@@ -231,9 +248,6 @@ void FrontEndProperties::setPropertiesDisableOverdispatchEngineInstanced(bool di
 
     if (this->frontEndPropertiesSupport.disableOverdispatch) {
         this->disableOverdispatch.set(disableOverdispatch);
-    }
-    if (this->frontEndPropertiesSupport.singleSliceDispatchCcsMode) {
-        this->singleSliceDispatchCcsMode.set(engineInstancedDevice);
     }
 
     if (clearDirtyState) {
@@ -378,7 +392,6 @@ void StateBaseAddressProperties::resetState() {
     clearIsDirty();
 
     this->statelessMocs.value = StreamProperty::initValue;
-    this->globalAtomics.value = StreamProperty::initValue;
 
     this->bindingTablePoolBaseAddress.value = StreamProperty64::initValue;
     this->bindingTablePoolSize.value = StreamPropertySizeT::initValue;
@@ -432,31 +445,13 @@ void StateBaseAddressProperties::setPropertyStatelessMocs(int32_t statelessMocs)
     this->statelessMocs.set(statelessMocs);
 }
 
-void StateBaseAddressProperties::setPropertyGlobalAtomics(bool globalAtomics, bool clearDirtyState) {
-    DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
-
-    if (!clearDirtyState) {
-        this->globalAtomics.isDirty = false;
-    }
-    if (this->stateBaseAddressPropertiesSupport.globalAtomics) {
-        this->globalAtomics.set(globalAtomics);
-    }
-    if (clearDirtyState) {
-        this->globalAtomics.isDirty = false;
-    }
-}
-
-void StateBaseAddressProperties::setPropertiesAll(bool globalAtomics, int32_t statelessMocs,
+void StateBaseAddressProperties::setPropertiesAll(int32_t statelessMocs,
                                                   int64_t bindingTablePoolBaseAddress, size_t bindingTablePoolSize,
                                                   int64_t surfaceStateBaseAddress, size_t surfaceStateSize,
                                                   int64_t dynamicStateBaseAddress, size_t dynamicStateSize,
                                                   int64_t indirectObjectBaseAddress, size_t indirectObjectSize) {
     DEBUG_BREAK_IF(!this->propertiesSupportLoaded);
     clearIsDirty();
-
-    if (this->stateBaseAddressPropertiesSupport.globalAtomics) {
-        this->globalAtomics.set(globalAtomics);
-    }
 
     this->statelessMocs.set(statelessMocs);
 
@@ -476,7 +471,6 @@ void StateBaseAddressProperties::setPropertiesAll(bool globalAtomics, int32_t st
 void StateBaseAddressProperties::copyPropertiesAll(const StateBaseAddressProperties &properties) {
     clearIsDirty();
 
-    this->globalAtomics.set(properties.globalAtomics.value);
     this->statelessMocs.set(properties.statelessMocs.value);
 
     this->bindingTablePoolBaseAddress.set(properties.bindingTablePoolBaseAddress.value);
@@ -530,7 +524,7 @@ void StateBaseAddressProperties::copyPropertiesDynamicState(const StateBaseAddre
 }
 
 bool StateBaseAddressProperties::isDirty() const {
-    return globalAtomics.isDirty || statelessMocs.isDirty ||
+    return statelessMocs.isDirty ||
            bindingTablePoolBaseAddress.isDirty ||
            surfaceStateBaseAddress.isDirty ||
            dynamicStateBaseAddress.isDirty ||
@@ -538,10 +532,17 @@ bool StateBaseAddressProperties::isDirty() const {
 }
 
 void StateBaseAddressProperties::clearIsDirty() {
-    globalAtomics.isDirty = false;
     statelessMocs.isDirty = false;
     bindingTablePoolBaseAddress.isDirty = false;
     surfaceStateBaseAddress.isDirty = false;
     dynamicStateBaseAddress.isDirty = false;
     indirectObjectBaseAddress.isDirty = false;
+}
+
+void StateComputeModeProperties::setPipelinedEuThreadArbitration() {
+    this->pipelinedEuThreadArbitration = true;
+}
+
+bool StateComputeModeProperties::isPipelinedEuThreadArbitrationEnabled() const {
+    return pipelinedEuThreadArbitration;
 }

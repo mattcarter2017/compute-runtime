@@ -1,11 +1,14 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "shared/source/command_container/cmdcontainer.h"
+#include "shared/source/command_container/command_encoder.h"
+#include "shared/source/command_stream/command_stream_receiver.h"
+#include "shared/source/command_stream/scratch_space_controller.h"
 #include "shared/source/command_stream/thread_arbitration_policy.h"
 #include "shared/source/helpers/register_offsets.h"
 #include "shared/source/indirect_heap/indirect_heap.h"
@@ -29,7 +32,8 @@ void validateTimestampRegisters(GenCmdList &cmdList,
                                 uint64_t firstStoreRegMemAddress,
                                 uint32_t secondLoadRegisterRegSrcAddress,
                                 uint64_t secondStoreRegMemAddress,
-                                bool workloadPartition) {
+                                bool workloadPartition,
+                                bool useMask) {
     using MI_LOAD_REGISTER_REG = typename FamilyType::MI_LOAD_REGISTER_REG;
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
     using MI_MATH = typename FamilyType::MI_MATH;
@@ -37,35 +41,46 @@ void validateTimestampRegisters(GenCmdList &cmdList,
 
     constexpr uint32_t mask = 0xfffffffe;
 
-    auto itor = find<MI_LOAD_REGISTER_REG *>(startIt, cmdList.end());
+    auto itor = useMask ? find<MI_LOAD_REGISTER_REG *>(startIt, cmdList.end()) : find<MI_STORE_REGISTER_MEM *>(startIt, cmdList.end());
+    if (useMask) {
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdLoadReg = genCmdCast<MI_LOAD_REGISTER_REG *>(*itor);
+            EXPECT_EQ(firstLoadRegisterRegSrcAddress, cmdLoadReg->getSourceRegisterAddress());
+            EXPECT_EQ(RegisterOffsets::csGprR13, cmdLoadReg->getDestinationRegisterAddress());
+        }
 
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdLoadReg = genCmdCast<MI_LOAD_REGISTER_REG *>(*itor);
-        EXPECT_EQ(firstLoadRegisterRegSrcAddress, cmdLoadReg->getSourceRegisterAddress());
-        EXPECT_EQ(RegisterOffsets::csGprR13, cmdLoadReg->getDestinationRegisterAddress());
-    }
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdLoadImm = genCmdCast<MI_LOAD_REGISTER_IMM *>(*itor);
+            EXPECT_EQ(RegisterOffsets::csGprR14, cmdLoadImm->getRegisterOffset());
+            EXPECT_EQ(mask, cmdLoadImm->getDataDword());
+        }
 
-    itor++;
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdLoadImm = genCmdCast<MI_LOAD_REGISTER_IMM *>(*itor);
-        EXPECT_EQ(RegisterOffsets::csGprR14, cmdLoadImm->getRegisterOffset());
-        EXPECT_EQ(mask, cmdLoadImm->getDataDword());
-    }
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdMath = genCmdCast<MI_MATH *>(*itor);
+            EXPECT_EQ(3u, cmdMath->DW0.BitField.DwordLength);
+        }
 
-    itor++;
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdMath = genCmdCast<MI_MATH *>(*itor);
-        EXPECT_EQ(3u, cmdMath->DW0.BitField.DwordLength);
-    }
-
-    itor++;
-    {
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
+            EXPECT_EQ(RegisterOffsets::csGprR12, cmdMem->getRegisterAddress());
+            EXPECT_EQ(firstStoreRegMemAddress, cmdMem->getMemoryAddress());
+            if (workloadPartition) {
+                EXPECT_TRUE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
+            } else {
+                EXPECT_FALSE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
+            }
+        }
+    } else {
         ASSERT_NE(cmdList.end(), itor);
         auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
-        EXPECT_EQ(RegisterOffsets::csGprR15, cmdMem->getRegisterAddress());
+        EXPECT_EQ(RegisterOffsets::globalTimestampUn, cmdMem->getRegisterAddress());
         EXPECT_EQ(firstStoreRegMemAddress, cmdMem->getMemoryAddress());
         if (workloadPartition) {
             EXPECT_TRUE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
@@ -75,33 +90,45 @@ void validateTimestampRegisters(GenCmdList &cmdList,
     }
 
     itor++;
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdLoadReg = genCmdCast<MI_LOAD_REGISTER_REG *>(*itor);
-        EXPECT_EQ(secondLoadRegisterRegSrcAddress, cmdLoadReg->getSourceRegisterAddress());
-        EXPECT_EQ(RegisterOffsets::csGprR13, cmdLoadReg->getDestinationRegisterAddress());
-    }
+    if (useMask) {
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdLoadReg = genCmdCast<MI_LOAD_REGISTER_REG *>(*itor);
+            EXPECT_EQ(secondLoadRegisterRegSrcAddress, cmdLoadReg->getSourceRegisterAddress());
+            EXPECT_EQ(RegisterOffsets::csGprR13, cmdLoadReg->getDestinationRegisterAddress());
+        }
 
-    itor++;
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdLoadImm = genCmdCast<MI_LOAD_REGISTER_IMM *>(*itor);
-        EXPECT_EQ(RegisterOffsets::csGprR14, cmdLoadImm->getRegisterOffset());
-        EXPECT_EQ(mask, cmdLoadImm->getDataDword());
-    }
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdLoadImm = genCmdCast<MI_LOAD_REGISTER_IMM *>(*itor);
+            EXPECT_EQ(RegisterOffsets::csGprR14, cmdLoadImm->getRegisterOffset());
+            EXPECT_EQ(mask, cmdLoadImm->getDataDword());
+        }
 
-    itor++;
-    {
-        ASSERT_NE(cmdList.end(), itor);
-        auto cmdMath = genCmdCast<MI_MATH *>(*itor);
-        EXPECT_EQ(3u, cmdMath->DW0.BitField.DwordLength);
-    }
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdMath = genCmdCast<MI_MATH *>(*itor);
+            EXPECT_EQ(3u, cmdMath->DW0.BitField.DwordLength);
+        }
 
-    itor++;
-    {
+        itor++;
+        {
+            ASSERT_NE(cmdList.end(), itor);
+            auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
+            EXPECT_EQ(RegisterOffsets::csGprR12, cmdMem->getRegisterAddress());
+            EXPECT_EQ(secondStoreRegMemAddress, cmdMem->getMemoryAddress());
+            if (workloadPartition) {
+                EXPECT_TRUE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
+            } else {
+                EXPECT_FALSE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
+            }
+        }
+    } else {
         ASSERT_NE(cmdList.end(), itor);
         auto cmdMem = genCmdCast<MI_STORE_REGISTER_MEM *>(*itor);
-        EXPECT_EQ(RegisterOffsets::csGprR15, cmdMem->getRegisterAddress());
+        EXPECT_EQ(RegisterOffsets::gpThreadTimeRegAddressOffsetHigh, cmdMem->getRegisterAddress());
         EXPECT_EQ(secondStoreRegMemAddress, cmdMem->getMemoryAddress());
         if (workloadPartition) {
             EXPECT_TRUE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
@@ -109,6 +136,7 @@ void validateTimestampRegisters(GenCmdList &cmdList,
             EXPECT_FALSE(UnitTestHelper<FamilyType>::getWorkloadPartitionForStoreRegisterMemCmd(*cmdMem));
         }
     }
+
     itor++;
     startIt = itor;
 }
@@ -122,8 +150,8 @@ void CmdListPipelineSelectStateFixture::testBody() {
 
     void *currentBuffer = nullptr;
 
-    auto &cmdlistRequiredState = commandList->getRequiredStreamState();
-    auto &cmdListFinalState = commandList->getFinalStreamState();
+    const auto &cmdlistRequiredState = commandList->getRequiredStreamState();
+    const auto &cmdListFinalState = commandList->getFinalStreamState();
     auto &csrState = commandQueue->csr->getStreamProperties();
 
     auto commandListHandle = commandList->toHandle();
@@ -169,7 +197,7 @@ void CmdListPipelineSelectStateFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -255,7 +283,7 @@ void CmdListPipelineSelectStateFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -380,7 +408,7 @@ void CmdListPipelineSelectStateFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -437,7 +465,7 @@ void CmdListPipelineSelectStateFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -465,8 +493,8 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateRegularImmediate() {
 
     void *currentBuffer = nullptr;
 
-    auto &regularCmdlistRequiredState = commandList->getRequiredStreamState();
-    auto &regularCmdListFinalState = commandList->getFinalStreamState();
+    const auto &regularCmdlistRequiredState = commandList->getRequiredStreamState();
+    const auto &regularCmdListFinalState = commandList->getFinalStreamState();
     auto &csrState = commandQueue->csr->getStreamProperties();
 
     auto commandListHandle = commandList->toHandle();
@@ -509,7 +537,7 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateRegularImmediate() {
     commandList->close();
 
     sizeBefore = cmdQueueStream.getUsed();
-    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     sizeAfter = cmdQueueStream.getUsed();
 
@@ -536,7 +564,7 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateRegularImmediate() {
     pipelineSelectList.clear();
 
     auto &immediateCmdListStream = *commandListImmediate->commandContainer.getCommandStream();
-    EXPECT_EQ(commandQueue->csr, commandListImmediate->csr);
+    EXPECT_EQ(commandQueue->csr, commandListImmediate->getCsr(false));
 
     auto &ultCsr = neoDevice->getUltCommandStreamReceiver<FamilyType>();
     auto &csrStream = ultCsr.commandStream;
@@ -595,7 +623,7 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateImmediateRegular() {
 
     auto &csrState = commandQueue->csr->getStreamProperties();
 
-    EXPECT_EQ(commandQueue->csr, commandListImmediate->csr);
+    EXPECT_EQ(commandQueue->csr, commandListImmediate->getCsr(false));
 
     auto &ultCsr = neoDevice->getUltCommandStreamReceiver<FamilyType>();
     auto &csrStream = ultCsr.commandStream;
@@ -652,8 +680,8 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateImmediateRegular() {
     cmdList.clear();
     pipelineSelectList.clear();
 
-    auto &regularCmdlistRequiredState = commandList->getRequiredStreamState();
-    auto &regularCmdListFinalState = commandList->getFinalStreamState();
+    const auto &regularCmdlistRequiredState = commandList->getRequiredStreamState();
+    const auto &regularCmdListFinalState = commandList->getFinalStreamState();
 
     auto commandListHandle = commandList->toHandle();
 
@@ -685,7 +713,7 @@ void CmdListPipelineSelectStateFixture::testBodyShareStateImmediateRegular() {
     commandList->close();
 
     sizeBefore = cmdQueueStream.getUsed();
-    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     sizeAfter = cmdQueueStream.getUsed();
 
@@ -732,7 +760,7 @@ void CmdListPipelineSelectStateFixture::testBodySystolicAndScratchOnSecondComman
 
     // execute first clear command list to settle global init
     ze_command_list_handle_t commandLists[2] = {commandList->toHandle(), nullptr};
-    result = commandQueue->executeCommandLists(1, commandLists, nullptr, true);
+    result = commandQueue->executeCommandLists(1, commandLists, nullptr, true, nullptr);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
 
     auto queueSize = cmdQueueStream.getUsed();
@@ -740,7 +768,7 @@ void CmdListPipelineSelectStateFixture::testBodySystolicAndScratchOnSecondComman
     // scratch makes globally front end dirty and so global init too,
     // but dispatch systolic programming only before second command list
     commandLists[1] = commandList2->toHandle();
-    result = commandQueue->executeCommandLists(2, commandLists, nullptr, true);
+    result = commandQueue->executeCommandLists(2, commandLists, nullptr, true, nullptr);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
 
     GenCmdList cmdList;
@@ -789,15 +817,15 @@ void CmdListPipelineSelectStateFixture::testBodySystolicAndScratchOnSecondComman
 template <typename FamilyType>
 void CmdListThreadArbitrationFixture::testBody() {
     using STATE_COMPUTE_MODE = typename FamilyType::STATE_COMPUTE_MODE;
-    using EU_THREAD_SCHEDULING_MODE_OVERRIDE = typename STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE_OVERRIDE;
+    using EU_THREAD_SCHEDULING_MODE = typename STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE;
 
     const ze_group_count_t groupCount{1, 1, 1};
     CmdListKernelLaunchParams launchParams = {};
 
     void *currentBuffer = nullptr;
 
-    auto &cmdlistRequiredState = commandList->getRequiredStreamState();
-    auto &cmdListFinalState = commandList->getFinalStreamState();
+    const auto &cmdlistRequiredState = commandList->getRequiredStreamState();
+    const auto &cmdListFinalState = commandList->getFinalStreamState();
     auto &csrState = commandQueue->csr->getStreamProperties();
 
     auto commandListHandle = commandList->toHandle();
@@ -837,7 +865,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         EXPECT_TRUE(queueCsr->getStateComputeModeDirty());
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -853,7 +881,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         auto stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
@@ -899,14 +927,14 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         auto stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -920,7 +948,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
@@ -966,7 +994,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         auto stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_OLDEST_FIRST, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
@@ -989,14 +1017,14 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_STALL_BASED_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_STALL_BASED_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1010,7 +1038,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         ASSERT_EQ(1u, stateComputeModeList.size());
 
         stateComputeModeCmd = genCmdCast<STATE_COMPUTE_MODE *>(*stateComputeModeList[0]);
-        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingModeOverride());
+        EXPECT_EQ(EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_ROUND_ROBIN, stateComputeModeCmd->getEuThreadSchedulingMode());
 
         cmdList.clear();
         stateComputeModeList.clear();
@@ -1039,7 +1067,7 @@ void CmdListThreadArbitrationFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1104,7 +1132,7 @@ void CmdListLargeGrfFixture::testBody() {
         EXPECT_TRUE(queueCsr->getStateComputeModeDirty());
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1173,7 +1201,7 @@ void CmdListLargeGrfFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1263,7 +1291,7 @@ void CmdListLargeGrfFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1306,7 +1334,7 @@ void CmdListLargeGrfFixture::testBody() {
         commandList->close();
 
         sizeBefore = cmdQueueStream.getUsed();
-        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false);
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         sizeAfter = cmdQueueStream.getUsed();
 
@@ -1330,7 +1358,7 @@ void TbxImmediateCommandListFixture::setUpT() {
     device->getNEODevice()->getExecutionEnvironment()->rootDeviceEnvironments[0]->memoryOperationsInterface =
         std::make_unique<NEO::MockMemoryOperations>();
 
-    neoDevice->getUltCommandStreamReceiver<FamilyType>().commandStreamReceiverType = CommandStreamReceiverType::CSR_TBX;
+    neoDevice->getUltCommandStreamReceiver<FamilyType>().commandStreamReceiverType = CommandStreamReceiverType::tbx;
     ModuleMutableCommandListFixture::setUpImpl();
 
     ze_event_pool_desc_t eventPoolDesc = {ZE_STRUCTURE_TYPE_EVENT_POOL_DESC};
@@ -1403,6 +1431,483 @@ void ImmediateCmdListSharedHeapsFlushTaskFixtureInit::testBody(NonKernelOperatio
 
     appendNonKernelOperation(commandListImmediateCoexisting.get(), operation);
     validateDispatchFlags(true, ultCsr.recordedImmediateDispatchFlags, ultCsr.recordedSsh);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchInline(bool useImmediate) {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto scratchController = csr->getScratchSpaceController();
+
+    auto ultCsr = static_cast<UltCommandStreamReceiver<FamilyType> *>(commandQueue->csr);
+    ultCsr->storeMakeResidentAllocations = true;
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto scratchCmdList = static_cast<L0::CommandList *>(commandList.get());
+    auto cmdListStream = commandList->commandContainer.getCommandStream();
+    if (useImmediate) {
+        scratchCmdList = static_cast<L0::CommandList *>(commandListImmediate.get());
+        cmdListStream = commandListImmediate->commandContainer.getCommandStream();
+    }
+
+    const ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = scratchCmdList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(useImmediate);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    mockKernelImmData->kernelDescriptor->kernelAttributes.perThreadScratchSize[0] = 0x0;
+
+    usedBefore = cmdListStream->getUsed();
+    result = scratchCmdList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    cmdList.clear();
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithoutScratch = *walkerIterator;
+
+    if (!useImmediate) {
+        result = commandList->close();
+        EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+        auto commandListHandle = commandList->toHandle();
+        result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+        EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    }
+
+    auto scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    scratchInlinePtr = ptrOffset(walkerPtrWithoutScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(0u, scratchInlineValue);
+
+    auto scratch0Allocation = scratchController->getScratchSpaceSlot0Allocation();
+    bool scratchInResidency = ultCsr->isMadeResident(scratch0Allocation);
+    EXPECT_TRUE(scratchInResidency);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchGrowingPatching() {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto scratchController = csr->getScratchSpaceController();
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto cmdListStream = commandList->commandContainer.getCommandStream();
+
+    const ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(false);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    result = commandList->close();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto commandListHandle = commandList->toHandle();
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    auto expectedScratchPatchAddress = getExpectedScratchPatchAddress(scratchAddress);
+
+    EXPECT_EQ(expectedScratchPatchAddress, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(scratchController, commandList->getCommandListUsedScratchController());
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    commandList->reset();
+
+    EXPECT_EQ(0u, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(nullptr, commandList->getCommandListUsedScratchController());
+
+    mockKernelImmData->kernelDescriptor->kernelAttributes.perThreadScratchSize[1] = 0x40;
+
+    usedBefore = cmdListStream->getUsed();
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    cmdList.clear();
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithSlot1Scratch = *walkerIterator;
+
+    result = commandList->close();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchSlot1Address = surfaceHeapGpuBase + scratchAddress;
+
+    expectedScratchPatchAddress = getExpectedScratchPatchAddress(scratchAddress);
+
+    EXPECT_EQ(expectedScratchPatchAddress, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(scratchController, commandList->getCommandListUsedScratchController());
+
+    scratchInlinePtr = ptrOffset(walkerPtrWithSlot1Scratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchSlot1Address, scratchInlineValue);
+
+    memset(scratchInlinePtr, 0, scratchInlinePointerSize);
+
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(0u, scratchInlineValue);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchSameNotPatching() {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto scratchController = csr->getScratchSpaceController();
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto cmdListStream = commandList->commandContainer.getCommandStream();
+
+    const ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(false);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    result = commandList->close();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto commandListHandle = commandList->toHandle();
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    memset(scratchInlinePtr, 0, scratchInlinePointerSize);
+
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(0u, scratchInlineValue);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchImmediatePatching() {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto scratchController = csr->getScratchSpaceController();
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto cmdListStream = commandListImmediate->commandContainer.getCommandStream();
+    commandListImmediate->commandContainer.setImmediateCmdListCsr(csr);
+
+    const ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = commandListImmediate->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(true);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    auto scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    memset(scratchInlinePtr, 0, scratchInlinePointerSize);
+
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(0u, scratchInlineValue);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchChangedControllerPatching() {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto ultCsr = static_cast<UltCommandStreamReceiver<FamilyType> *>(csr);
+
+    auto scratchControllerInitial = csr->getScratchSpaceController();
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto cmdListStream = commandList->commandContainer.getCommandStream();
+
+    const ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(false);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    result = commandList->close();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto commandListHandle = commandList->toHandle();
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto scratchAddress = scratchControllerInitial->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    auto expectedScratchPatchAddress = getExpectedScratchPatchAddress(scratchAddress);
+
+    EXPECT_EQ(expectedScratchPatchAddress, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(scratchControllerInitial, commandList->getCommandListUsedScratchController());
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    memset(scratchInlinePtr, 0, scratchInlinePointerSize);
+
+    // simulate execution on different scratch controller (execution of command list from normal to low priority queue)
+    ultCsr->createScratchSpaceController();
+    auto scratchControllerSecond = csr->getScratchSpaceController();
+
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    scratchAddress = scratchControllerSecond->getScratchPatchAddress();
+    fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    expectedScratchPatchAddress = getExpectedScratchPatchAddress(scratchAddress);
+
+    EXPECT_EQ(expectedScratchPatchAddress, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(scratchControllerSecond, commandList->getCommandListUsedScratchController());
+
+    scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
+
+    memset(scratchInlinePtr, 0, scratchInlinePointerSize);
+
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(0u, scratchInlineValue);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testScratchCommandViewNoPatching() {
+    uint8_t computeWalkerHostBuffer[512];
+    uint8_t payloadHostBuffer[256];
+
+    ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+    launchParams.makeKernelCommandView = true;
+    launchParams.cmdWalkerBuffer = computeWalkerHostBuffer;
+    launchParams.hostPayloadBuffer = payloadHostBuffer;
+
+    auto result = ZE_RESULT_SUCCESS;
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    EXPECT_EQ(0u, commandList->getCommandListPerThreadScratchSize(0));
+    EXPECT_EQ(0u, commandList->getCommandListPerThreadScratchSize(1));
+
+    auto &cmdsToPatch = commandList->getCommandsToPatch();
+    bool foundScratchPatchCmd = false;
+
+    for (auto &cmdToPatch : cmdsToPatch) {
+        if (cmdToPatch.type == CommandToPatch::CommandType::ComputeWalkerInlineDataScratch) {
+            foundScratchPatchCmd = true;
+            break;
+        }
+    }
+    EXPECT_FALSE(foundScratchPatchCmd);
+}
+
+template <typename FamilyType>
+void CommandListScratchPatchFixtureInit::testExternalScratchPatching() {
+    auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
+    auto scratchController = csr->getScratchSpaceController();
+
+    auto ultCsr = static_cast<UltCommandStreamReceiver<FamilyType> *>(commandQueue->csr);
+    ultCsr->storeMakeResidentAllocations = true;
+
+    NEO::EncodeDispatchKernelArgs dispatchKernelArgs = {};
+    dispatchKernelArgs.isHeaplessModeEnabled = true;
+
+    size_t inlineOffset = NEO::EncodeDispatchKernel<FamilyType>::getInlineDataOffset(dispatchKernelArgs);
+
+    auto cmdListStream = commandList->commandContainer.getCommandStream();
+
+    mockKernelImmData->kernelDescriptor->kernelAttributes.perThreadScratchSize[0] = 0x0;
+    mockKernelImmData->kernelDescriptor->kernelAttributes.perThreadScratchSize[1] = 0x0;
+
+    ze_group_count_t groupCount{1, 1, 1};
+    CmdListKernelLaunchParams launchParams = {};
+    launchParams.externalPerThreadScratchSize[0] = 0x80;
+    launchParams.externalPerThreadScratchSize[1] = 0x40;
+
+    auto result = ZE_RESULT_SUCCESS;
+    size_t usedBefore = cmdListStream->getUsed();
+    result = commandList->appendLaunchKernel(kernel->toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+    size_t usedAfter = cmdListStream->getUsed();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    EXPECT_EQ(0x80u, commandList->getCommandListPerThreadScratchSize(0));
+    EXPECT_EQ(0x40u, commandList->getCommandListPerThreadScratchSize(1));
+
+    uint64_t surfaceHeapGpuBase = getSurfStateGpuBase(false);
+
+    GenCmdList cmdList;
+    ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+        cmdList,
+        ptrOffset(cmdListStream->getCpuBase(), usedBefore),
+        usedAfter - usedBefore));
+
+    auto walkerIterator = NEO::UnitTestHelper<FamilyType>::findWalkerTypeCmd(cmdList.begin(), cmdList.end());
+    ASSERT_NE(cmdList.end(), walkerIterator);
+    void *walkerPtrWithScratch = *walkerIterator;
+
+    result = commandList->close();
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto commandListHandle = commandList->toHandle();
+    result = commandQueue->executeCommandLists(1, &commandListHandle, nullptr, false, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    auto scratchAddress = scratchController->getScratchPatchAddress();
+    auto fullScratchAddress = surfaceHeapGpuBase + scratchAddress;
+
+    auto expectedScratchPatchAddress = getExpectedScratchPatchAddress(scratchAddress);
+
+    EXPECT_EQ(expectedScratchPatchAddress, commandList->getCurrentScratchPatchAddress());
+    EXPECT_EQ(scratchController, commandList->getCommandListUsedScratchController());
+
+    uint64_t scratchInlineValue = 0;
+
+    void *scratchInlinePtr = ptrOffset(walkerPtrWithScratch, (inlineOffset + scratchInlineOffset));
+    std::memcpy(&scratchInlineValue, scratchInlinePtr, sizeof(scratchInlineValue));
+    EXPECT_EQ(fullScratchAddress, scratchInlineValue);
 }
 
 } // namespace ult

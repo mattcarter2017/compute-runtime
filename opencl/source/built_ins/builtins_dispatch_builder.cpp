@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,7 +14,6 @@
 
 #include "opencl/source/built_ins/aux_translation_builtin.h"
 #include "opencl/source/built_ins/built_ins.inl"
-#include "opencl/source/built_ins/vme_dispatch_builder.h"
 #include "opencl/source/cl_device/cl_device.h"
 #include "opencl/source/execution_environment/cl_execution_environment.h"
 #include "opencl/source/helpers/convert_color.h"
@@ -145,10 +144,28 @@ class BuiltInOp<EBuiltInOps::copyBufferToBufferStateless> : public BuiltInOp<EBu
         : BuiltInOp<EBuiltInOps::copyBufferToBuffer>(kernelsLib, device, false) {
         populate(EBuiltInOps::copyBufferToBufferStateless,
                  CompilerOptions::greaterThan4gbBuffersRequired,
-                 "CopyBufferToBufferLeftLeftover", kernLeftLeftover,
-                 "CopyBufferToBufferMiddle", kernMiddle,
-                 "CopyBufferToBufferMiddleMisaligned", kernMiddleMisaligned,
-                 "CopyBufferToBufferRightLeftover", kernRightLeftover);
+                 "CopyBufferToBufferLeftLeftoverStateless", kernLeftLeftover,
+                 "CopyBufferToBufferMiddleStateless", kernMiddle,
+                 "CopyBufferToBufferMiddleMisalignedStateless", kernMiddleMisaligned,
+                 "CopyBufferToBufferRightLeftoverStateless", kernRightLeftover);
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo);
+    }
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::copyBufferToBufferStatelessHeapless> : public BuiltInOp<EBuiltInOps::copyBufferToBuffer> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::copyBufferToBuffer>(kernelsLib, device, false) {
+        populate(EBuiltInOps::copyBufferToBufferStatelessHeapless,
+                 CompilerOptions::greaterThan4gbBuffersRequired,
+                 "CopyBufferToBufferLeftLeftoverStateless", kernLeftLeftover,
+                 "CopyBufferToBufferMiddleStateless", kernMiddle,
+                 "CopyBufferToBufferMiddleMisalignedStateless", kernMiddleMisaligned,
+                 "CopyBufferToBufferRightLeftoverStateless", kernRightLeftover);
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
@@ -164,91 +181,194 @@ class BuiltInOp<EBuiltInOps::copyBufferRect> : public BuiltinDispatchInfoBuilder
 
     template <typename OffsetType>
     bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo) const {
-        DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::noSplit> kernelNoSplit3DBuilder(clDevice);
         auto &operationParams = multiDispatchInfo.peekBuiltinOpParams();
 
         size_t hostPtrSize = 0;
+        size_t srcOffsetFromAlignedPtr = 0;
+        size_t dstOffsetFromAlignedPtr = 0;
         bool is3D = false;
+        auto srcPtr = operationParams.srcPtr;
+        auto dstPtr = operationParams.dstPtr;
 
         if (operationParams.srcMemObj && operationParams.dstMemObj) {
-            DEBUG_BREAK_IF(!((operationParams.srcPtr == nullptr) && (operationParams.dstPtr == nullptr)));
+            DEBUG_BREAK_IF(!((srcPtr == nullptr) && (dstPtr == nullptr)));
             is3D = (operationParams.size.z > 1) || (operationParams.srcOffset.z > 0) || (operationParams.dstOffset.z > 0);
         } else {
-            if (operationParams.srcPtr) {
+            if (srcPtr) {
                 size_t origin[] = {operationParams.srcOffset.x, operationParams.srcOffset.y, operationParams.srcOffset.z};
                 size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
                 hostPtrSize = Buffer::calculateHostPtrSize(origin, region, operationParams.srcRowPitch, operationParams.srcSlicePitch);
                 is3D = (operationParams.size.z > 1) || (operationParams.dstOffset.z > 0);
-            } else if (operationParams.dstPtr) {
+                if (!is3D) {
+                    auto srcPtrOffset = ptrOffset(srcPtr, operationParams.srcOffset.z * operationParams.srcSlicePitch);
+                    srcPtr = alignDown(srcPtrOffset, 4);
+                    srcOffsetFromAlignedPtr = ptrDiff(srcPtrOffset, srcPtr);
+                }
+            } else if (dstPtr) {
                 size_t origin[] = {operationParams.dstOffset.x, operationParams.dstOffset.y, operationParams.dstOffset.z};
                 size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
                 hostPtrSize = Buffer::calculateHostPtrSize(origin, region, operationParams.dstRowPitch, operationParams.dstSlicePitch);
                 is3D = (operationParams.size.z > 1) || (operationParams.srcOffset.z > 0);
+                if (!is3D) {
+                    auto dstPtrOffset = ptrOffset(dstPtr, operationParams.dstOffset.z * operationParams.dstSlicePitch);
+                    dstPtr = alignDown(dstPtrOffset, 4);
+                    dstOffsetFromAlignedPtr = ptrDiff(dstPtrOffset, dstPtr);
+                }
             } else {
                 DEBUG_BREAK_IF(!false);
             }
         }
 
-        uint32_t rootDeviceIndex = clDevice.getRootDeviceIndex();
+        const uint32_t rootDeviceIndex = clDevice.getRootDeviceIndex();
+        const int dimensions = is3D ? 3 : 2;
 
-        // Set-up ISA
-        int dimensions = is3D ? 3 : 2;
-        kernelNoSplit3DBuilder.setKernel(kernelBytes[dimensions - 1]->getKernel(rootDeviceIndex));
+        if (this->clDevice.getProductHelper().isCopyBufferRectSplitSupported()) {
+            DispatchInfoBuilder<SplitDispatch::Dim::d1D, SplitDispatch::SplitMode::kernelSplit> kernelSplit3DBuilder(clDevice);
 
-        size_t srcOffsetFromAlignedPtr = 0;
-        size_t dstOffsetFromAlignedPtr = 0;
-
-        // arg0 = src
-        if (operationParams.srcMemObj) {
-            kernelNoSplit3DBuilder.setArg(0, operationParams.srcMemObj);
-        } else {
-            void *srcPtrToSet = operationParams.srcPtr;
-            if (!is3D) {
-                auto srcPtr = ptrOffset(operationParams.srcPtr, operationParams.srcOffset.z * operationParams.srcSlicePitch);
-                srcPtrToSet = alignDown(srcPtr, 4);
-                srcOffsetFromAlignedPtr = ptrDiff(srcPtr, srcPtrToSet);
+            const auto totalSize = operationParams.size.x * operationParams.size.y * operationParams.size.z;
+            if (totalSize == 0u) {
+                return true;
             }
-            kernelNoSplit3DBuilder.setArgSvm(0, hostPtrSize, srcPtrToSet, nullptr, CL_MEM_READ_ONLY);
-        }
 
-        bool isDestinationInSystem = false;
-        // arg1 = dst
-        if (operationParams.dstMemObj) {
-            kernelNoSplit3DBuilder.setArg(1, operationParams.dstMemObj);
-            isDestinationInSystem = Kernel::graphicsAllocationTypeUseSystemMemory(operationParams.dstMemObj->getGraphicsAllocation(rootDeviceIndex)->getAllocationType());
-        } else {
-            void *dstPtrToSet = operationParams.dstPtr;
-            if (!is3D) {
-                auto dstPtr = ptrOffset(operationParams.dstPtr, operationParams.dstOffset.z * operationParams.dstSlicePitch);
-                dstPtrToSet = alignDown(dstPtr, 4);
-                dstOffsetFromAlignedPtr = ptrDiff(dstPtr, dstPtrToSet);
+            const uintptr_t start = reinterpret_cast<uintptr_t>(dstPtr) + operationParams.dstOffset.x;
+
+            constexpr size_t middleAlignment = MemoryConstants::cacheLineSize;
+            constexpr size_t middleElSize = sizeof(uint32_t) * 4;
+
+            uintptr_t leftSize = start % middleAlignment;
+            leftSize = (leftSize > 0) ? (middleAlignment - leftSize) : 0; // calc left leftover size
+            leftSize = std::min(leftSize, operationParams.size.x);        // clamp left leftover size to requested size
+
+            uintptr_t rightSize = (start + operationParams.size.x) % middleAlignment; // calc right leftover size
+            rightSize = std::min(rightSize, operationParams.size.x - leftSize);       // clamp
+
+            const uintptr_t middleSizeBytes = (operationParams.size.x > leftSize + rightSize) ? operationParams.size.x - leftSize - rightSize : 0u; // calc middle size
+
+            // corner case - fully optimized kernel requires DWORD alignment. If we don't have it, run slower, misaligned kernel
+            const auto srcMiddleStart = reinterpret_cast<uintptr_t>(srcPtr) + operationParams.srcOffset.x + leftSize;
+            const auto srcMisalignment = srcMiddleStart % sizeof(uint32_t);
+            const auto srcRowPitchMisalignment = operationParams.srcRowPitch % sizeof(uint32_t);
+            const auto srcSlicePitchMisalignment = operationParams.srcSlicePitch % sizeof(uint32_t);
+            const auto dstRowPitchMisalignment = operationParams.dstRowPitch % sizeof(uint32_t);
+            const auto dstSlicePitchMisalignment = operationParams.dstSlicePitch % sizeof(uint32_t);
+            const auto isSrcMisaligned = srcMisalignment != 0u || srcRowPitchMisalignment != 0u || srcSlicePitchMisalignment != 0u || dstRowPitchMisalignment != 0u || dstSlicePitchMisalignment != 0u;
+            ;
+
+            const auto middleSizeEls = middleSizeBytes / middleElSize; // num work items in middle walker
+
+            // Set-up ISA
+
+            kernelSplit3DBuilder.setKernel(SplitDispatch::RegionCoordX::left, kernelLeft[dimensions - 1]->getKernel(rootDeviceIndex));
+            if (isSrcMisaligned) {
+                kernelSplit3DBuilder.setKernel(SplitDispatch::RegionCoordX::middle, kernelBytes[dimensions - 1]->getKernel(rootDeviceIndex));
+            } else {
+                kernelSplit3DBuilder.setKernel(SplitDispatch::RegionCoordX::middle, kernelMiddle[dimensions - 1]->getKernel(rootDeviceIndex));
             }
-            kernelNoSplit3DBuilder.setArgSvm(1, hostPtrSize, dstPtrToSet, nullptr, 0u);
-            isDestinationInSystem = operationParams.dstPtr != nullptr;
+            kernelSplit3DBuilder.setKernel(SplitDispatch::RegionCoordX::right, kernelRight[dimensions - 1]->getKernel(rootDeviceIndex));
+
+            // arg0 = src
+            if (operationParams.srcMemObj) {
+                kernelSplit3DBuilder.setArg(0, operationParams.srcMemObj);
+            } else {
+                kernelSplit3DBuilder.setArgSvm(0, hostPtrSize, srcPtr, nullptr, CL_MEM_READ_ONLY);
+            }
+
+            bool isDestinationInSystem = false;
+            // arg1 = dst
+            if (operationParams.dstMemObj) {
+                kernelSplit3DBuilder.setArg(1, operationParams.dstMemObj);
+                isDestinationInSystem = Kernel::graphicsAllocationTypeUseSystemMemory(operationParams.dstMemObj->getGraphicsAllocation(rootDeviceIndex)->getAllocationType());
+            } else {
+                kernelSplit3DBuilder.setArgSvm(1, hostPtrSize, dstPtr, nullptr, 0u);
+                isDestinationInSystem = dstPtr != nullptr;
+            }
+            kernelSplit3DBuilder.setKernelDestinationArgumentInSystem(isDestinationInSystem);
+
+            // arg2 = srcOrigin
+            OffsetType kSrcOrigin[4] = {static_cast<OffsetType>(operationParams.srcOffset.x + srcOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.srcOffset.y), static_cast<OffsetType>(operationParams.srcOffset.z), 0};
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::left, 2, sizeof(OffsetType) * 4, kSrcOrigin);
+            kSrcOrigin[0] += static_cast<uint32_t>(leftSize);
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::middle, 2, sizeof(OffsetType) * 4, kSrcOrigin);
+            kSrcOrigin[0] += static_cast<uint32_t>(middleSizeBytes);
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::right, 2, sizeof(OffsetType) * 4, kSrcOrigin);
+
+            // arg3 = dstOrigin
+            OffsetType kDstOrigin[4] = {static_cast<OffsetType>(operationParams.dstOffset.x + dstOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.dstOffset.y), static_cast<OffsetType>(operationParams.dstOffset.z), 0};
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::left, 3, sizeof(OffsetType) * 4, kDstOrigin);
+            kDstOrigin[0] += static_cast<uint32_t>(leftSize);
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::middle, 3, sizeof(OffsetType) * 4, kDstOrigin);
+            kDstOrigin[0] += static_cast<uint32_t>(middleSizeBytes);
+            kernelSplit3DBuilder.setArg(SplitDispatch::RegionCoordX::right, 3, sizeof(OffsetType) * 4, kDstOrigin);
+
+            // arg4 = srcPitch
+            OffsetType kSrcPitch[2] = {static_cast<OffsetType>(operationParams.srcRowPitch), static_cast<OffsetType>(operationParams.srcSlicePitch)};
+            kernelSplit3DBuilder.setArg(4, sizeof(OffsetType) * 2, kSrcPitch);
+
+            // arg5 = dstPitch
+            OffsetType kDstPitch[2] = {static_cast<OffsetType>(operationParams.dstRowPitch), static_cast<OffsetType>(operationParams.dstSlicePitch)};
+            kernelSplit3DBuilder.setArg(5, sizeof(OffsetType) * 2, kDstPitch);
+
+            // Set-up work sizes
+            kernelSplit3DBuilder.setDispatchGeometry(SplitDispatch::RegionCoordX::left, Vec3<size_t>{leftSize, operationParams.size.y, operationParams.size.z}, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
+            kernelSplit3DBuilder.getDispatchInfo(0u).setDim(0u);
+
+            kernelSplit3DBuilder.setDispatchGeometry(SplitDispatch::RegionCoordX::middle, Vec3<size_t>{isSrcMisaligned ? middleSizeBytes : middleSizeEls, operationParams.size.y, operationParams.size.z}, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
+            kernelSplit3DBuilder.getDispatchInfo(1u).setDim(0u);
+
+            kernelSplit3DBuilder.setDispatchGeometry(SplitDispatch::RegionCoordX::right, Vec3<size_t>{rightSize, operationParams.size.y, operationParams.size.z}, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
+            kernelSplit3DBuilder.getDispatchInfo(2u).setDim(0u);
+
+            kernelSplit3DBuilder.bake(multiDispatchInfo);
+
+            UNRECOVERABLE_IF(leftSize + rightSize + middleSizeEls * middleElSize != operationParams.size.x);
+
+            return true;
+        } else {
+            DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::noSplit> kernelNoSplit3DBuilder(clDevice);
+
+            // Set-up ISA
+            kernelNoSplit3DBuilder.setKernel(kernelBytes[dimensions - 1]->getKernel(rootDeviceIndex));
+
+            // arg0 = src
+            if (operationParams.srcMemObj) {
+                kernelNoSplit3DBuilder.setArg(0, operationParams.srcMemObj);
+            } else {
+                kernelNoSplit3DBuilder.setArgSvm(0, hostPtrSize, srcPtr, nullptr, CL_MEM_READ_ONLY);
+            }
+
+            bool isDestinationInSystem = false;
+            // arg1 = dst
+            if (operationParams.dstMemObj) {
+                kernelNoSplit3DBuilder.setArg(1, operationParams.dstMemObj);
+                isDestinationInSystem = Kernel::graphicsAllocationTypeUseSystemMemory(operationParams.dstMemObj->getGraphicsAllocation(rootDeviceIndex)->getAllocationType());
+            } else {
+                kernelNoSplit3DBuilder.setArgSvm(1, hostPtrSize, dstPtr, nullptr, 0u);
+                isDestinationInSystem = dstPtr != nullptr;
+            }
+            kernelNoSplit3DBuilder.setKernelDestinationArgumentInSystem(isDestinationInSystem);
+
+            // arg2 = srcOrigin
+            OffsetType kSrcOrigin[4] = {static_cast<OffsetType>(operationParams.srcOffset.x + srcOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.srcOffset.y), static_cast<OffsetType>(operationParams.srcOffset.z), 0};
+            kernelNoSplit3DBuilder.setArg(2, sizeof(OffsetType) * 4, kSrcOrigin);
+
+            // arg3 = dstOrigin
+            OffsetType kDstOrigin[4] = {static_cast<OffsetType>(operationParams.dstOffset.x + dstOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.dstOffset.y), static_cast<OffsetType>(operationParams.dstOffset.z), 0};
+            kernelNoSplit3DBuilder.setArg(3, sizeof(OffsetType) * 4, kDstOrigin);
+
+            // arg4 = srcPitch
+            OffsetType kSrcPitch[2] = {static_cast<OffsetType>(operationParams.srcRowPitch), static_cast<OffsetType>(operationParams.srcSlicePitch)};
+            kernelNoSplit3DBuilder.setArg(4, sizeof(OffsetType) * 2, kSrcPitch);
+
+            // arg5 = dstPitch
+            OffsetType kDstPitch[2] = {static_cast<OffsetType>(operationParams.dstRowPitch), static_cast<OffsetType>(operationParams.dstSlicePitch)};
+            kernelNoSplit3DBuilder.setArg(5, sizeof(OffsetType) * 2, kDstPitch);
+
+            // Set-up work sizes
+            kernelNoSplit3DBuilder.setDispatchGeometry(operationParams.size, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
+            kernelNoSplit3DBuilder.bake(multiDispatchInfo);
+
+            return true;
         }
-        kernelNoSplit3DBuilder.setKernelDestinationArgumentInSystem(isDestinationInSystem);
-
-        // arg2 = srcOrigin
-        OffsetType kSrcOrigin[4] = {static_cast<OffsetType>(operationParams.srcOffset.x + srcOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.srcOffset.y), static_cast<OffsetType>(operationParams.srcOffset.z), 0};
-        kernelNoSplit3DBuilder.setArg(2, sizeof(OffsetType) * 4, kSrcOrigin);
-
-        // arg3 = dstOrigin
-        OffsetType kDstOrigin[4] = {static_cast<OffsetType>(operationParams.dstOffset.x + dstOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.dstOffset.y), static_cast<OffsetType>(operationParams.dstOffset.z), 0};
-        kernelNoSplit3DBuilder.setArg(3, sizeof(OffsetType) * 4, kDstOrigin);
-
-        // arg4 = srcPitch
-        OffsetType kSrcPitch[2] = {static_cast<OffsetType>(operationParams.srcRowPitch), static_cast<OffsetType>(operationParams.srcSlicePitch)};
-        kernelNoSplit3DBuilder.setArg(4, sizeof(OffsetType) * 2, kSrcPitch);
-
-        // arg5 = dstPitch
-        OffsetType kDstPitch[2] = {static_cast<OffsetType>(operationParams.dstRowPitch), static_cast<OffsetType>(operationParams.dstSlicePitch)};
-        kernelNoSplit3DBuilder.setArg(5, sizeof(OffsetType) * 2, kDstPitch);
-
-        // Set-up work sizes
-        kernelNoSplit3DBuilder.setDispatchGeometry(operationParams.size, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
-        kernelNoSplit3DBuilder.bake(multiDispatchInfo);
-
-        return true;
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
@@ -257,6 +377,9 @@ class BuiltInOp<EBuiltInOps::copyBufferRect> : public BuiltinDispatchInfoBuilder
 
   protected:
     MultiDeviceKernel *kernelBytes[3]{};
+    MultiDeviceKernel *kernelLeft[3]{};
+    MultiDeviceKernel *kernelMiddle[3]{};
+    MultiDeviceKernel *kernelRight[3]{};
     BuiltInOp(BuiltIns &kernelsLib, ClDevice &device, bool populateKernels)
         : BuiltinDispatchInfoBuilder(kernelsLib, device) {
         if (populateKernels) {
@@ -264,7 +387,16 @@ class BuiltInOp<EBuiltInOps::copyBufferRect> : public BuiltinDispatchInfoBuilder
                      "",
                      "CopyBufferRectBytes2d", kernelBytes[0],
                      "CopyBufferRectBytes2d", kernelBytes[1],
-                     "CopyBufferRectBytes3d", kernelBytes[2]);
+                     "CopyBufferRectBytes3d", kernelBytes[2],
+                     "CopyBufferRectBytes2d", kernelLeft[0],
+                     "CopyBufferRectBytes2d", kernelLeft[1],
+                     "CopyBufferRectBytes3d", kernelLeft[2],
+                     "CopyBufferRectBytesMiddle2d", kernelMiddle[0],
+                     "CopyBufferRectBytesMiddle2d", kernelMiddle[1],
+                     "CopyBufferRectBytesMiddle3d", kernelMiddle[2],
+                     "CopyBufferRectBytes2d", kernelRight[0],
+                     "CopyBufferRectBytes2d", kernelRight[1],
+                     "CopyBufferRectBytes3d", kernelRight[2]);
         }
     }
 };
@@ -276,9 +408,43 @@ class BuiltInOp<EBuiltInOps::copyBufferRectStateless> : public BuiltInOp<EBuiltI
         : BuiltInOp<EBuiltInOps::copyBufferRect>(kernelsLib, device, false) {
         populate(EBuiltInOps::copyBufferRectStateless,
                  CompilerOptions::greaterThan4gbBuffersRequired,
-                 "CopyBufferRectBytes2d", kernelBytes[0],
-                 "CopyBufferRectBytes2d", kernelBytes[1],
-                 "CopyBufferRectBytes3d", kernelBytes[2]);
+                 "CopyBufferRectBytes2dStateless", kernelBytes[0],
+                 "CopyBufferRectBytes2dStateless", kernelBytes[1],
+                 "CopyBufferRectBytes3dStateless", kernelBytes[2],
+                 "CopyBufferRectBytes2dStateless", kernelLeft[0],
+                 "CopyBufferRectBytes2dStateless", kernelLeft[1],
+                 "CopyBufferRectBytes3dStateless", kernelLeft[2],
+                 "CopyBufferRectBytesMiddle2dStateless", kernelMiddle[0],
+                 "CopyBufferRectBytesMiddle2dStateless", kernelMiddle[1],
+                 "CopyBufferRectBytesMiddle3dStateless", kernelMiddle[2],
+                 "CopyBufferRectBytes2dStateless", kernelRight[0],
+                 "CopyBufferRectBytes2dStateless", kernelRight[1],
+                 "CopyBufferRectBytes3dStateless", kernelRight[2]);
+    }
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo);
+    }
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::copyBufferRectStatelessHeapless> : public BuiltInOp<EBuiltInOps::copyBufferRect> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::copyBufferRect>(kernelsLib, device, false) {
+        populate(EBuiltInOps::copyBufferRectStatelessHeapless,
+                 CompilerOptions::greaterThan4gbBuffersRequired,
+                 "CopyBufferRectBytes2dStateless", kernelBytes[0],
+                 "CopyBufferRectBytes2dStateless", kernelBytes[1],
+                 "CopyBufferRectBytes3dStateless", kernelBytes[2],
+                 "CopyBufferRectBytes2dStateless", kernelLeft[0],
+                 "CopyBufferRectBytes2dStateless", kernelLeft[1],
+                 "CopyBufferRectBytes3dStateless", kernelLeft[2],
+                 "CopyBufferRectBytesMiddle2dStateless", kernelMiddle[0],
+                 "CopyBufferRectBytesMiddle2dStateless", kernelMiddle[1],
+                 "CopyBufferRectBytesMiddle3dStateless", kernelMiddle[2],
+                 "CopyBufferRectBytes2dStateless", kernelRight[0],
+                 "CopyBufferRectBytes2dStateless", kernelRight[1],
+                 "CopyBufferRectBytes3dStateless", kernelRight[2]);
     }
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
         return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo);
@@ -384,9 +550,24 @@ class BuiltInOp<EBuiltInOps::fillBufferStateless> : public BuiltInOp<EBuiltInOps
     BuiltInOp(BuiltIns &kernelsLib, ClDevice &device) : BuiltInOp<EBuiltInOps::fillBuffer>(kernelsLib, device, false) {
         populate(EBuiltInOps::fillBufferStateless,
                  CompilerOptions::greaterThan4gbBuffersRequired,
-                 "FillBufferLeftLeftover", kernLeftLeftover,
-                 "FillBufferMiddle", kernMiddle,
-                 "FillBufferRightLeftover", kernRightLeftover);
+                 "FillBufferLeftLeftoverStateless", kernLeftLeftover,
+                 "FillBufferMiddleStateless", kernMiddle,
+                 "FillBufferRightLeftoverStateless", kernRightLeftover);
+    }
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfos) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfos);
+    }
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::fillBufferStatelessHeapless> : public BuiltInOp<EBuiltInOps::fillBuffer> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device) : BuiltInOp<EBuiltInOps::fillBuffer>(kernelsLib, device, false) {
+        populate(EBuiltInOps::fillBufferStatelessHeapless,
+                 CompilerOptions::greaterThan4gbBuffersRequired,
+                 "FillBufferLeftLeftoverStateless", kernLeftLeftover,
+                 "FillBufferMiddleStateless", kernMiddle,
+                 "FillBufferRightLeftoverStateless", kernRightLeftover);
     }
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfos) const override {
         return buildDispatchInfosTyped<uint64_t>(multiDispatchInfos);
@@ -496,11 +677,30 @@ class BuiltInOp<EBuiltInOps::copyBufferToImage3dStateless> : public BuiltInOp<EB
         : BuiltInOp<EBuiltInOps::copyBufferToImage3d>(kernelsLib, device, false) {
         populate(EBuiltInOps::copyBufferToImage3dStateless,
                  CompilerOptions::greaterThan4gbBuffersRequired,
-                 "CopyBufferToImage3dBytes", kernelBytes[0],
-                 "CopyBufferToImage3d2Bytes", kernelBytes[1],
-                 "CopyBufferToImage3d4Bytes", kernelBytes[2],
-                 "CopyBufferToImage3d8Bytes", kernelBytes[3],
-                 "CopyBufferToImage3d16Bytes", kernelBytes[4]);
+                 "CopyBufferToImage3dBytesStateless", kernelBytes[0],
+                 "CopyBufferToImage3d2BytesStateless", kernelBytes[1],
+                 "CopyBufferToImage3d4BytesStateless", kernelBytes[2],
+                 "CopyBufferToImage3d8BytesStateless", kernelBytes[3],
+                 "CopyBufferToImage3d16BytesStateless", kernelBytes[4]);
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo);
+    }
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::copyBufferToImage3dHeapless> : public BuiltInOp<EBuiltInOps::copyBufferToImage3d> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::copyBufferToImage3d>(kernelsLib, device, false) {
+        populate(EBuiltInOps::copyBufferToImage3dHeapless,
+                 CompilerOptions::greaterThan4gbBuffersRequired,
+                 "CopyBufferToImage3dBytesStateless", kernelBytes[0],
+                 "CopyBufferToImage3d2BytesStateless", kernelBytes[1],
+                 "CopyBufferToImage3d4BytesStateless", kernelBytes[2],
+                 "CopyBufferToImage3d8BytesStateless", kernelBytes[3],
+                 "CopyBufferToImage3d16BytesStateless", kernelBytes[4]);
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
@@ -618,11 +818,30 @@ class BuiltInOp<EBuiltInOps::copyImage3dToBufferStateless> : public BuiltInOp<EB
         : BuiltInOp<EBuiltInOps::copyImage3dToBuffer>(kernelsLib, device, false) {
         populate(EBuiltInOps::copyImage3dToBufferStateless,
                  CompilerOptions::greaterThan4gbBuffersRequired,
-                 "CopyImage3dToBufferBytes", kernelBytes[0],
-                 "CopyImage3dToBuffer2Bytes", kernelBytes[1],
-                 "CopyImage3dToBuffer4Bytes", kernelBytes[2],
-                 "CopyImage3dToBuffer8Bytes", kernelBytes[3],
-                 "CopyImage3dToBuffer16Bytes", kernelBytes[4]);
+                 "CopyImage3dToBufferBytesStateless", kernelBytes[0],
+                 "CopyImage3dToBuffer2BytesStateless", kernelBytes[1],
+                 "CopyImage3dToBuffer4BytesStateless", kernelBytes[2],
+                 "CopyImage3dToBuffer8BytesStateless", kernelBytes[3],
+                 "CopyImage3dToBuffer16BytesStateless", kernelBytes[4]);
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo);
+    }
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::copyImage3dToBufferHeapless> : public BuiltInOp<EBuiltInOps::copyImage3dToBuffer> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::copyImage3dToBuffer>(kernelsLib, device, false) {
+        populate(EBuiltInOps::copyImage3dToBufferHeapless,
+                 CompilerOptions::greaterThan4gbBuffersRequired,
+                 "CopyImage3dToBufferBytesStateless", kernelBytes[0],
+                 "CopyImage3dToBuffer2BytesStateless", kernelBytes[1],
+                 "CopyImage3dToBuffer4BytesStateless", kernelBytes[2],
+                 "CopyImage3dToBuffer8BytesStateless", kernelBytes[3],
+                 "CopyImage3dToBuffer16BytesStateless", kernelBytes[4]);
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo) const override {
@@ -692,7 +911,27 @@ class BuiltInOp<EBuiltInOps::copyImageToImage3d> : public BuiltinDispatchInfoBui
     }
 
   protected:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device, bool populateKernels)
+        : BuiltinDispatchInfoBuilder(kernelsLib, device) {
+        if (populateKernels) {
+            populate(EBuiltInOps::copyImageToImage3d,
+                     "",
+                     "CopyImageToImage3d", kernel);
+        }
+    }
+
     MultiDeviceKernel *kernel = nullptr;
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::copyImageToImage3dHeapless> : public BuiltInOp<EBuiltInOps::copyImageToImage3d> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::copyImageToImage3d>(kernelsLib, device, false) {
+        populate(EBuiltInOps::copyImageToImage3dHeapless,
+                 "",
+                 "CopyImageToImage3d", kernel);
+    }
 };
 
 template <>
@@ -749,7 +988,28 @@ class BuiltInOp<EBuiltInOps::fillImage3d> : public BuiltinDispatchInfoBuilder {
     }
 
   protected:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device, bool populateKernels)
+        : BuiltinDispatchInfoBuilder(kernelsLib, device) {
+        if (populateKernels) {
+
+            populate(EBuiltInOps::fillImage3d,
+                     "",
+                     "FillImage3d", kernel);
+        }
+    }
+
     MultiDeviceKernel *kernel = nullptr;
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::fillImage3dHeapless> : public BuiltInOp<EBuiltInOps::fillImage3d> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, ClDevice &device)
+        : BuiltInOp<EBuiltInOps::fillImage3d>(kernelsLib, device, false) {
+        populate(EBuiltInOps::fillImage3dHeapless,
+                 "",
+                 "FillImage3d", kernel);
+    }
 };
 
 BuiltinDispatchInfoBuilder &BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(EBuiltInOps::Type operation, ClDevice &device) {
@@ -764,11 +1024,17 @@ BuiltinDispatchInfoBuilder &BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuil
     case EBuiltInOps::copyBufferToBufferStateless:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferToBufferStateless>>(builtins, device); });
         break;
+    case EBuiltInOps::copyBufferToBufferStatelessHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferToBufferStatelessHeapless>>(builtins, device); });
+        break;
     case EBuiltInOps::copyBufferRect:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferRect>>(builtins, device); });
         break;
     case EBuiltInOps::copyBufferRectStateless:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferRectStateless>>(builtins, device); });
+        break;
+    case EBuiltInOps::copyBufferRectStatelessHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferRectStatelessHeapless>>(builtins, device); });
         break;
     case EBuiltInOps::fillBuffer:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::fillBuffer>>(builtins, device); });
@@ -776,11 +1042,17 @@ BuiltinDispatchInfoBuilder &BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuil
     case EBuiltInOps::fillBufferStateless:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::fillBufferStateless>>(builtins, device); });
         break;
+    case EBuiltInOps::fillBufferStatelessHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::fillBufferStatelessHeapless>>(builtins, device); });
+        break;
     case EBuiltInOps::copyBufferToImage3d:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferToImage3d>>(builtins, device); });
         break;
     case EBuiltInOps::copyBufferToImage3dStateless:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferToImage3dStateless>>(builtins, device); });
+        break;
+    case EBuiltInOps::copyBufferToImage3dHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyBufferToImage3dHeapless>>(builtins, device); });
         break;
     case EBuiltInOps::copyImage3dToBuffer:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyImage3dToBuffer>>(builtins, device); });
@@ -788,11 +1060,20 @@ BuiltinDispatchInfoBuilder &BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuil
     case EBuiltInOps::copyImage3dToBufferStateless:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyImage3dToBufferStateless>>(builtins, device); });
         break;
+    case EBuiltInOps::copyImage3dToBufferHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyImage3dToBufferHeapless>>(builtins, device); });
+        break;
     case EBuiltInOps::copyImageToImage3d:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyImageToImage3d>>(builtins, device); });
         break;
+    case EBuiltInOps::copyImageToImage3dHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::copyImageToImage3dHeapless>>(builtins, device); });
+        break;
     case EBuiltInOps::fillImage3d:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::fillImage3d>>(builtins, device); });
+        break;
+    case EBuiltInOps::fillImage3dHeapless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::fillImage3dHeapless>>(builtins, device); });
         break;
     case EBuiltInOps::auxTranslation:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::auxTranslation>>(builtins, device); });

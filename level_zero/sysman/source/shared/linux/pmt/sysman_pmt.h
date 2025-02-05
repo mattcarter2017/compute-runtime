@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,48 +11,30 @@
 
 #include "level_zero/zes_api.h"
 
-#include "igfxfmid.h"
-
-#include <fcntl.h>
 #include <map>
-#include <sys/stat.h>
-#include <sys/types.h>
 
 namespace L0 {
 namespace Sysman {
 class LinuxSysmanImp;
 class FsAccessInterface;
+class SysmanProductHelper;
 
 class PlatformMonitoringTech : NEO::NonCopyableOrMovableClass {
   public:
-    PlatformMonitoringTech() = default;
-    PlatformMonitoringTech(FsAccessInterface *pFsAccess, ze_bool_t onSubdevice, uint32_t subdeviceId);
-    virtual ~PlatformMonitoringTech();
+    struct TelemData {
+        std::string telemDir;
+        std::string guid;
+        uint64_t offset;
+    };
 
-    virtual ze_result_t readValue(const std::string key, uint32_t &value);
-    virtual ze_result_t readValue(const std::string key, uint64_t &value);
-    std::string getGuid();
-    static ze_result_t enumerateRootTelemIndex(FsAccessInterface *pFsAccess, std::string &gpuUpstreamPortPath);
-    static void create(LinuxSysmanImp *pLinuxSysmanImp, std::string &gpuUpstreamPortPath,
-                       std::map<uint32_t, L0::Sysman::PlatformMonitoringTech *> &mapOfSubDeviceIdToPmtObject);
-    static ze_result_t getKeyOffsetMap(std::string guid, std::map<std::string, uint64_t> &keyOffsetMap);
-
-  protected:
-    static uint32_t rootDeviceTelemNodeIndex;
-    std::string telemetryDeviceEntry{};
-    std::map<std::string, uint64_t> keyOffsetMap;
-    std::string guid;
-    ze_result_t init(FsAccessInterface *pFsAccess, const std::string &gpuUpstreamPortPath, PRODUCT_FAMILY productFamily);
-    static void doInitPmtObject(FsAccessInterface *pFsAccess, uint32_t subdeviceId, PlatformMonitoringTech *pPmt, const std::string &gpuUpstreamPortPath,
-                                std::map<uint32_t, L0::Sysman::PlatformMonitoringTech *> &mapOfSubDeviceIdToPmtObject, PRODUCT_FAMILY productFamily);
-    decltype(&NEO::SysCalls::pread) preadFunction = NEO::SysCalls::pread;
-
-  private:
-    static const std::string baseTelemSysFS;
-    static const std::string telem;
-    uint64_t baseOffset = 0;
-    uint32_t subdeviceId = 0;
-    ze_bool_t isSubdevice = 0;
+    static bool getKeyOffsetMap(SysmanProductHelper *pSysmanProductHelper, std::string guid, std::map<std::string, uint64_t> &keyOffsetMap);
+    static bool getTelemOffsetAndTelemDir(LinuxSysmanImp *pLinuxSysmanImp, uint64_t &telemOffset, std::string &telemDir);
+    static bool getTelemData(const std::map<uint32_t, std::string> telemNodesInPciPath, std::string &telemDir, std::string &guid, uint64_t &telemOffset);
+    static bool getTelemDataForTileAggregator(const std::map<uint32_t, std::string> telemNodesInPciPath, uint32_t subDeviceId, std::string &telemDir, std::string &guid, uint64_t &telemOffset);
+    static bool getTelemOffsetForContainer(SysmanProductHelper *pSysmanProductHelper, const std::string &telemDir, const std::string &key, uint64_t &telemOffset);
+    static bool readValue(const std::map<std::string, uint64_t> keyOffsetMap, const std::string &telemDir, const std::string &key, const uint64_t &telemOffset, uint32_t &value);
+    static bool readValue(const std::map<std::string, uint64_t> keyOffsetMap, const std::string &telemDir, const std::string &key, const uint64_t &telemOffset, uint64_t &value);
+    static bool isTelemetrySupportAvailable(LinuxSysmanImp *pLinuxSysmanImp, uint32_t subdeviceId);
 };
 
 } // namespace Sysman

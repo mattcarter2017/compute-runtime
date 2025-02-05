@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,13 +12,17 @@
 #include "shared/source/utilities/logger.h"
 #include "shared/test/common/debug_settings/debug_settings_manager_fixture.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
+#include "shared/test/common/helpers/gtest_helpers.h"
 #include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/mocks/mock_io_functions.h"
+#include "shared/test/common/mocks/mock_product_helper.h"
 #include "shared/test/common/test_macros/test.h"
 #include "shared/test/common/utilities/base_object_utils.h"
 
 #include <cstdio>
+#include <fstream>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -328,15 +332,25 @@ TEST(DebugSettingsManager, givenPrintDebugSettingsEnabledOnDisabledDebugManagerW
 }
 
 TEST(AllocationInfoLogging, givenBaseGraphicsAllocationWhenGettingImplementationSpecificAllocationInfoThenReturnEmptyInfoString) {
-    GraphicsAllocation graphicsAllocation(0, AllocationType::unknown, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
     EXPECT_STREQ(graphicsAllocation.getAllocationInfoString().c_str(), "");
+}
+
+TEST(AllocationInfoLogging, givenBaseGraphicsAllocationWhenGettingImplementationSpecificPatIndexInfoThenReturnEmptyInfoString) {
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+
+    MockProductHelper productHelper{};
+    EXPECT_STREQ(graphicsAllocation.getPatIndexInfoString(productHelper).c_str(), "");
 }
 
 TEST(DebugSettingsManager, givenDisabledDebugManagerWhenCreateThenOnlyReleaseVariablesAreRead) {
     bool settingsFileExists = fileExists(SettingsReader::settingsFileName);
     if (!settingsFileExists) {
         const char data[] = "LogApiCalls = 1\nMakeAllBuffersResident = 1";
-        writeDataToFile(SettingsReader::settingsFileName, &data, sizeof(data));
+        std::ofstream file;
+        file.open(SettingsReader::settingsFileName);
+        file << data;
+        file.close();
     }
 
     SettingsReader *reader = SettingsReader::createFileReader();
@@ -350,7 +364,7 @@ TEST(DebugSettingsManager, givenDisabledDebugManagerWhenCreateThenOnlyReleaseVar
     EXPECT_EQ(0, debugManager.flags.LogApiCalls.get());
 
     if (!settingsFileExists) {
-        remove(SettingsReader::settingsFileName);
+        std::remove(SettingsReader::settingsFileName);
     }
 }
 
@@ -358,7 +372,10 @@ TEST(DebugSettingsManager, givenEnabledDebugManagerWhenCreateThenAllVariablesAre
     bool settingsFileExists = fileExists(SettingsReader::settingsFileName);
     if (!settingsFileExists) {
         const char data[] = "LogApiCalls = 1\nMakeAllBuffersResident = 1";
-        writeDataToFile(SettingsReader::settingsFileName, &data, sizeof(data));
+        std::ofstream file;
+        file.open(SettingsReader::settingsFileName);
+        file << data;
+        file.close();
     }
 
     SettingsReader *reader = SettingsReader::createFileReader();
@@ -372,7 +389,7 @@ TEST(DebugSettingsManager, givenEnabledDebugManagerWhenCreateThenAllVariablesAre
     EXPECT_EQ(1, debugManager.flags.LogApiCalls.get());
 
     if (!settingsFileExists) {
-        remove(SettingsReader::settingsFileName);
+        std::remove(SettingsReader::settingsFileName);
     }
 }
 
@@ -427,4 +444,40 @@ TEST(DebugLog, WhenLogDebugStringCalledThenNothingIsPrintedToStdout) {
     logDebugString("test log");
     auto output = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(0u, output.size());
+}
+
+TEST(DurationLogTest, givenDurationGetTimeStringThenTimeStringIsCorrect) {
+    auto timeString = DurationLog::getTimeString();
+    for (auto c : timeString) {
+        EXPECT_TRUE(std::isdigit(c) || c == '[' || c == ']' || c == '.' || c == ' ');
+    }
+}
+
+TEST(DebugSettingsManager, GivenTbxOrTbxWithAubCsrTypeAndTbxFaultsEnabledWhenCallingIsTbxMngrEnabledThenReturnTrue) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.EnableTbxPageFaultManager.set(true);
+
+    NEO::debugManager.flags.SetCommandStreamReceiver.set(2);
+    EXPECT_TRUE(NEO::debugManager.isTbxPageFaultManagerEnabled());
+
+    NEO::debugManager.flags.SetCommandStreamReceiver.set(4);
+    EXPECT_TRUE(NEO::debugManager.isTbxPageFaultManagerEnabled());
+}
+
+TEST(DebugSettingsManager, GivenTbxFaultsDisabledWhenCallingIsTbxMngrEnabledThenReturnFalse) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.EnableTbxPageFaultManager.set(false);
+
+    EXPECT_FALSE(NEO::debugManager.isTbxPageFaultManagerEnabled());
+}
+
+TEST(DebugSettingsManager, GivenHardwareOrHardwareWithAubCsrTypeAndTbxFaultsEnabledWhenCallingIsTbxMngrEnabledThenReturnFalse) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.EnableTbxPageFaultManager.set(true);
+
+    NEO::debugManager.flags.SetCommandStreamReceiver.set(1);
+    EXPECT_FALSE(NEO::debugManager.isTbxPageFaultManagerEnabled());
+
+    NEO::debugManager.flags.SetCommandStreamReceiver.set(3);
+    EXPECT_FALSE(NEO::debugManager.isTbxPageFaultManagerEnabled());
 }

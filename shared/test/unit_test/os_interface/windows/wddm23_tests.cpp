@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -46,7 +46,7 @@ struct Wddm23TestsWithoutWddmInit : public ::testing::Test, GdiDllFixture {
         auto &gfxCoreHelper = this->executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
         osContext = std::make_unique<OsContextWin>(*wddm, 0, 0u,
                                                    EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*this->executionEnvironment.rootDeviceEnvironments[0])[0], preemptionMode));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
     }
 
     void TearDown() override {
@@ -107,6 +107,20 @@ TEST_F(Wddm23Tests, whenObjectIsDestructedThenDestroyHwQueue) {
     osContext->setHwQueue({hwQueue, 0, nullptr, 0});
     osContext.reset();
     EXPECT_EQ(hwQueue, getDestroyHwQueueDataFcn()->hHwQueue);
+}
+
+TEST_F(Wddm23Tests, whencreateMonitoredFenceForDirectSubmissionThenObtainHwQueueFenceAndReplaceResidencyControllerWithNewFence) {
+    EXPECT_EQ(osContext->getResidencyController().getMonitoredFence().fenceHandle, osContext->getHwQueue().progressFenceHandle);
+    osContext->getResidencyController().getMonitoredFence().currentFenceValue = 2u;
+    osContext->getResidencyController().getMonitoredFence().lastSubmittedFence = 1u;
+    MonitoredFence fence{};
+    wddm->getWddmInterface()->createMonitoredFenceForDirectSubmission(fence, *osContext);
+    EXPECT_EQ(osContext->getHwQueue().progressFenceHandle, fence.fenceHandle);
+    EXPECT_NE(osContext->getResidencyController().getMonitoredFence().fenceHandle, osContext->getHwQueue().progressFenceHandle);
+    EXPECT_EQ(osContext->getResidencyController().getMonitoredFence().currentFenceValue, 2u);
+    EXPECT_EQ(osContext->getResidencyController().getMonitoredFence().lastSubmittedFence, 1u);
+    EXPECT_EQ(fence.currentFenceValue, 2u);
+    EXPECT_EQ(fence.lastSubmittedFence, 1u);
 }
 
 TEST_F(Wddm23Tests, givenCmdBufferWhenSubmitCalledThenSetAllRequiredFiledsAndUpdateMonitoredFence) {
@@ -184,7 +198,7 @@ TEST_F(Wddm23Tests, givenCurrentPendingFenceValueGreaterThanPendingFenceValueWhe
     submitArgs.hwQueueHandle = osContext->getHwQueue().handle;
     submitArgs.monitorFence = &osContext->getResidencyController().getMonitoredFence();
 
-    VariableBackup<uint64_t> pagingFenceBackup(wddm->pagingFenceAddress);
+    VariableBackup<volatile uint64_t> pagingFenceBackup(wddm->pagingFenceAddress);
     *wddm->pagingFenceAddress = 1;
     wddm->currentPagingFenceValue = 1;
 
@@ -196,9 +210,9 @@ TEST_F(Wddm23Tests, givenCurrentPendingFenceValueGreaterThanPendingFenceValueWhe
     EXPECT_EQ(1u, wddm->waitOnGPUResult.called);
 }
 
-TEST_F(Wddm23Tests, givenDestructionOsContextWinWhenCallingDestroyMonitorFenceThenDoNotCallGdiDestroy) {
+TEST_F(Wddm23Tests, givenDestructionOsContextWinWhenCallingDestroyMonitorFenceThenDoNotCallDestroy) {
     osContext.reset(nullptr);
-    EXPECT_EQ(1u, wddmMockInterface->destroyMonitorFenceCalled);
+    EXPECT_EQ(0u, wddmMockInterface->destroyMonitorFenceCalled);
     EXPECT_EQ(0u, getDestroySynchronizationObjectDataFcn()->hSyncObject);
 }
 

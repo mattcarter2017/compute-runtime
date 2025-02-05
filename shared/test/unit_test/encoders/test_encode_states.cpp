@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -47,7 +47,7 @@ HWTEST_F(CommandEncodeStatesTest, GivenCommandStreamWhenEncodeCopySamplerStateTh
     EXPECT_EQ(pSmplr->getIndirectStatePointer(), usedBefore);
 }
 
-HWTEST2_F(CommandEncodeStatesTest, givenDebugVariableSetWhenCopyingSamplerStateThenSetLowQualityFilterMode, IsAtLeastGen12lp) {
+HWTEST2_F(CommandEncodeStatesTest, givenDebugVariableSetWhenCopyingSamplerStateThenSetLowQualityFilterMode, MatchAny) {
     bool deviceUsesDsh = pDevice->getHardwareInfo().capabilityTable.supportsImages;
     if (!deviceUsesDsh) {
         GTEST_SKIP();
@@ -78,10 +78,8 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorWit
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
     using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -103,10 +101,8 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorWit
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
     using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -138,11 +134,10 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessHeapHelperAndGlobalDshNot
 
     using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = false;
+    auto globalBase = mockHelper->getGlobalHeapsBase();
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
 
@@ -161,7 +156,7 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessHeapHelperAndGlobalDshNot
 
     auto usedBefore = dsh->getUsed();
     EncodeStates<FamilyType>::copySamplerState(dsh, borderColorSize, numSamplers, 0, memory, pDevice->getBindlessHeapsHelper(), pDevice->getRootDeviceEnvironment());
-    auto expectedValue = usedBefore;
+    auto expectedValue = usedBefore + ptrDiff(dsh->getGpuBase(), globalBase);
     auto usedAfter = dsh->getUsed();
 
     EXPECT_EQ(alignUp(usedBefore + sizeof(SAMPLER_BORDER_COLOR_STATE), INTERFACE_DESCRIPTOR_DATA::SAMPLERSTATEPOINTER_ALIGN_SIZE) + sizeof(SAMPLER_STATE), usedAfter);
@@ -176,12 +171,9 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorsRe
     using SAMPLER_BORDER_COLOR_STATE = typename FamilyType::SAMPLER_BORDER_COLOR_STATE;
     DebugManagerStateRestore restorer;
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
-    using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -198,12 +190,9 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorsGr
     using SAMPLER_BORDER_COLOR_STATE = typename FamilyType::SAMPLER_BORDER_COLOR_STATE;
     DebugManagerStateRestore restorer;
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
-    using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -220,12 +209,9 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorsBl
     using SAMPLER_BORDER_COLOR_STATE = typename FamilyType::SAMPLER_BORDER_COLOR_STATE;
     DebugManagerStateRestore restorer;
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
-    using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -242,12 +228,9 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorsAl
     using SAMPLER_BORDER_COLOR_STATE = typename FamilyType::SAMPLER_BORDER_COLOR_STATE;
     DebugManagerStateRestore restorer;
     debugManager.flags.UseExternalAllocatorForSshAndDsh.set(1);
-    using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
     uint32_t numSamplers = 1;
-    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice->getMemoryManager(),
-                                                               pDevice->getNumGenericSubDevices() > 1,
-                                                               pDevice->getRootDeviceIndex(),
-                                                               pDevice->getDeviceBitfield());
+    auto mockHelper = std::make_unique<MockBindlesHeapsHelper>(pDevice,
+                                                               pDevice->getNumGenericSubDevices() > 1);
     mockHelper->globalBindlessDsh = true;
 
     pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->bindlessHeapsHelper.reset(mockHelper.release());
@@ -262,8 +245,6 @@ HWTEST_F(BindlessCommandEncodeStatesTest, GivenBindlessEnabledWhenBorderColorsAl
 
 HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationProvidedThenUseAllocationAsInput) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
 
     void *stateBuffer = alignedMalloc(sizeof(RENDER_SURFACE_STATE), sizeof(RENDER_SURFACE_STATE));
     ASSERT_NE(nullptr, stateBuffer);
@@ -278,7 +259,7 @@ HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationPr
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
     length.length = static_cast<uint32_t>(allocSize - 1);
-    GraphicsAllocation allocation(0, AllocationType::unknown, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
 
     NEO::EncodeSurfaceStateArgs args;
     args.outMemory = stateBuffer;
@@ -299,7 +280,7 @@ HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationPr
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationNotProvidedThenStateTypeIsNull) {
+HWTEST2_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationNotProvidedThenStateTypeIsNull, MatchAny) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
 
     void *stateBuffer = alignedMalloc(sizeof(RENDER_SURFACE_STATE), sizeof(RENDER_SURFACE_STATE));
@@ -309,11 +290,9 @@ HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationNo
     memset(stateBuffer, 0, sizeof(RENDER_SURFACE_STATE));
 
     size_t size = 0x1000;
-    SurfaceStateBufferLength length;
 
     uint64_t gpuAddr = 0;
     size_t allocSize = size;
-    length.length = static_cast<uint32_t>(allocSize - 1);
 
     NEO::EncodeSurfaceStateArgs args;
     args.outMemory = stateBuffer;
@@ -328,12 +307,13 @@ HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenAllocationNo
     EncodeSurfaceState<FamilyType>::encodeBuffer(args);
 
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_NULL, state->getSurfaceType());
-    EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
-
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    }
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenGpuCoherencyProvidedThenCoherencyGpuIsSet) {
+HWTEST2_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenGpuCoherencyProvidedThenCoherencyGpuIsSet, IsWithinXeGfxFamily) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
 
     void *stateBuffer = alignedMalloc(sizeof(RENDER_SURFACE_STATE), sizeof(RENDER_SURFACE_STATE));
@@ -343,11 +323,9 @@ HWTEST_F(CommandEncodeStatesTest, givenCreatedSurfaceStateBufferWhenGpuCoherency
     memset(stateBuffer, 0, sizeof(RENDER_SURFACE_STATE));
 
     size_t size = 0x1000;
-    SurfaceStateBufferLength length;
 
     uint64_t gpuAddr = 0;
     size_t allocSize = size;
-    length.length = static_cast<uint32_t>(allocSize - 1);
 
     NEO::EncodeSurfaceStateArgs args;
     args.outMemory = stateBuffer;
@@ -454,80 +432,10 @@ HWTEST_F(CommandEncodeStatesTest, givenAnUnalignedDstPtrThenCorrectAlignedPtrAnd
     EXPECT_NE(0u, offset);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, CommandEncodeStatesTest, whenAdjustPipelineSelectIsCalledThenNothingHappens) {
-    using PIPELINE_SELECT = typename FamilyType::PIPELINE_SELECT;
+HWCMDTEST_F(IGFX_GEN12LP_CORE, CommandEncodeStatesTest, whenAdjustPipelineSelectIsCalledThenNothingHappens) {
     auto initialUsed = cmdContainer->getCommandStream()->getUsed();
     NEO::EncodeComputeMode<FamilyType>::adjustPipelineSelect(*cmdContainer, descriptor);
     EXPECT_EQ(initialUsed, cmdContainer->getCommandStream()->getUsed());
-}
-
-HWTEST2_F(CommandEncodeStatesTest, whenProgramComputeModeCommandModeIsCalledThenThreadArbitrationPolicyIsProgrammed, IsAtMostGen11) {
-    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    auto initialUsed = cmdContainer->getCommandStream()->getUsed();
-    auto expectedSize = sizeof(MI_LOAD_REGISTER_IMM) + sizeof(PIPE_CONTROL);
-    StreamProperties streamProperties{};
-    streamProperties.stateComputeMode.threadArbitrationPolicy.value = ThreadArbitrationPolicy::AgeBased;
-    streamProperties.stateComputeMode.threadArbitrationPolicy.isDirty = true;
-    auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
-    NEO::EncodeComputeMode<FamilyType>::programComputeModeCommand(*cmdContainer->getCommandStream(),
-                                                                  streamProperties.stateComputeMode, rootDeviceEnvironment);
-
-    if constexpr (TestTraits<gfxCoreFamily>::programComputeModeCommandProgramsThreadArbitrationPolicy) {
-        GenCmdList commands;
-        CmdParse<FamilyType>::parseCommandBuffer(commands, ptrOffset(cmdContainer->getCommandStream()->getCpuBase(), initialUsed), cmdContainer->getCommandStream()->getUsed());
-
-        auto cmdCount = findAll<MI_LOAD_REGISTER_IMM *>(commands.begin(), commands.end()).size();
-        EXPECT_EQ(1u, cmdCount);
-        cmdCount = findAll<PIPE_CONTROL *>(commands.begin(), commands.end()).size();
-        EXPECT_EQ(1u, cmdCount);
-        EXPECT_EQ(initialUsed + expectedSize, cmdContainer->getCommandStream()->getUsed());
-    } else {
-        EXPECT_EQ(initialUsed, cmdContainer->getCommandStream()->getUsed());
-    }
-}
-
-HWTEST2_F(CommandEncodeStatesTest, whenProgramComputeModeCommandModeIsCalledThenNonCoherentIsProgrammed, IsAtMostGen11) {
-    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    auto initialUsed = cmdContainer->getCommandStream()->getUsed();
-    [[maybe_unused]] auto expectedSize = sizeof(MI_LOAD_REGISTER_IMM);
-    StreamProperties streamProperties{};
-    streamProperties.stateComputeMode.threadArbitrationPolicy.value = ThreadArbitrationPolicy::AgeBased;
-    streamProperties.stateComputeMode.isCoherencyRequired.isDirty = true;
-    auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
-    NEO::EncodeComputeMode<FamilyType>::programComputeModeCommand(*cmdContainer->getCommandStream(),
-                                                                  streamProperties.stateComputeMode, rootDeviceEnvironment);
-
-    if constexpr (TestTraits<gfxCoreFamily>::programComputeModeCommandProgramsNonCoherent) {
-        GenCmdList commands;
-        CmdParse<FamilyType>::parseCommandBuffer(commands, ptrOffset(cmdContainer->getCommandStream()->getCpuBase(), initialUsed), cmdContainer->getCommandStream()->getUsed());
-
-        auto cmdCount = findAll<MI_LOAD_REGISTER_IMM *>(commands.begin(), commands.end()).size();
-        EXPECT_EQ(1u, cmdCount);
-        EXPECT_EQ(initialUsed + expectedSize, cmdContainer->getCommandStream()->getUsed());
-    } else {
-        EXPECT_EQ(initialUsed, cmdContainer->getCommandStream()->getUsed());
-    }
-}
-
-HWTEST2_F(CommandEncodeStatesTest, whenGetCmdSizeForComputeModeThenCorrectValueIsReturned, IsAtMostGen11) {
-    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    auto expectedScmSize = 0u;
-
-    if constexpr (TestTraits<gfxCoreFamily>::programComputeModeCommandProgramsThreadArbitrationPolicy) {
-        expectedScmSize += sizeof(MI_LOAD_REGISTER_IMM) + sizeof(PIPE_CONTROL);
-    }
-    if constexpr (TestTraits<gfxCoreFamily>::programComputeModeCommandProgramsNonCoherent) {
-        expectedScmSize += sizeof(MI_LOAD_REGISTER_IMM);
-    }
-    EXPECT_EQ(expectedScmSize, EncodeComputeMode<FamilyType>::getCmdSizeForComputeMode(this->pDevice->getRootDeviceEnvironment(), false, false));
-
-    UltDeviceFactory deviceFactory{1, 0};
-    auto &csr = deviceFactory.rootDevices[0]->getUltCommandStreamReceiver<FamilyType>();
-    csr.streamProperties.stateComputeMode.setPropertiesAll(false, 0, ThreadArbitrationPolicy::AgeBased, PreemptionMode::Disabled);
-    EXPECT_EQ(expectedScmSize, csr.getCmdSizeForComputeMode());
 }
 
 HWTEST2_F(CommandEncodeStatesTest, givenHeapSharingEnabledWhenRetrievingNotInitializedSshThenExpectCorrectSbaCommand, IsAtLeastXeHpCore) {

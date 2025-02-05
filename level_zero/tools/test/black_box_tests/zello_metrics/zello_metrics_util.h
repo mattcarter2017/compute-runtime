@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -85,6 +85,7 @@ ze_command_queue_handle_t createCommandQueue(ze_context_handle_t &contextHandle,
 ze_command_list_handle_t createCommandList(ze_context_handle_t &contextHandle, ze_device_handle_t &deviceHandle);
 ze_command_list_handle_t createImmediateCommandList(ze_context_handle_t &contextHandle, ze_device_handle_t &deviceHandle);
 void printMetricGroupProperties(const zet_metric_group_properties_t &properties);
+void printMetricGroupAndMetricProperties(zet_metric_group_handle_t metricGroup);
 void printMetricProperties(const zet_metric_properties_t &properties);
 void sleep(uint32_t milliseconds);
 bool getTestMachineConfiguration(TestMachineConfiguration &machineConfig);
@@ -95,5 +96,10 @@ ze_event_pool_handle_t createHostVisibleEventPool(ze_context_handle_t contextHan
 ze_event_handle_t createHostVisibleEvent(ze_event_pool_handle_t hostVisibleEventPool);
 void obtainCalculatedMetrics(zet_metric_group_handle_t metricGroup, uint8_t *rawData, uint32_t rawDataSize);
 void showMetricsExportData(uint8_t *pExportData, size_t exportDataSize);
+
+// os specific methods
+bool osStreamMpCollectionWorkloadDifferentProcess();
+bool osStreamMpCollectionWorkloadSameProcess();
+int32_t osRunAllTests(int32_t runStatus);
 
 } // namespace ZelloMetricsUtility

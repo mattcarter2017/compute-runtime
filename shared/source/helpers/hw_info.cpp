@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,7 +9,9 @@
 
 #include "shared/source/command_stream/linear_stream.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
+#include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/gfx_core_helper.h"
+#include "shared/source/release_helper/release_helper.h"
 
 #include <algorithm>
 
@@ -128,4 +130,57 @@ aub_stream::EngineType getChosenEngineType(const HardwareInfo &hwInfo) {
                ? hwInfo.capabilityTable.defaultEngineType
                : static_cast<aub_stream::EngineType>(debugManager.flags.NodeOrdinal.get());
 }
+void setupDefaultGtSysInfo(HardwareInfo *hwInfo, const ReleaseHelper *releaseHelper) {
+    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
+    gtSysInfo->L3CacheSizeInKb = 1;
+    gtSysInfo->CCSInfo.IsValid = 1;
+    gtSysInfo->CCSInfo.NumberOfCCSEnabled = 1;
+    gtSysInfo->CCSInfo.Instances.CCSEnableMask = 0b1;
+    // non-zero values for unit tests
+    if (gtSysInfo->SliceCount == 0) {
+        gtSysInfo->SliceCount = 2;
+        gtSysInfo->SubSliceCount = 8;
+        gtSysInfo->DualSubSliceCount = gtSysInfo->SubSliceCount;
+        gtSysInfo->EUCount = 64;
+
+        gtSysInfo->MaxEuPerSubSlice = gtSysInfo->EUCount / gtSysInfo->SubSliceCount;
+        gtSysInfo->MaxSlicesSupported = gtSysInfo->SliceCount;
+        gtSysInfo->MaxSubSlicesSupported = gtSysInfo->SubSliceCount;
+        gtSysInfo->MaxDualSubSlicesSupported = gtSysInfo->DualSubSliceCount;
+    }
+
+    gtSysInfo->ThreadCount = gtSysInfo->EUCount * releaseHelper->getNumThreadsPerEu();
+}
+
+void setupDefaultFeatureTableAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper) {
+    FeatureTable *featureTable = &hwInfo->featureTable;
+
+    featureTable->flags.ftrAstcHdr2D = true;
+    featureTable->flags.ftrAstcLdr2D = true;
+    featureTable->flags.ftrCCSNode = true;
+    featureTable->flags.ftrCCSRing = true;
+    featureTable->flags.ftrFbc = true;
+    featureTable->flags.ftrGpGpuMidBatchPreempt = true;
+    featureTable->flags.ftrGpGpuThreadGroupLevelPreempt = true;
+    featureTable->flags.ftrIA32eGfxPTEs = true;
+    featureTable->flags.ftrL3IACoherency = true;
+    featureTable->flags.ftrLinearCCS = true;
+    featureTable->flags.ftrPPGTT = true;
+    featureTable->flags.ftrSVM = true;
+    featureTable->flags.ftrStandardMipTailFormat = true;
+    featureTable->flags.ftrTileMappedResource = true;
+    featureTable->flags.ftrTranslationTable = true;
+    featureTable->flags.ftrUserModeTranslationTable = true;
+
+    featureTable->flags.ftrXe2Compression = releaseHelper.getFtrXe2Compression();
+
+    WorkaroundTable *workaroundTable = &hwInfo->workaroundTable;
+
+    workaroundTable->flags.wa4kAlignUVOffsetNV12LinearSurface = true;
+}
+
+uint32_t getNumSubSlicesPerSlice(const HardwareInfo &hwInfo) {
+    return static_cast<uint32_t>(Math::divideAndRoundUp(hwInfo.gtSystemInfo.SubSliceCount, hwInfo.gtSystemInfo.SliceCount));
+}
+
 } // namespace NEO

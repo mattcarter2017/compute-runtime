@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/memory_manager/memory_pool.h"
 #include "shared/source/utilities/logger.h"
+#include "shared/source/utilities/logger_neo_only.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/gtest_helpers.h"
 #include "shared/test/common/utilities/base_object_utils.h"
@@ -27,16 +28,31 @@
 
 using namespace NEO;
 
-TEST(FileLogger, WhenFileLoggerIsCreatedThenItIsEnabled) {
+TEST(FileLogger, GivenFullyEnabledFileLoggerIsCreatedThenItIsEnabled) {
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(std::string(""), flags);
 
     EXPECT_TRUE(fileLogger.enabled());
 }
 
+TEST(FileLogger, GivenReleseInternalFileLoggerIsCreatedThenItIsEnabled) {
+    DebugVariables flags;
+    ReleaseInternalFileLogger fileLogger(std::string(""), flags);
+
+    EXPECT_TRUE(fileLogger.enabled());
+}
+
+TEST(FileLogger, GivenFullyDisabledFileLoggerIsCreatedThenItIsDisabled) {
+    DebugVariables flags;
+    FullyDisabledFileLogger fileLogger(std::string(""), flags);
+
+    EXPECT_FALSE(fileLogger.enabled());
+}
+
 TEST(FileLogger, GivenFileLoggerWhenSettingFileNameThenCorrectFilenameIsSet) {
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(std::string(""), flags);
+    fileLogger.useRealFiles(false);
     fileLogger.setLogFileName("new_filename");
     EXPECT_STREQ("new_filename", fileLogger.getLogFileName());
 }
@@ -45,6 +61,7 @@ TEST(FileLogger, GivenEnabledDebugFunctinalityWhenLoggingApiCallsThenDumpToFile)
     DebugVariables flags;
     flags.LogApiCalls.set(true);
     FullyEnabledFileLogger fileLogger(std::string("test.log"), flags);
+    fileLogger.useRealFiles(false);
 
     fileLogger.logApiCall("searchString", true, 0);
     fileLogger.logApiCall("searchString2", false, 0);
@@ -78,7 +95,7 @@ TEST(FileLogger, GivenDisabledDebugFunctinalityWhenLoggingApiCallsThenFileIsNotC
     FullyDisabledFileLogger fileLogger(std::string("  "), flags);
 
     // Log file not created
-    bool logFileCreated = fileExists(fileLogger.getLogFileName());
+    bool logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     fileLogger.logApiCall("searchString", true, 0);
@@ -94,22 +111,22 @@ TEST(FileLogger, GivenIncorrectFilenameFileWhenLoggingApiCallsThenFileIsNotCreat
     DebugVariables flags;
     flags.LogApiCalls.set(true);
     FullyEnabledFileLogger fileLogger(std::string("test.log"), flags);
-    fileLogger.useRealFiles(true);
     fileLogger.writeToFile("", "", 0, std::ios_base::in | std::ios_base::out);
 
     EXPECT_FALSE(fileLogger.wasFileCreated(fileLogger.getLogFileName()));
+    EXPECT_FALSE(virtualFileExists(fileLogger.getLogFileName()));
 }
 
 TEST(FileLogger, GivenCorrectFilenameFileWhenLoggingApiCallsThenFileIsCreated) {
     std::string testFile = "testfile";
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(testFile, flags);
-    fileLogger.useRealFiles(true);
+    fileLogger.useRealFiles(false);
     fileLogger.writeToFile(testFile, "test", 4, std::fstream::out);
 
-    EXPECT_TRUE(fileExists(testFile));
-    if (fileExists(testFile)) {
-        std::remove(testFile.c_str());
+    EXPECT_TRUE(virtualFileExists(fileLogger.getLogFileName()));
+    if (virtualFileExists(fileLogger.getLogFileName())) {
+        removeVirtualFile(fileLogger.getLogFileName());
     }
 }
 
@@ -118,12 +135,12 @@ TEST(FileLogger, GivenSameFileNameWhenCreatingNewInstanceThenOldFileIsRemoved) {
     DebugVariables flags;
     flags.LogApiCalls.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
-    fileLogger.useRealFiles(true);
+    fileLogger.useRealFiles(false);
     fileLogger.writeToFile(fileLogger.getLogFileName(), "test", 4, std::fstream::out);
 
-    EXPECT_TRUE(fileExists(fileLogger.getLogFileName()));
+    EXPECT_TRUE(virtualFileExists(fileLogger.getLogFileName()));
     FullyEnabledFileLogger fileLogger2(testFile, flags);
-    EXPECT_FALSE(fileExists(fileLogger.getLogFileName()));
+    EXPECT_FALSE(virtualFileExists(fileLogger.getLogFileName()));
 }
 
 TEST(FileLogger, GivenSameFileNameWhenCreatingNewFullyDisabledLoggerThenOldFileIsNotRemoved) {
@@ -131,13 +148,15 @@ TEST(FileLogger, GivenSameFileNameWhenCreatingNewFullyDisabledLoggerThenOldFileI
     DebugVariables flags;
     flags.LogApiCalls.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
-    fileLogger.useRealFiles(true);
+    fileLogger.useRealFiles(false);
     fileLogger.writeToFile(fileLogger.getLogFileName(), "test", 4, std::fstream::out);
 
-    EXPECT_TRUE(fileExists(fileLogger.getLogFileName()));
+    EXPECT_TRUE(virtualFileExists(fileLogger.getLogFileName()));
     FullyDisabledFileLogger fileLogger2(testFile, flags);
-    EXPECT_TRUE(fileExists(fileLogger.getLogFileName()));
-    std::remove(fileLogger.getLogFileName());
+    EXPECT_TRUE(virtualFileExists(fileLogger.getLogFileName()));
+    if (virtualFileExists(fileLogger.getLogFileName())) {
+        removeVirtualFile(fileLogger.getLogFileName());
+    }
 }
 
 TEST(FileLogger, GivenFlagIsFalseWhenLoggingThenOnlyCustomLogsAreDumped) {
@@ -146,9 +165,10 @@ TEST(FileLogger, GivenFlagIsFalseWhenLoggingThenOnlyCustomLogsAreDumped) {
     flags.LogApiCalls.set(false);
 
     FullyEnabledFileLogger fileLogger(testFile, flags);
+    fileLogger.useRealFiles(false);
 
     // Log file not created
-    bool logFileCreated = fileExists(fileLogger.getLogFileName());
+    bool logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     fileLogger.logApiCall("searchString", true, 0);
@@ -244,6 +264,7 @@ TEST(FileLogger, WhenDumpingKernelThenFileIsCreated) {
     DebugVariables flags;
     flags.DumpKernels.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
+    fileLogger.useRealFiles(false);
     std::string kernelDumpFile = "testDumpKernel";
 
     // test kernel dumping
@@ -268,6 +289,7 @@ TEST(FileLogger, WhenDumpingBinaryFileThenFileIsCreated) {
     DebugVariables flags;
     flags.DumpKernels.set(true);
     FullyEnabledFileLogger fileLogger(testFile, flags);
+    fileLogger.useRealFiles(false);
     std::string programDumpFile = "programBinary.bin";
     size_t length = 4;
     unsigned char binary[4];
@@ -413,6 +435,7 @@ TEST(FileLogger, givenEnabledLogWhenLogDebugStringCalledThenStringIsWrittenToFil
     std::string testFile = "testfile";
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(testFile, flags);
+    fileLogger.useRealFiles(false);
 
     fileLogger.logDebugString(true, "test log");
     EXPECT_EQ(std::string("test log"), fileLogger.getFileString(testFile));
@@ -432,7 +455,7 @@ TEST(AllocationTypeLogging, givenGraphicsAllocationTypeWhenConvertingToStringThe
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(testFile, flags);
 
-    std::array<std::pair<NEO::AllocationType, const char *>, 40> allocationTypeValues = {
+    std::array<std::pair<NEO::AllocationType, const char *>, 41> allocationTypeValues = {
         {{AllocationType::buffer, "BUFFER"},
          {AllocationType::bufferHostMemory, "BUFFER_HOST_MEMORY"},
          {AllocationType::commandBuffer, "COMMAND_BUFFER"},
@@ -464,6 +487,7 @@ TEST(AllocationTypeLogging, givenGraphicsAllocationTypeWhenConvertingToStringThe
          {AllocationType::svmCpu, "SVM_CPU"},
          {AllocationType::svmGpu, "SVM_GPU"},
          {AllocationType::svmZeroCopy, "SVM_ZERO_COPY"},
+         {AllocationType::syncBuffer, "SYNC_BUFFER"},
          {AllocationType::tagBuffer, "TAG_BUFFER"},
          {AllocationType::globalFence, "GLOBAL_FENCE"},
          {AllocationType::timestampPacketTagBuffer, "TIMESTAMP_PACKET_TAG_BUFFER"},
@@ -475,7 +499,7 @@ TEST(AllocationTypeLogging, givenGraphicsAllocationTypeWhenConvertingToStringThe
          {AllocationType::swTagBuffer, "SW_TAG_BUFFER"}}};
 
     for (const auto &[type, str] : allocationTypeValues) {
-        GraphicsAllocation graphicsAllocation(0, type, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+        GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, type, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
         auto result = getAllocationTypeString(&graphicsAllocation);
 
         EXPECT_STREQ(result, str);
@@ -487,7 +511,7 @@ TEST(AllocationTypeLoggingSingle, givenGraphicsAllocationTypeWhenConvertingToStr
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(testFile, flags);
 
-    GraphicsAllocation graphicsAllocation(0, static_cast<AllocationType>(999), nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, static_cast<AllocationType>(999), nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
 
     auto result = getAllocationTypeString(&graphicsAllocation);
 
@@ -499,7 +523,7 @@ TEST(AllocationTypeLoggingSingle, givenAllocationTypeWhenConvertingToStringThenS
     DebugVariables flags;
     FullyEnabledFileLogger fileLogger(testFile, flags);
 
-    GraphicsAllocation graphicsAllocation(0, AllocationType::unknown, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
 
     for (uint32_t i = 0; i < static_cast<uint32_t>(AllocationType::count); i++) {
         graphicsAllocation.setAllocationType(static_cast<AllocationType>(i));
@@ -517,10 +541,10 @@ TEST(AllocationTypeLoggingSingle, givenDebugVariableToCaptureAllocationTypeWhenF
 
     FullyEnabledFileLogger fileLogger(testFile, flags);
 
-    GraphicsAllocation graphicsAllocation(0, AllocationType::commandBuffer, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::commandBuffer, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
 
     testing::internal::CaptureStdout();
-    fileLogger.logAllocation(&graphicsAllocation);
+    logAllocation(fileLogger, &graphicsAllocation, nullptr);
 
     std::string output = testing::internal::GetCapturedStdout();
     std::string expectedOutput = "Created Graphics Allocation of type COMMAND_BUFFER\n";
@@ -534,15 +558,16 @@ TEST(AllocationTypeLoggingSingle, givenLogAllocationTypeWhenLoggingAllocationThe
     flags.LogAllocationType.set(1);
 
     FullyEnabledFileLogger fileLogger(testFile, flags);
+    fileLogger.useRealFiles(false);
 
-    GraphicsAllocation graphicsAllocation(0, AllocationType::commandBuffer, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
+    GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::commandBuffer, nullptr, 0, 0, MemoryPool::memoryNull, MemoryManager::maxOsContextCount, 0llu);
 
     // Log file not created
-    bool logFileCreated = fileExists(fileLogger.getLogFileName());
+    bool logFileCreated = virtualFileExists(fileLogger.getLogFileName());
     EXPECT_FALSE(logFileCreated);
 
     testing::internal::CaptureStdout();
-    fileLogger.logAllocation(&graphicsAllocation);
+    logAllocation(fileLogger, &graphicsAllocation, nullptr);
 
     std::string output = testing::internal::GetCapturedStdout();
     std::string expectedOutput = "Created Graphics Allocation of type COMMAND_BUFFER\n";
@@ -551,7 +576,7 @@ TEST(AllocationTypeLoggingSingle, givenLogAllocationTypeWhenLoggingAllocationThe
 
     if (fileLogger.wasFileCreated(fileLogger.getLogFileName())) {
         auto str = fileLogger.getFileString(fileLogger.getLogFileName());
-        EXPECT_TRUE(str.find("AllocationType: ") != std::string::npos);
+        EXPECT_TRUE(str.find("Type: ") != std::string::npos);
     } else {
         EXPECT_FALSE(true);
     }
@@ -572,7 +597,7 @@ TEST(MemoryPoolLogging, givenGraphicsMemoryPoolWhenConvertingToStringThenCorrect
          {MemoryPool::systemCpuInaccessible, "SystemCpuInaccessible"}}};
 
     for (const auto &[pool, str] : memoryPoolValues) {
-        GraphicsAllocation graphicsAllocation(0, AllocationType::unknown, nullptr, 0, 0, pool, MemoryManager::maxOsContextCount, 0llu);
+        GraphicsAllocation graphicsAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 0, 0, pool, MemoryManager::maxOsContextCount, 0llu);
         auto result = getMemoryPoolString(&graphicsAllocation);
 
         EXPECT_STREQ(result, str);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -40,6 +40,7 @@ class SVMAllocsManager;
 class Program;
 class Platform;
 class TagAllocatorBase;
+class StagingBufferManager;
 
 template <>
 struct OpenCLObjectMapper<_cl_context> {
@@ -78,6 +79,10 @@ class Context : public BaseObject<_cl_context> {
                                        void *hostPtr,
                                        cl_int &errcodeRet);
         bool flagsAllowBufferFromPool(const cl_mem_flags &flags, const cl_mem_flags_intel &flagsIntel) const;
+        static inline uint32_t calculateMaxPoolCount(uint64_t totalMemory, size_t percentOfMemory) {
+            const auto maxPoolCount = static_cast<uint32_t>(totalMemory * (percentOfMemory / 100.0) / BufferPoolAllocator::aggregatedSmallBuffersPoolSize);
+            return maxPoolCount ? maxPoolCount : 1u;
+        }
 
       protected:
         Buffer *allocateFromPools(const MemoryProperties &memoryProperties,
@@ -86,7 +91,6 @@ class Context : public BaseObject<_cl_context> {
                                   size_t requestedSize,
                                   void *hostPtr,
                                   cl_int &errcodeRet);
-
         Context *context{nullptr};
     };
 
@@ -113,7 +117,6 @@ class Context : public BaseObject<_cl_context> {
             if (bufferPoolAllocator.isAggregatedSmallBuffersEnabled(pContext)) {
                 bufferPoolAllocator.initAggregatedSmallBuffers(pContext);
             }
-            pContext->initializeUsmAllocationPools();
         }
         gtpinNotifyContextCreate(pContext);
         return pContext;
@@ -251,6 +254,8 @@ class Context : public BaseObject<_cl_context> {
     void initializeUsmAllocationPools();
     void cleanupUsmAllocationPools();
 
+    StagingBufferManager *getStagingBufferManager() const;
+
   protected:
     struct BuiltInKernel {
         const char *pSource = nullptr;
@@ -295,8 +300,11 @@ class Context : public BaseObject<_cl_context> {
     std::unique_ptr<TagAllocatorBase> multiRootDeviceTimestampPacketAllocator;
     std::mutex multiRootDeviceAllocatorMtx;
 
+    std::unique_ptr<StagingBufferManager> stagingBufferManager;
+
     bool interopUserSync = false;
     bool resolvesRequiredInKernels = false;
     bool nonZebinContext = false;
+    bool usmPoolInitialized = false;
 };
 } // namespace NEO

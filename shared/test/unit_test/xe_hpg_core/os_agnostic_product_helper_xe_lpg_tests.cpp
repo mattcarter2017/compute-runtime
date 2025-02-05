@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,6 +12,7 @@
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/source/release_helper/release_helper.h"
 #include "shared/test/common/fixtures/device_fixture.h"
+#include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/helpers/gtest_helpers.h"
 #include "shared/test/common/mocks/mock_device.h"
@@ -43,14 +44,14 @@ HWTEST2_F(XeLpgHwInfoTests, whenSetupHardwareInfoBaseThenGtSystemInfoIsCorrect, 
     GT_SYSTEM_INFO &gtSystemInfo = hwInfo.gtSystemInfo;
     hardwareInfoSetup[hwInfo.platform.eProductFamily](&hwInfo, compilerProductHelper->getHwInfoConfig(hwInfo), false, releaseHelper.get());
 
-    EXPECT_EQ(336u, gtSystemInfo.TotalVsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalHsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalDsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalGsThreads);
-    EXPECT_EQ(64u, gtSystemInfo.TotalPsThreadsWindowerRange);
-    EXPECT_EQ(8u, gtSystemInfo.CsrSizeInMb);
+    EXPECT_EQ(0u, gtSystemInfo.TotalVsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalHsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalDsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalGsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalPsThreadsWindowerRange);
+    EXPECT_EQ(0u, gtSystemInfo.CsrSizeInMb);
     EXPECT_FALSE(gtSystemInfo.IsL3HashModeEnabled);
-    EXPECT_FALSE(gtSystemInfo.IsDynamicallyPopulated);
+    EXPECT_TRUE(gtSystemInfo.IsDynamicallyPopulated);
 }
 
 HWTEST2_F(XeLpgHwInfoTests, whenCheckDirectSubmissionEnginesThenProperValuesAreSetToTrue, IsXeLpg) {
@@ -166,26 +167,10 @@ HWTEST2_F(XeLpgHwInfoTests, GivenEmptyHwInfoForUnitTestsWhenSetupHardwareInfoIsC
     EXPECT_GT_VAL(gtSystemInfo.MaxSlicesSupported, 0u);
     EXPECT_GT_VAL(gtSystemInfo.MaxSubSlicesSupported, 0u);
 
-    EXPECT_GT_VAL(gtSystemInfo.L3BankCount, 0u);
-
     EXPECT_TRUE(gtSystemInfo.CCSInfo.IsValid);
     EXPECT_GT_VAL(gtSystemInfo.CCSInfo.NumberOfCCSEnabled, 0u);
 
     EXPECT_NE_VAL(hwInfoToSet.featureTable.ftrBcsInfo, 0u);
-    EXPECT_TRUE(gtSystemInfo.IsDynamicallyPopulated);
-
-    for (uint32_t i = 0; i < gtSystemInfo.SliceCount; i++) {
-        EXPECT_TRUE(gtSystemInfo.SliceInfo[i].Enabled);
-    }
-}
-
-HWTEST2_F(XeLpgProductHelperTests, givenBooleanUncachedWhenCallOverridePatIndexThenProperPatIndexIsReturned, IsXeLpg) {
-    uint64_t patIndex = 1u;
-    bool isUncached = true;
-    EXPECT_EQ(2u, productHelper->overridePatIndex(isUncached, patIndex));
-
-    isUncached = false;
-    EXPECT_EQ(patIndex, productHelper->overridePatIndex(isUncached, patIndex));
 }
 
 HWTEST2_F(XeLpgProductHelperTests, whenGettingAubstreamProductFamilyThenProperEnumValueIsReturned, IsXeLpg) {
@@ -201,12 +186,25 @@ HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenIsInitBuiltinAsyncSuppo
     EXPECT_FALSE(productHelper->isInitBuiltinAsyncSupported(*defaultHwInfo));
 }
 
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCheckIsCopyBufferRectSplitSupportedThenReturnsFalse, IsXeLpg) {
+    EXPECT_FALSE(productHelper->isCopyBufferRectSplitSupported());
+}
+
 HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenGettingEvictIfNecessaryFlagSupportedThenExpectTrue, IsXeLpg) {
     EXPECT_TRUE(productHelper->isEvictionIfNecessaryFlagSupported());
 }
 
-HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCheckBlitEnqueueAllowedThenReturnFalse, IsXeLpg) {
-    EXPECT_FALSE(productHelper->blitEnqueueAllowed());
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCheckBlitEnqueuePreferredThenReturnFalse, IsXeLpg) {
+    EXPECT_FALSE(productHelper->blitEnqueuePreferred(false));
+}
+
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCallGetInternalHeapsPreallocatedThenReturnCorrectValue, IsXeLpg) {
+    const auto &productHelper = getHelper<ProductHelper>();
+    EXPECT_EQ(productHelper.getInternalHeapsPreallocated(), 1u);
+
+    DebugManagerStateRestore restorer;
+    debugManager.flags.SetAmountOfInternalHeapsToPreallocate.set(3);
+    EXPECT_EQ(productHelper.getInternalHeapsPreallocated(), 3u);
 }
 
 HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenGetCommandsStreamPropertiesSupportThenExpectCorrectValues, IsXeLpg) {
@@ -218,7 +216,6 @@ HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenGetCommandsStreamProper
     EXPECT_TRUE(productHelper->getScmPropertyLargeGrfModeSupport());
     EXPECT_FALSE(productHelper->getScmPropertyDevicePreemptionModeSupport());
 
-    EXPECT_FALSE(productHelper->getStateBaseAddressPropertyGlobalAtomicsSupport());
     EXPECT_TRUE(productHelper->getStateBaseAddressPropertyBindingTablePoolBaseAddressSupport());
 
     EXPECT_TRUE(productHelper->getFrontEndPropertyScratchSizeSupport());
@@ -271,7 +268,7 @@ HWTEST2_F(XeLpgProductHelperTests, givenHwIpVersionWhenIsPipeControlPriorToNonPi
     HardwareInfo hwInfo = *defaultHwInfo;
     auto isRcs = false;
 
-    AOT::PRODUCT_CONFIG ipReleases[] = {AOT::MTL_M_A0, AOT::MTL_M_B0, AOT::MTL_P_A0, AOT::MTL_P_B0, AOT::XE_LPGPLUS_A0, AOT::XE_LPGPLUS_B0};
+    AOT::PRODUCT_CONFIG ipReleases[] = {AOT::MTL_U_A0, AOT::MTL_U_B0, AOT::MTL_H_A0, AOT::MTL_H_B0, AOT::ARL_H_A0, AOT::ARL_H_B0};
     for (auto &ipRelease : ipReleases) {
         hwInfo.ipVersion.value = ipRelease;
         auto releaseHelper = ReleaseHelper::create(ipRelease);
@@ -283,18 +280,12 @@ HWTEST2_F(XeLpgProductHelperTests, givenHwIpVersionWhenIsPipeControlPriorToNonPi
     }
 }
 
-HWTEST2_F(XeLpgProductHelperTests, givenReleaseHelperNullptrWhenCallingGetMediaFrequencyTileIndexThenReturnFalse, IsXeLpg) {
-    uint32_t tileIndex = 0;
-    ReleaseHelper *releaseHelper = nullptr;
-    EXPECT_FALSE(productHelper->getMediaFrequencyTileIndex(releaseHelper, tileIndex));
-}
-
 HWTEST2_F(XeLpgProductHelperTests, whenCheckFp64SupportThenReturnTrue, IsXeLpg) {
     EXPECT_TRUE(pDevice->getHardwareInfo().capabilityTable.ftrSupportsFP64);
 }
 
 HWTEST2_F(XeLpgProductHelperTests, givenAllocationThenCheckResourceCompatibilityReturnsTrue, IsXeLpg) {
-    auto allocation = std::make_unique<GraphicsAllocation>(0, AllocationType::buffer, nullptr, 0u, 0, MemoryPool::memoryNull, 3u, 0llu);
+    auto allocation = std::make_unique<GraphicsAllocation>(0, 1u /*num gmms*/, AllocationType::buffer, nullptr, 0u, 0, MemoryPool::memoryNull, 3u, 0llu);
     EXPECT_TRUE(gfxCoreHelper->checkResourceCompatibility(*allocation));
 }
 
@@ -332,9 +323,51 @@ HWTEST2_F(XeLpgProductHelperTests, whenSetForceNonCoherentThenNothingChanged, Is
 HWTEST2_F(XeLpgProductHelperTests, givenCompilerProductHelperWhenGetDefaultHwIpVersionThenCorrectValueIsSet, IsXeLpg) {
     HardwareInfo hwInfo = *defaultHwInfo;
     auto compilerProductHelper = CompilerProductHelper::create(hwInfo.platform.eProductFamily);
-    EXPECT_EQ(compilerProductHelper->getDefaultHwIpVersion(), AOT::MTL_M_A0);
+    if (hwInfo.platform.eProductFamily == IGFX_ARROWLAKE) {
+        EXPECT_EQ(AOT::ARL_H_B0, compilerProductHelper->getDefaultHwIpVersion());
+    } else {
+        EXPECT_EQ(AOT::MTL_U_B0, compilerProductHelper->getDefaultHwIpVersion());
+    }
 }
 
 HWTEST2_F(XeLpgProductHelperTests, whenCheckDirectSubmissionSupportedThenValueFromReleaseHelperIsReturned, IsXeLpg) {
-    EXPECT_EQ(productHelper->isDirectSubmissionSupported(releaseHelper), releaseHelper->isDirectSubmissionSupported());
+    EXPECT_TRUE(productHelper->isDirectSubmissionSupported(releaseHelper));
+}
+
+HWTEST2_F(XeLpgProductHelperTests, whenCheckPreferredAllocationMethodThenAllocateByKmdIsReturnedExceptTagBufferAndTimestampPacketTagBuffer, IsXeLpg) {
+    for (auto i = 0; i < static_cast<int>(AllocationType::count); i++) {
+        auto allocationType = static_cast<AllocationType>(i);
+        auto preferredAllocationMethod = productHelper->getPreferredAllocationMethod(allocationType);
+        if (allocationType == AllocationType::tagBuffer ||
+            allocationType == AllocationType::timestampPacketTagBuffer) {
+            EXPECT_FALSE(preferredAllocationMethod.has_value());
+        } else {
+            EXPECT_TRUE(preferredAllocationMethod.has_value());
+            EXPECT_EQ(GfxMemoryAllocationMethod::allocateByKmd, preferredAllocationMethod.value());
+        }
+    }
+}
+
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCallIsCachingOnCpuAvailableThenFalseIsReturned, IsXeLpg) {
+    EXPECT_FALSE(productHelper->isCachingOnCpuAvailable());
+}
+
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCallIsNewCoherencyModelSupportedThenTrueIsReturned, IsXeLpg) {
+    EXPECT_TRUE(productHelper->isNewCoherencyModelSupported());
+}
+
+HWTEST2_F(XeLpgProductHelperTests, givenProductHelperWhenCallDeferMOCSToPatThenFalseIsReturned, IsXeLpg) {
+    const auto &productHelper = getHelper<ProductHelper>();
+    EXPECT_FALSE(productHelper.deferMOCSToPatIndex());
+}
+
+HWTEST2_F(XeLpgProductHelperTests, givenPatIndexWhenCheckIsCoherentAllocationThenReturnProperValue, IsXeLpg) {
+    std::array<uint64_t, 2> listOfCoherentPatIndexes = {3, 4};
+    for (auto patIndex : listOfCoherentPatIndexes) {
+        EXPECT_TRUE(productHelper->isCoherentAllocation(patIndex).value());
+    }
+    std::array<uint64_t, 3> listOfNonCoherentPatIndexes = {0, 1, 2};
+    for (auto patIndex : listOfNonCoherentPatIndexes) {
+        EXPECT_FALSE(productHelper->isCoherentAllocation(patIndex).value());
+    }
 }

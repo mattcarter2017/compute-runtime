@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,9 +11,17 @@
 #include "shared/source/helpers/cache_policy.h"
 #include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/hw_info.h"
+#include "shared/source/helpers/hw_info_helper.h"
+#include "shared/source/kernel/kernel_properties.h"
+#include "shared/source/os_interface/os_inc_base.h"
 #include "shared/source/release_helper/release_helper.h"
 
 namespace NEO {
+
+template <PRODUCT_FAMILY gfxProduct>
+bool CompilerProductHelperHw<gfxProduct>::isMidThreadPreemptionSupported(const HardwareInfo &hwInfo) const {
+    return hwInfo.featureTable.flags.ftrWalkerMTP;
+}
 
 template <PRODUCT_FAMILY gfxProduct>
 bool CompilerProductHelperHw<gfxProduct>::isForceEmuInt32DivRemSPRequired() const {
@@ -77,6 +85,8 @@ std::string CompilerProductHelperHw<gfxProduct>::getDeviceExtensions(const Hardw
                              "cl_khr_subgroup_shuffle_relative "
                              "cl_khr_subgroup_clustered_reduce "
                              "cl_intel_device_attribute_query "
+                             "cl_khr_expect_assume "
+                             "cl_khr_extended_bit_ops "
                              "cl_khr_suggested_local_work_size "
                              "cl_intel_split_work_group_barrier ";
 
@@ -93,14 +103,11 @@ std::string CompilerProductHelperHw<gfxProduct>::getDeviceExtensions(const Hardw
     }
 
     auto enabledClVersion = hwInfo.capabilityTable.clVersionSupport;
-    auto ocl21FeaturesEnabled = hwInfo.capabilityTable.supportsOcl21Features;
     if (debugManager.flags.ForceOCLVersion.get() != 0) {
         enabledClVersion = debugManager.flags.ForceOCLVersion.get();
-        ocl21FeaturesEnabled = (enabledClVersion == 21);
     }
-    if (debugManager.flags.ForceOCL21FeaturesSupport.get() != -1) {
-        ocl21FeaturesEnabled = debugManager.flags.ForceOCL21FeaturesSupport.get();
-    }
+    auto ocl21FeaturesEnabled = HwInfoHelper::checkIfOcl21FeaturesEnabledOrEnforced(hwInfo);
+
     if (ocl21FeaturesEnabled) {
 
         if (hwInfo.capabilityTable.supportsMediaBlock) {
@@ -174,16 +181,16 @@ std::string CompilerProductHelperHw<gfxProduct>::getDeviceExtensions(const Hardw
         extensions += "cl_intel_create_buffer_with_properties ";
     }
 
-    if (isDotAccumulateSupported()) {
-        extensions += "cl_intel_dot_accumulate ";
-    }
-
     if (isSubgroupLocalBlockIoSupported()) {
         extensions += "cl_intel_subgroup_local_block_io ";
     }
 
     if (isMatrixMultiplyAccumulateSupported(releaseHelper)) {
         extensions += "cl_intel_subgroup_matrix_multiply_accumulate ";
+    }
+
+    if (isMatrixMultiplyAccumulateTF32Supported(hwInfo)) {
+        extensions += "cl_intel_subgroup_matrix_multiply_accumulate_tf32 ";
     }
 
     if (isSplitMatrixMultiplyAccumulateSupported(releaseHelper)) {
@@ -196,6 +203,12 @@ std::string CompilerProductHelperHw<gfxProduct>::getDeviceExtensions(const Hardw
 
     if (isSubgroupExtendedBlockReadSupported()) {
         extensions += "cl_intel_subgroup_extended_block_read ";
+    }
+    if (isSubgroup2DBlockIOSupported()) {
+        extensions += "cl_intel_subgroup_2d_block_io ";
+    }
+    if (isSubgroupBufferPrefetchSupported()) {
+        extensions += "cl_intel_subgroup_buffer_prefetch ";
     }
     if (isDotIntegerProductExtensionSupported()) {
         extensions += "cl_khr_integer_dot_product ";
@@ -231,6 +244,11 @@ StackVec<OclCVersion, 5> CompilerProductHelperHw<gfxProduct>::getDeviceOpenCLCVe
 
 template <PRODUCT_FAMILY gfxProduct>
 bool CompilerProductHelperHw<gfxProduct>::isHeaplessModeEnabled() const {
+    return false;
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+bool CompilerProductHelperHw<gfxProduct>::isHeaplessStateInitEnabled([[maybe_unused]] bool heaplessModeEnabled) const {
     return false;
 }
 
@@ -276,4 +294,48 @@ bool CompilerProductHelperHw<gfxProduct>::isBFloat16ConversionSupported(const Re
 template <PRODUCT_FAMILY gfxProduct>
 void CompilerProductHelperHw<gfxProduct>::adjustHwInfoForIgc(HardwareInfo &hwInfo) const {
 }
+
+template <PRODUCT_FAMILY gfxProduct>
+void CompilerProductHelperHw<gfxProduct>::getKernelFp16AtomicCapabilities(const ReleaseHelper *releaseHelper, uint32_t &fp16Caps) const {
+    fp16Caps = (0u | FpAtomicExtFlags::minMaxAtomicCaps | FpAtomicExtFlags::loadStoreAtomicCaps);
+    if (releaseHelper) {
+        fp16Caps |= releaseHelper->getAdditionalFp16Caps();
+    }
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+void CompilerProductHelperHw<gfxProduct>::getKernelFp32AtomicCapabilities(uint32_t &fp32Caps) const {
+    fp32Caps = (0u | FpAtomicExtFlags::minMaxAtomicCaps | FpAtomicExtFlags::loadStoreAtomicCaps | FpAtomicExtFlags::addAtomicCaps);
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+void CompilerProductHelperHw<gfxProduct>::getKernelFp64AtomicCapabilities(uint32_t &fp64Caps) const {
+    fp64Caps = (0u | FpAtomicExtFlags::minMaxAtomicCaps | FpAtomicExtFlags::loadStoreAtomicCaps | FpAtomicExtFlags::addAtomicCaps);
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+void CompilerProductHelperHw<gfxProduct>::getKernelCapabilitiesExtra(const ReleaseHelper *releaseHelper, uint32_t &extraCaps) const {
+    if (releaseHelper) {
+        extraCaps |= releaseHelper->getAdditionalExtraCaps();
+    }
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+bool CompilerProductHelperHw<gfxProduct>::isBindlessAddressingDisabled(const ReleaseHelper *releaseHelper) const {
+    if (releaseHelper) {
+        return releaseHelper->isBindlessAddressingDisabled();
+    }
+    return true;
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+const char *CompilerProductHelperHw<gfxProduct>::getCustomIgcLibraryName() const {
+    return nullptr;
+}
+
+template <PRODUCT_FAMILY gfxProduct>
+const char *CompilerProductHelperHw<gfxProduct>::getFinalizerLibraryName() const {
+    return nullptr;
+}
+
 } // namespace NEO

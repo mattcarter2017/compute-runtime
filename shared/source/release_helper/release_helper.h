@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,25 +7,27 @@
 
 #pragma once
 
+#include "shared/source/command_container/definitions/encode_size_preferred_slm_value.h"
 #include "shared/source/helpers/hw_ip_version.h"
 #include "shared/source/utilities/stackvec.h"
 
+#include <array>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace NEO {
 
 class ReleaseHelper;
 enum class ReleaseType;
-enum class GfxMemoryAllocationMethod : uint32_t;
-enum class AllocationType;
 
 inline constexpr uint32_t maxArchitecture = 64;
 using createReleaseHelperFunctionType = std::unique_ptr<ReleaseHelper> (*)(HardwareIpVersion hardwareIpVersion);
 inline createReleaseHelperFunctionType *releaseHelperFactory[maxArchitecture]{};
 
 using ThreadsPerEUConfigs = StackVec<uint32_t, 6>;
+using SizeToPreferredSlmValueArray = std::array<SizeToPreferredSlmValue, 20>;
 
 class ReleaseHelper {
   public:
@@ -38,22 +40,28 @@ class ReleaseHelper {
     virtual bool isPipeControlPriorToNonPipelinedStateCommandsWARequired() const = 0;
     virtual bool isPipeControlPriorToPipelineSelectWaRequired() const = 0;
     virtual bool isProgramAllStateComputeCommandFieldsWARequired() const = 0;
-    virtual bool isPrefetchDisablingRequired() const = 0;
     virtual bool isSplitMatrixMultiplyAccumulateSupported() const = 0;
     virtual bool isBFloat16ConversionSupported() const = 0;
     virtual bool isAuxSurfaceModeOverrideRequired() const = 0;
-    virtual int getProductMaxPreferredSlmSize(int preferredEnumValue) const = 0;
-    virtual bool getMediaFrequencyTileIndex(uint32_t &tileIndex) const = 0;
     virtual bool isResolvingSubDeviceIDNeeded() const = 0;
-    virtual bool isCachingOnCpuAvailable() const = 0;
-    virtual bool shouldAdjustDepth() const = 0;
     virtual bool isDirectSubmissionSupported() const = 0;
     virtual bool isRcsExposureDisabled() const = 0;
-    virtual std::optional<GfxMemoryAllocationMethod> getPreferredAllocationMethod(AllocationType allocationType) const = 0;
     virtual std::vector<uint32_t> getSupportedNumGrfs() const = 0;
     virtual bool isBindlessAddressingDisabled() const = 0;
+    virtual bool isGlobalBindlessAllocatorEnabled() const = 0;
     virtual uint32_t getNumThreadsPerEu() const = 0;
-    virtual const ThreadsPerEUConfigs getThreadsPerEUConfigs() const = 0;
+    virtual uint64_t getTotalMemBankSize() const = 0;
+    virtual const ThreadsPerEUConfigs getThreadsPerEUConfigs(uint32_t numThreadsPerEu) const = 0;
+    virtual const std::string getDeviceConfigString(uint32_t tileCount, uint32_t sliceCount, uint32_t subSliceCount, uint32_t euPerSubSliceCount) const = 0;
+    virtual bool isRayTracingSupported() const = 0;
+    virtual uint32_t getAdditionalFp16Caps() const = 0;
+    virtual uint32_t getAdditionalExtraCaps() const = 0;
+    virtual uint32_t getStackSizePerRay() const = 0;
+    virtual bool isLocalOnlyAllowed() const = 0;
+    virtual bool isDummyBlitWaRequired() const = 0;
+    virtual const SizeToPreferredSlmValueArray &getSizeToPreferredSlmValue(bool isHeapless) const = 0;
+    virtual bool isNumRtStacksPerDssFixedValue() const = 0;
+    virtual bool getFtrXe2Compression() const = 0;
 
   protected:
     ReleaseHelper(HardwareIpVersion hardwareIpVersion) : hardwareIpVersion(hardwareIpVersion) {}
@@ -73,22 +81,28 @@ class ReleaseHelperHw : public ReleaseHelper {
     bool isPipeControlPriorToNonPipelinedStateCommandsWARequired() const override;
     bool isPipeControlPriorToPipelineSelectWaRequired() const override;
     bool isProgramAllStateComputeCommandFieldsWARequired() const override;
-    bool isPrefetchDisablingRequired() const override;
     bool isSplitMatrixMultiplyAccumulateSupported() const override;
     bool isBFloat16ConversionSupported() const override;
     bool isAuxSurfaceModeOverrideRequired() const override;
-    int getProductMaxPreferredSlmSize(int preferredEnumValue) const override;
-    bool getMediaFrequencyTileIndex(uint32_t &tileIndex) const override;
     bool isResolvingSubDeviceIDNeeded() const override;
-    bool isCachingOnCpuAvailable() const override;
-    bool shouldAdjustDepth() const override;
     bool isDirectSubmissionSupported() const override;
     bool isRcsExposureDisabled() const override;
-    std::optional<GfxMemoryAllocationMethod> getPreferredAllocationMethod(AllocationType allocationType) const override;
     std::vector<uint32_t> getSupportedNumGrfs() const override;
     bool isBindlessAddressingDisabled() const override;
+    bool isGlobalBindlessAllocatorEnabled() const override;
     uint32_t getNumThreadsPerEu() const override;
-    const StackVec<uint32_t, 6> getThreadsPerEUConfigs() const override;
+    uint64_t getTotalMemBankSize() const override;
+    const StackVec<uint32_t, 6> getThreadsPerEUConfigs(uint32_t numThreadsPerEu) const override;
+    const std::string getDeviceConfigString(uint32_t tileCount, uint32_t sliceCount, uint32_t subSliceCount, uint32_t euPerSubSliceCount) const override;
+    bool isRayTracingSupported() const override;
+    uint32_t getAdditionalFp16Caps() const override;
+    uint32_t getAdditionalExtraCaps() const override;
+    uint32_t getStackSizePerRay() const override;
+    bool isLocalOnlyAllowed() const override;
+    bool isDummyBlitWaRequired() const override;
+    const SizeToPreferredSlmValueArray &getSizeToPreferredSlmValue(bool isHeapless) const override;
+    bool isNumRtStacksPerDssFixedValue() const override;
+    bool getFtrXe2Compression() const override;
 
   protected:
     ReleaseHelperHw(HardwareIpVersion hardwareIpVersion) : ReleaseHelper(hardwareIpVersion) {}

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,15 +27,16 @@ const char *MetricsLibrary::getFilename() { return METRICS_LIBRARY_NAME; }
 
 bool MetricsLibrary::getContextData(Device &device, ContextCreateData_1_0 &contextData) {
 
-    auto wddm = device.getOsInterface().getDriverModel()->as<NEO::Wddm>();
+    auto wddm = device.getOsInterface()->getDriverModel()->as<NEO::Wddm>();
     auto &osData = contextData.ClientData->Windows;
 
     // Copy escape data (adapter/device/escape function).
     osData.KmdInstrumentationEnabled = true;
     osData.Device = reinterpret_cast<void *>(static_cast<UINT_PTR>(wddm->getDeviceHandle()));
     osData.Escape = reinterpret_cast<void *>(wddm->getEscapeHandle());
-    osData.Adapter =
-        reinterpret_cast<void *>(static_cast<UINT_PTR>(wddm->getAdapter()));
+    osData.Adapter = reinterpret_cast<void *>(static_cast<UINT_PTR>(wddm->getAdapter()));
+    callbacks.CommandBufferFlush = &flushCommandBufferCallback;
+    contextData.ClientData->Handle = reinterpret_cast<void *>(&device);
 
     return osData.Device && osData.Escape && osData.Adapter;
 }

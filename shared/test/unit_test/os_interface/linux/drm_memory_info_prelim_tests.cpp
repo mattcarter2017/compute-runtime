@@ -30,6 +30,7 @@ TEST(MemoryInfoPrelim, givenMemoryRegionQueryNotSupportedWhenQueryingMemoryInfoT
 
     drm->memoryInfo.reset();
     drm->i915QuerySuccessCount = 0;
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
 
     EXPECT_EQ(nullptr, drm->getMemoryInfo());
@@ -44,6 +45,7 @@ TEST(MemoryInfoPrelim, givenMemoryRegionQueryWhenQueryingFailsThenMemoryInfoIsNo
     ASSERT_NE(nullptr, drm);
     drm->memoryInfo.reset();
     drm->context.queryMemoryRegionInfoSuccessCount = 0;
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(nullptr, drm->getMemoryInfo());
     EXPECT_EQ(1u, drm->ioctlCallsCount);
@@ -52,6 +54,7 @@ TEST(MemoryInfoPrelim, givenMemoryRegionQueryWhenQueryingFailsThenMemoryInfoIsNo
     ASSERT_NE(nullptr, drm);
     drm->memoryInfo.reset();
     drm->i915QuerySuccessCount = 1;
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(nullptr, drm->getMemoryInfo());
     EXPECT_EQ(2u, drm->ioctlCallsCount);
@@ -60,6 +63,7 @@ TEST(MemoryInfoPrelim, givenMemoryRegionQueryWhenQueryingFailsThenMemoryInfoIsNo
     ASSERT_NE(nullptr, drm);
     drm->memoryInfo.reset();
     drm->context.queryMemoryRegionInfoSuccessCount = 1;
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(nullptr, drm->getMemoryInfo());
     EXPECT_EQ(2u, drm->ioctlCallsCount);
@@ -72,6 +76,7 @@ TEST(MemoryInfoPrelim, givenNewMemoryInfoQuerySupportedWhenQueryingMemoryInfoThe
     auto drm = std::make_unique<DrmQueryMock>(*executionEnvironment->rootDeviceEnvironments[0]);
     ASSERT_NE(nullptr, drm);
 
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(2u, drm->ioctlCallsCount);
 
@@ -115,6 +120,7 @@ using DrmVmTestTest = Test<DrmVmTestFixture>;
 
 TEST_F(DrmVmTestTest, givenNewMemoryInfoQuerySupportedWhenCreatingVirtualMemoryThenVmCreatedUsingNewRegion) {
     debugManager.flags.EnableLocalMemory.set(1);
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     drm->queryEngineInfo();
     EXPECT_EQ(5u, drm->ioctlCallsCount);
@@ -134,6 +140,7 @@ TEST_F(DrmVmTestTest, givenNewMemoryInfoQuerySupportedWhenCreatingVirtualMemoryT
 TEST_F(DrmVmTestTest, givenNewMemoryInfoQuerySupportedAndDebugKeyDisabledWhenCreatingVirtualMemoryThenVmCreatedNotUsingRegion) {
     debugManager.flags.UseTileMemoryBankInVirtualMemoryCreation.set(0);
 
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(2u, drm->ioctlCallsCount);
     drm->ioctlCallsCount = 0u;
@@ -155,6 +162,7 @@ TEST_F(DrmVmTestTest, givenNewMemoryInfoQuerySupportedWhenCreatingVirtualMemoryF
     NEO::debugManager.flags.EnableLocalMemory.set(1);
     drm->storedRetValForVmCreate = 1;
 
+    drm->memoryInfoQueried = false;
     drm->queryMemoryInfo();
     EXPECT_EQ(2u, drm->ioctlCallsCount);
     drm->ioctlCallsCount = 0u;
@@ -445,14 +453,50 @@ struct WhiteBoxNumaLibrary : Linux::NumaLibrary {
     using Linux::NumaLibrary::procGetMemPolicyStr;
     using Linux::NumaLibrary::procNumaAvailableStr;
     using Linux::NumaLibrary::procNumaMaxNodeStr;
-    using OsLibraryLoadPtr = NumaLibrary::OsLibraryLoadPtr;
     using GetMemPolicyPtr = NumaLibrary::GetMemPolicyPtr;
     using NumaAvailablePtr = NumaLibrary::NumaAvailablePtr;
     using NumaMaxNodePtr = NumaLibrary::NumaMaxNodePtr;
     using Linux::NumaLibrary::getMemPolicyFunction;
     using Linux::NumaLibrary::osLibrary;
-    using Linux::NumaLibrary::osLibraryLoadFunction;
 };
+
+TEST(MemoryInfo, givenValidNumaLibraryPtrAndMemoryInfoWithoutMemoryPolicyEnabledWhenMemoryInfoIsCreatedThenNumaLibraryIsNotLoaded) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.EnableHostAllocationMemPolicy.set(0);
+    debugManager.flags.OverrideHostAllocationMemPolicyMode.set(-1);
+    std::vector<MemoryRegion> regionInfo(3);
+    regionInfo[0].region = {drm_i915_gem_memory_class::I915_MEMORY_CLASS_SYSTEM, 0};
+    regionInfo[0].probedSize = 8 * MemoryConstants::gigaByte;
+    regionInfo[1].region = {drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 0};
+    regionInfo[1].probedSize = 16 * MemoryConstants::gigaByte;
+    regionInfo[2].region = {drm_i915_gem_memory_class::I915_MEMORY_CLASS_DEVICE, 1};
+    regionInfo[2].probedSize = 32 * MemoryConstants::gigaByte;
+
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmQueryMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+
+    // setup numa library in MemoryInfo
+    WhiteBoxNumaLibrary::GetMemPolicyPtr memPolicyHandler =
+        [](int *, unsigned long[], unsigned long, void *, unsigned long) -> long { return 0; };
+    WhiteBoxNumaLibrary::NumaAvailablePtr numaAvailableHandler =
+        [](void) -> int { return 0; };
+    WhiteBoxNumaLibrary::NumaMaxNodePtr numaMaxNodeHandler =
+        [](void) -> int { return 4; };
+    MockOsLibrary::loadLibraryNewObject = new MockOsLibraryCustom(nullptr, true);
+    MockOsLibraryCustom *osLibrary = static_cast<MockOsLibraryCustom *>(MockOsLibrary::loadLibraryNewObject);
+    // register proc pointers
+    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procGetMemPolicyStr)] = reinterpret_cast<void *>(memPolicyHandler);
+    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
+    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
+    auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
+    ASSERT_NE(nullptr, memoryInfo);
+    ASSERT_FALSE(memoryInfo->isMemPolicySupported());
+
+    delete osLibrary;
+    MockOsLibrary::loadLibraryNewObject = nullptr;
+    WhiteBoxNumaLibrary::osLibrary.reset();
+}
 
 TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledWhenCallingCreateGemExtWithNonHostAllocationThenIoctlIsReturnedWithoutMemPolicy) {
     DebugManagerStateRestore restorer;
@@ -482,7 +526,7 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledWhenCallingCreateGemExtWi
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procGetMemPolicyStr)] = reinterpret_cast<void *>(memPolicyHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
     ASSERT_TRUE(memoryInfo->isMemPolicySupported());
@@ -540,7 +584,7 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledWhenCallingCreateGemExtFo
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
 
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
 
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
@@ -601,7 +645,7 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledAndOverrideMemoryPolicyMo
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
 
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
 
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
@@ -653,7 +697,7 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledWhenCallingCreateGemExtWi
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procGetMemPolicyStr)] = reinterpret_cast<void *>(memPolicyHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
     osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
     ASSERT_TRUE(memoryInfo->isMemPolicySupported());
@@ -689,7 +733,7 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyEnabledAndInvalidOsLibraryWhenCa
     auto drm = std::make_unique<DrmQueryMock>(*executionEnvironment->rootDeviceEnvironments[0]);
 
     MockOsLibrary::loadLibraryNewObject = nullptr;
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
     ASSERT_FALSE(memoryInfo->isMemPolicySupported());
@@ -713,26 +757,9 @@ TEST(MemoryInfo, givenMemoryInfoWithMemoryPolicyDisabledAndValidOsLibraryWhenCal
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     auto drm = std::make_unique<DrmQueryMock>(*executionEnvironment->rootDeviceEnvironments[0]);
 
-    // setup numa library in MemoryInfo
-    WhiteBoxNumaLibrary::GetMemPolicyPtr memPolicyHandler =
-        [](int *, unsigned long[], unsigned long, void *, unsigned long) -> long { return -1; };
-    WhiteBoxNumaLibrary::NumaAvailablePtr numaAvailableHandler =
-        [](void) -> int { return 0; };
-    WhiteBoxNumaLibrary::NumaMaxNodePtr numaMaxNodeHandler =
-        [](void) -> int { return 4; };
-    MockOsLibrary::loadLibraryNewObject = new MockOsLibraryCustom(nullptr, true);
-    MockOsLibraryCustom *osLibrary = static_cast<MockOsLibraryCustom *>(MockOsLibrary::loadLibraryNewObject);
-    // register proc pointers
-    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procGetMemPolicyStr)] = reinterpret_cast<void *>(memPolicyHandler);
-    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaAvailableStr)] = reinterpret_cast<void *>(numaAvailableHandler);
-    osLibrary->procMap[std::string(WhiteBoxNumaLibrary::procNumaMaxNodeStr)] = reinterpret_cast<void *>(numaMaxNodeHandler);
-    WhiteBoxNumaLibrary::osLibraryLoadFunction = MockOsLibraryCustom::load;
     auto memoryInfo = std::make_unique<MemoryInfo>(regionInfo, *drm);
     ASSERT_NE(nullptr, memoryInfo);
     ASSERT_FALSE(memoryInfo->isMemPolicySupported());
-
-    MockOsLibrary::loadLibraryNewObject = nullptr;
-    WhiteBoxNumaLibrary::osLibrary.reset();
 }
 TEST(MemoryInfo, givenMemoryInfoWithRegionsWhenCreatingGemExtWithChunkingButSizeLessThanAllowedThenExceptionIsThrown) {
     DebugManagerStateRestore restorer;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,20 +11,24 @@
 #include "shared/source/command_stream/linear_stream.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/gmm_helper/gmm_lib.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/definitions/command_encoder_args.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/in_order_cmd_helpers.h"
 #include "shared/source/helpers/pipe_control_args.h"
+#include "shared/source/kernel/kernel_descriptor.h"
 #include "shared/source/memory_manager/graphics_allocation.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/helpers/unit_test_helper.h"
+#include "shared/test/common/libult/ult_command_stream_receiver.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
 #include "shared/test/common/mocks/mock_graphics_allocation.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
+#include "shared/test/common/mocks/mock_timestamp_container.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
 #include "encode_surface_state_args.h"
@@ -58,43 +62,132 @@ HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingStandaloneInO
     uint64_t *hostAddress = &counterValue;
     uint64_t gpuAddress = castToUint64(ptrOffset(&counterValue, 64));
 
-    auto inOrderExecInfo = InOrderExecInfo::createFromExternalAllocation(mockDevice, gpuAddress, hostAddress, counterValue);
+    MockGraphicsAllocation alloc(nullptr, gpuAddress, 1);
+
+    auto inOrderExecInfo = InOrderExecInfo::createFromExternalAllocation(mockDevice, &alloc, gpuAddress, nullptr, hostAddress, counterValue, 2, 3);
 
     EXPECT_EQ(counterValue, inOrderExecInfo->getCounterValue());
     EXPECT_EQ(hostAddress, inOrderExecInfo->getBaseHostAddress());
     EXPECT_EQ(gpuAddress, inOrderExecInfo->getBaseDeviceAddress());
-    EXPECT_EQ(nullptr, inOrderExecInfo->getDeviceCounterAllocation());
+    EXPECT_EQ(&alloc, inOrderExecInfo->getDeviceCounterAllocation());
     EXPECT_EQ(nullptr, inOrderExecInfo->getHostCounterAllocation());
+    EXPECT_TRUE(inOrderExecInfo->isExternalMemoryExecInfo());
+    EXPECT_EQ(2u, inOrderExecInfo->getNumDevicePartitionsToWait());
+    EXPECT_EQ(3u, inOrderExecInfo->getNumHostPartitionsToWait());
 
     inOrderExecInfo->reset();
 
     EXPECT_EQ(0u, inOrderExecInfo->getCounterValue());
 }
 
+HWTEST_F(CommandEncoderTests, givenTsNodesWhenStoringOnTempListThenHandleOwnershipCorrectly) {
+    class MyMockInOrderExecInfo : public NEO::InOrderExecInfo {
+      public:
+        using InOrderExecInfo::InOrderExecInfo;
+        using InOrderExecInfo::lastWaitedCounterValue;
+        using InOrderExecInfo::tempTimestampNodes;
+    };
+
+    MockDevice mockDevice;
+
+    using AllocatorT = MockTagAllocator<NEO::TimestampPackets<uint64_t, 1>>;
+
+    AllocatorT tsAllocator(0, mockDevice.getMemoryManager());
+
+    auto node0 = static_cast<AllocatorT::NodeType *>(tsAllocator.getTag());
+    auto node1 = static_cast<AllocatorT::NodeType *>(tsAllocator.getTag());
+
+    EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node0));
+    EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node1));
+
+    {
+        MyMockInOrderExecInfo inOrderExecInfo(nullptr, nullptr, mockDevice, 1, false, false);
+
+        inOrderExecInfo.lastWaitedCounterValue = 0;
+
+        inOrderExecInfo.pushTempTimestampNode(node0, 1);
+        inOrderExecInfo.pushTempTimestampNode(node1, 2);
+
+        EXPECT_EQ(2u, inOrderExecInfo.tempTimestampNodes.size());
+
+        inOrderExecInfo.releaseNotUsedTempTimestampNodes(false);
+        EXPECT_EQ(2u, inOrderExecInfo.tempTimestampNodes.size());
+
+        EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node0));
+        EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node1));
+
+        inOrderExecInfo.lastWaitedCounterValue = 1;
+        inOrderExecInfo.releaseNotUsedTempTimestampNodes(false);
+        EXPECT_EQ(1u, inOrderExecInfo.tempTimestampNodes.size());
+        EXPECT_EQ(node1, inOrderExecInfo.tempTimestampNodes[0].first);
+
+        EXPECT_TRUE(tsAllocator.freeTags.peekContains(*node0));
+        EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node1));
+
+        inOrderExecInfo.lastWaitedCounterValue = 2;
+        inOrderExecInfo.releaseNotUsedTempTimestampNodes(false);
+        EXPECT_EQ(0u, inOrderExecInfo.tempTimestampNodes.size());
+        EXPECT_TRUE(tsAllocator.freeTags.peekContains(*node0));
+        EXPECT_TRUE(tsAllocator.freeTags.peekContains(*node1));
+
+        node0 = static_cast<AllocatorT::NodeType *>(tsAllocator.getTag());
+        node1 = static_cast<AllocatorT::NodeType *>(tsAllocator.getTag());
+
+        EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node0));
+        EXPECT_FALSE(tsAllocator.freeTags.peekContains(*node1));
+
+        inOrderExecInfo.pushTempTimestampNode(node0, 3);
+        inOrderExecInfo.pushTempTimestampNode(node1, 4);
+    }
+
+    // forced release on destruction
+    EXPECT_TRUE(tsAllocator.freeTags.peekContains(*node0));
+    EXPECT_TRUE(tsAllocator.freeTags.peekContains(*node1));
+}
+
 HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingInOrderExecInfoThenSetupCorrectly) {
     MockDevice mockDevice;
 
-    auto &memoryManager = *mockDevice.getMemoryManager();
-    uint64_t storage1[2] = {1, 1};
-    uint64_t storage2[2] = {1, 1};
+    MockTagAllocator<DeviceAllocNodeType<true>> deviceTagAllocator(0, mockDevice.getMemoryManager());
+    MockTagAllocator<DeviceAllocNodeType<true>> hostTagAllocator(0, mockDevice.getMemoryManager());
+
+    auto tempNode1 = deviceTagAllocator.getTag();
+    auto tempNode2 = hostTagAllocator.getTag();
 
     {
-        auto inOrderExecInfo = InOrderExecInfo::create(mockDevice, 2, false, false, false);
+        auto deviceNode = deviceTagAllocator.getTag();
 
-        EXPECT_EQ(inOrderExecInfo->getDeviceCounterAllocation()->getUnderlyingBuffer(), inOrderExecInfo->getBaseHostAddress());
+        EXPECT_NE(deviceNode->getBaseGraphicsAllocation()->getDefaultGraphicsAllocation()->getGpuAddress(), deviceNode->getGpuAddress());
+        EXPECT_NE(deviceNode->getBaseGraphicsAllocation()->getDefaultGraphicsAllocation()->getUnderlyingBuffer(), deviceNode->getCpuBase());
+
+        auto inOrderExecInfo = InOrderExecInfo::create(deviceNode, nullptr, mockDevice, 2, false);
+
+        EXPECT_EQ(deviceNode->getCpuBase(), inOrderExecInfo->getBaseHostAddress());
+        EXPECT_EQ(deviceNode->getBaseGraphicsAllocation()->getGraphicsAllocation(0), inOrderExecInfo->getDeviceCounterAllocation());
+        EXPECT_EQ(deviceNode->getGpuAddress(), inOrderExecInfo->getBaseDeviceAddress());
         EXPECT_EQ(nullptr, inOrderExecInfo->getHostCounterAllocation());
         EXPECT_FALSE(inOrderExecInfo->isHostStorageDuplicated());
         EXPECT_FALSE(inOrderExecInfo->isRegularCmdList());
-        EXPECT_FALSE(inOrderExecInfo->isAtomicDeviceSignalling());
-        EXPECT_EQ(2u, inOrderExecInfo->getNumDevicePartitionsToWait());
+
+        auto heaplessEnabled = mockDevice.getCompilerProductHelper().isHeaplessModeEnabled();
+
+        if (heaplessEnabled) {
+            EXPECT_TRUE(inOrderExecInfo->isAtomicDeviceSignalling());
+            EXPECT_EQ(1u, inOrderExecInfo->getNumDevicePartitionsToWait());
+        } else {
+            EXPECT_FALSE(inOrderExecInfo->isAtomicDeviceSignalling());
+            EXPECT_EQ(2u, inOrderExecInfo->getNumDevicePartitionsToWait());
+        }
+
         EXPECT_EQ(2u, inOrderExecInfo->getNumHostPartitionsToWait());
         EXPECT_EQ(0u, InOrderPatchCommandHelpers::getAppendCounterValue(*inOrderExecInfo));
+        EXPECT_FALSE(inOrderExecInfo->isExternalMemoryExecInfo());
     }
 
     {
-        auto deviceSyncAllocation = new MockGraphicsAllocation(&storage1, sizeof(storage1));
+        auto deviceNode = deviceTagAllocator.getTag();
 
-        InOrderExecInfo inOrderExecInfo(deviceSyncAllocation, nullptr, memoryManager, 2, true, true);
+        InOrderExecInfo inOrderExecInfo(deviceNode, nullptr, mockDevice, 2, true, true);
         EXPECT_TRUE(inOrderExecInfo.isRegularCmdList());
         EXPECT_TRUE(inOrderExecInfo.isAtomicDeviceSignalling());
         EXPECT_EQ(1u, inOrderExecInfo.getNumDevicePartitionsToWait());
@@ -102,20 +195,30 @@ HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingInOrderExecIn
     }
 
     {
-        auto inOrderExecInfo = InOrderExecInfo::create(mockDevice, 2, false, false, true);
+        auto deviceNode = deviceTagAllocator.getTag();
+        auto hostNode = hostTagAllocator.getTag();
+        auto offset = ptrDiff(hostNode->getCpuBase(), tempNode2->getCpuBase());
 
+        DebugManagerStateRestore restore;
+        debugManager.flags.InOrderDuplicatedCounterStorageEnabled.set(1);
+
+        auto inOrderExecInfo = InOrderExecInfo::create(deviceNode, hostNode, mockDevice, 2, false);
+
+        EXPECT_EQ(inOrderExecInfo->getBaseHostGpuAddress(), hostNode->getGpuAddress());
         EXPECT_NE(inOrderExecInfo->getDeviceCounterAllocation(), inOrderExecInfo->getHostCounterAllocation());
+        EXPECT_NE(deviceNode->getBaseGraphicsAllocation()->getGraphicsAllocation(0), inOrderExecInfo->getHostCounterAllocation());
 
-        EXPECT_NE(inOrderExecInfo->getDeviceCounterAllocation()->getUnderlyingBuffer(), inOrderExecInfo->getBaseHostAddress());
-        EXPECT_EQ(inOrderExecInfo->getHostCounterAllocation()->getUnderlyingBuffer(), inOrderExecInfo->getBaseHostAddress());
+        EXPECT_NE(deviceNode->getCpuBase(), inOrderExecInfo->getBaseHostAddress());
+        EXPECT_EQ(ptrOffset(inOrderExecInfo->getHostCounterAllocation()->getUnderlyingBuffer(), offset), inOrderExecInfo->getBaseHostAddress());
         EXPECT_TRUE(inOrderExecInfo->isHostStorageDuplicated());
     }
 
     {
-        auto deviceSyncAllocation = new MockGraphicsAllocation(&storage1, sizeof(storage1));
-        auto hostSyncAllocation = new MockGraphicsAllocation(&storage2, sizeof(storage2));
-        InOrderExecInfo inOrderExecInfo(deviceSyncAllocation, hostSyncAllocation, memoryManager, 1, false, false);
-        auto deviceAllocHostAddress = reinterpret_cast<uint64_t *>(inOrderExecInfo.getDeviceCounterAllocation()->getUnderlyingBuffer());
+        auto deviceNode = deviceTagAllocator.getTag();
+        auto hostNode = hostTagAllocator.getTag();
+
+        InOrderExecInfo inOrderExecInfo(deviceNode, hostNode, mockDevice, 1, false, false);
+        auto deviceAllocHostAddress = reinterpret_cast<uint64_t *>(deviceNode->getCpuBase());
         EXPECT_EQ(0u, inOrderExecInfo.getCounterValue());
         EXPECT_EQ(0u, inOrderExecInfo.getRegularCmdListSubmissionCounter());
         EXPECT_EQ(0u, inOrderExecInfo.getAllocationOffset());
@@ -124,7 +227,7 @@ HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingInOrderExecIn
 
         inOrderExecInfo.addCounterValue(2);
         inOrderExecInfo.addRegularCmdListSubmissionCounter(3);
-        inOrderExecInfo.addAllocationOffset(4);
+        inOrderExecInfo.setAllocationOffset(4);
         *inOrderExecInfo.getBaseHostAddress() = 5;
         *deviceAllocHostAddress = 6;
 
@@ -142,9 +245,9 @@ HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingInOrderExecIn
     }
 
     {
-        auto deviceSyncAllocation = new MockGraphicsAllocation(&storage1, sizeof(storage1));
+        auto deviceNode = deviceTagAllocator.getTag();
 
-        InOrderExecInfo inOrderExecInfo(deviceSyncAllocation, nullptr, memoryManager, 2, true, false);
+        InOrderExecInfo inOrderExecInfo(deviceNode, nullptr, mockDevice, 2, true, false);
 
         EXPECT_EQ(0u, InOrderPatchCommandHelpers::getAppendCounterValue(inOrderExecInfo));
         inOrderExecInfo.addCounterValue(2);
@@ -156,16 +259,80 @@ HWTEST_F(CommandEncoderTests, givenDifferentInputParamsWhenCreatingInOrderExecIn
         inOrderExecInfo.addRegularCmdListSubmissionCounter(1);
         EXPECT_EQ(4u, InOrderPatchCommandHelpers::getAppendCounterValue(inOrderExecInfo));
     }
+
+    tempNode1->returnTag();
+    tempNode2->returnTag();
+}
+
+HWTEST_F(CommandEncoderTests, givenInOrderExecutionInfoWhenSetLastCounterValueIsCalledThenItReturnsProperQueries) {
+    MockDevice mockDevice;
+
+    MockExecutionEnvironment mockExecutionEnvironment{};
+
+    MockTagAllocator<DeviceAllocNodeType<true>> tagAllocator(0, mockDevice.getMemoryManager());
+    auto node = tagAllocator.getTag();
+
+    auto inOrderExecInfo = std::make_unique<InOrderExecInfo>(node, nullptr, mockDevice, 2, true, false);
+    inOrderExecInfo->setLastWaitedCounterValue(1u);
+
+    EXPECT_FALSE(inOrderExecInfo->isCounterAlreadyDone(2u));
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(1u));
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(0u));
+
+    inOrderExecInfo->setLastWaitedCounterValue(0u);
+    EXPECT_FALSE(inOrderExecInfo->isCounterAlreadyDone(2u));
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(1u));
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(0u));
+
+    inOrderExecInfo->setLastWaitedCounterValue(3u);
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(2u));
+    EXPECT_TRUE(inOrderExecInfo->isCounterAlreadyDone(3u));
+
+    inOrderExecInfo->setAllocationOffset(4u);
+    EXPECT_FALSE(inOrderExecInfo->isCounterAlreadyDone(2u));
+    EXPECT_FALSE(inOrderExecInfo->isCounterAlreadyDone(3u));
+    EXPECT_FALSE(inOrderExecInfo->isCounterAlreadyDone(0u));
+}
+
+HWTEST_F(CommandEncoderTests, givenInOrderExecutionInfoWhenResetCalledThenUploadToTbx) {
+    MockDevice mockDevice;
+    auto &csr = mockDevice.getUltCommandStreamReceiver<FamilyType>();
+    csr.commandStreamReceiverType = CommandStreamReceiverType::tbx;
+
+    MockTagAllocator<DeviceAllocNodeType<true>> deviceTagAllocator(0, mockDevice.getMemoryManager());
+    MockTagAllocator<DeviceAllocNodeType<false>> hostTagAllocator(0, mockDevice.getMemoryManager());
+    auto deviceNode = deviceTagAllocator.getTag();
+    auto hostNode = hostTagAllocator.getTag();
+
+    EXPECT_EQ(0u, csr.writeMemoryParams.totalCallCount);
+
+    auto inOrderExecInfo = std::make_unique<InOrderExecInfo>(deviceNode, hostNode, mockDevice, 2, true, false);
+    EXPECT_EQ(2u, csr.writeMemoryParams.totalCallCount);
+    EXPECT_EQ(0u, csr.writeMemoryParams.chunkWriteCallCount);
+
+    inOrderExecInfo->reset();
+    EXPECT_EQ(4u, csr.writeMemoryParams.totalCallCount);
+    EXPECT_EQ(2u, csr.writeMemoryParams.chunkWriteCallCount);
+
+    inOrderExecInfo = std::make_unique<InOrderExecInfo>(deviceNode, nullptr, mockDevice, 2, true, false);
+    EXPECT_EQ(5u, csr.writeMemoryParams.totalCallCount);
+    EXPECT_EQ(3u, csr.writeMemoryParams.chunkWriteCallCount);
+
+    inOrderExecInfo->reset();
+    EXPECT_EQ(6u, csr.writeMemoryParams.totalCallCount);
+    EXPECT_EQ(4u, csr.writeMemoryParams.chunkWriteCallCount);
 }
 
 HWTEST_F(CommandEncoderTests, givenInOrderExecInfoWhenPatchingThenSetCorrectValues) {
+    MockDevice mockDevice;
+
     MockExecutionEnvironment mockExecutionEnvironment{};
     MockMemoryManager memoryManager(mockExecutionEnvironment);
-    uint64_t storage1[2] = {1, 1};
 
-    auto deviceSyncAllocation = new MockGraphicsAllocation(&storage1, sizeof(storage1));
+    MockTagAllocator<DeviceAllocNodeType<true>> tagAllocator(0, mockDevice.getMemoryManager());
+    auto node = tagAllocator.getTag();
 
-    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(deviceSyncAllocation, nullptr, memoryManager, 2, true, false);
+    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(node, nullptr, mockDevice, 2, true, false);
     inOrderExecInfo->addCounterValue(1);
 
     {
@@ -226,15 +393,18 @@ HWTEST_F(CommandEncoderTests, givenInOrderExecInfoWhenPatchingThenSetCorrectValu
 }
 
 HWTEST_F(CommandEncoderTests, givenInOrderExecInfoWhenPatchingWalkerThenSetCorrectValues) {
+    using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+    MockDevice mockDevice;
+
     MockExecutionEnvironment mockExecutionEnvironment{};
     MockMemoryManager memoryManager(mockExecutionEnvironment);
-    uint64_t storage1[2] = {1, 1};
 
-    auto deviceSyncAllocation = new MockGraphicsAllocation(&storage1, sizeof(storage1));
+    MockTagAllocator<DeviceAllocNodeType<true>> tagAllocator(0, mockDevice.getMemoryManager());
+    auto node = tagAllocator.getTag();
 
-    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(deviceSyncAllocation, nullptr, memoryManager, 2, false, false);
+    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(node, nullptr, mockDevice, 2, false, false);
 
-    auto cmd = FamilyType::cmdInitGpgpuWalker;
+    auto cmd = FamilyType::template getInitGpuWalker<DefaultWalkerType>();
 
     InOrderPatchCommandHelpers::PatchCmd<FamilyType> patchCmd(&inOrderExecInfo, &cmd, nullptr, 1, InOrderPatchCommandHelpers::PatchCmdType::walker, false, false);
 
@@ -245,6 +415,66 @@ HWTEST_F(CommandEncoderTests, givenInOrderExecInfoWhenPatchingWalkerThenSetCorre
     } else {
         EXPECT_ANY_THROW(patchCmd.patch(2));
     }
+}
+
+HWTEST_F(CommandEncoderTests, givenInOrderExecInfoWhenPatchingDisabledThenNoCmdBufferUpdated) {
+    MockDevice mockDevice;
+
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    MockMemoryManager memoryManager(mockExecutionEnvironment);
+
+    MockTagAllocator<DeviceAllocNodeType<true>> tagAllocator(0, mockDevice.getMemoryManager());
+    auto node = tagAllocator.getTag();
+
+    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(node, nullptr, mockDevice, 1, true, false);
+    inOrderExecInfo->addRegularCmdListSubmissionCounter(4);
+    inOrderExecInfo->addCounterValue(1);
+
+    auto cmd = FamilyType::cmdInitMiSemaphoreWait;
+    cmd.setSemaphoreDataDword(1);
+
+    constexpr uint64_t baseCounterValue = 1;
+    InOrderPatchCommandHelpers::PatchCmd<FamilyType> patchCmd(&inOrderExecInfo, &cmd, nullptr, baseCounterValue, InOrderPatchCommandHelpers::PatchCmdType::semaphore, false, false);
+
+    patchCmd.setSkipPatching(true);
+    patchCmd.patch(2);
+    EXPECT_EQ(1u, cmd.getSemaphoreDataDword());
+
+    patchCmd.setSkipPatching(false);
+    patchCmd.patch(2);
+    EXPECT_EQ(4u, cmd.getSemaphoreDataDword());
+}
+
+HWTEST_F(CommandEncoderTests, givenNewInOrderExecInfoWhenChangingInOrderExecInfoThenNewValuePatched) {
+    MockDevice mockDevice;
+
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    MockMemoryManager memoryManager(mockExecutionEnvironment);
+
+    MockTagAllocator<DeviceAllocNodeType<true>> tagAllocator(0, mockDevice.getMemoryManager());
+    auto node = tagAllocator.getTag();
+
+    auto inOrderExecInfo = std::make_shared<InOrderExecInfo>(node, nullptr, mockDevice, 1, true, false);
+    inOrderExecInfo->addRegularCmdListSubmissionCounter(4);
+    inOrderExecInfo->addCounterValue(1);
+
+    auto cmd = FamilyType::cmdInitMiSemaphoreWait;
+    cmd.setSemaphoreDataDword(1);
+
+    constexpr uint64_t baseCounterValue = 1;
+    InOrderPatchCommandHelpers::PatchCmd<FamilyType> patchCmd(&inOrderExecInfo, &cmd, nullptr, baseCounterValue, InOrderPatchCommandHelpers::PatchCmdType::semaphore, false, false);
+
+    patchCmd.patch(2);
+    EXPECT_EQ(4u, cmd.getSemaphoreDataDword());
+
+    auto node2 = tagAllocator.getTag();
+    auto inOrderExecInfo2 = std::make_shared<InOrderExecInfo>(node2, nullptr, mockDevice, 1, true, false);
+    inOrderExecInfo2->addRegularCmdListSubmissionCounter(6);
+    inOrderExecInfo2->addCounterValue(1);
+
+    patchCmd.updateInOrderExecInfo(&inOrderExecInfo2);
+    patchCmd.patch(2);
+    EXPECT_EQ(6u, cmd.getSemaphoreDataDword());
 }
 
 HWTEST_F(CommandEncoderTests, givenImmDataWriteWhenProgrammingMiFlushDwThenSetAllRequiredFields) {
@@ -306,7 +536,7 @@ HWTEST_F(CommandEncoderTests, whenEncodeMemoryPrefetchCalledThenDoNothing) {
     uint8_t buffer[MemoryConstants::pageSize] = {};
     LinearStream linearStream(buffer, sizeof(buffer));
 
-    GraphicsAllocation allocation(0, AllocationType::unknown, nullptr, 123, 456, 789, MemoryPool::localMemory, MemoryManager::maxOsContextCount);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, 123, 456, 789, MemoryPool::localMemory, MemoryManager::maxOsContextCount);
 
     EncodeMemoryPrefetch<FamilyType>::programMemoryPrefetch(linearStream, allocation, 2, 0, *mockExecutionEnvironment.rootDeviceEnvironments[0]);
 
@@ -314,7 +544,7 @@ HWTEST_F(CommandEncoderTests, whenEncodeMemoryPrefetchCalledThenDoNothing) {
     EXPECT_EQ(0u, EncodeMemoryPrefetch<FamilyType>::getSizeForMemoryPrefetch(2, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, CommandEncoderTests, WhenAnyParameterIsProvidedThenRuntimeGenerationLocalIdsIsRequired) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, CommandEncoderTests, WhenAnyParameterIsProvidedThenRuntimeGenerationLocalIdsIsRequired) {
     uint32_t workDim = 1;
     uint32_t simd = 8;
     size_t lws[3] = {16, 1, 1};
@@ -360,7 +590,7 @@ HWTEST_F(CommandEncoderTests, givenNotify) {
     EXPECT_EQ(1u, static_cast<uint32_t>(miFlushDwCmd->getNotifyEnable()));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, CommandEncoderTests, whenAppendParamsForImageFromBufferThenNothingChanges) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, CommandEncoderTests, whenAppendParamsForImageFromBufferThenNothingChanges) {
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
     auto expectedState = surfaceState;
 
@@ -384,8 +614,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandEncoderTests, givenDebugFlagSetWhenProgrammi
         auto &rootDeviceEnvironment = *executionEnvironment.rootDeviceEnvironments[0];
         rootDeviceEnvironment.initGmm();
 
-        EncodeDummyBlitWaArgs waArgs{};
-        EncodeMiArbCheck<FamilyType>::programWithWa(linearStream, false, waArgs);
+        EncodeMiArbCheck<FamilyType>::program(linearStream, false);
 
         if (value == 0) {
             EXPECT_TRUE(buffer[0].getPreParserDisable());
@@ -395,7 +624,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandEncoderTests, givenDebugFlagSetWhenProgrammi
     }
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, CommandEncoderTests, givenPreXeHpPlatformWhenSetupPostSyncMocsThenNothingHappen) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, CommandEncoderTests, givenPreXeHpPlatformWhenSetupPostSyncMocsThenNothingHappen) {
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
 
     DefaultWalkerType walkerCmd{};
@@ -463,12 +692,12 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, CommandEncoderTests, givenXeHpPlatformsWhenGettingD
     EXPECT_EQ(expectedSize, EncodeStates<FamilyType>::getSshHeapSize());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, CommandEncoderTests, givenPreXeHpPlatformsWhenGettingDefaultSshSizeThenExpectSixtyFourKilobytes) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, CommandEncoderTests, givenPreXeHpPlatformsWhenGettingDefaultSshSizeThenExpectSixtyFourKilobytes) {
     constexpr size_t expectedSize = 64 * MemoryConstants::kiloByte;
     EXPECT_EQ(expectedSize, EncodeStates<FamilyType>::getSshHeapSize());
 }
 
-HWTEST2_F(CommandEncoderTests, whenUsingDefaultFilteringAndAppendSamplerStateParamsThenDisableLowQualityFilter, IsAtLeastGen12lp) {
+HWTEST2_F(CommandEncoderTests, whenUsingDefaultFilteringAndAppendSamplerStateParamsThenDisableLowQualityFilter, MatchAny) {
     EXPECT_FALSE(debugManager.flags.ForceSamplerLowFilteringPrecision.get());
     using SAMPLER_STATE = typename FamilyType::SAMPLER_STATE;
 
@@ -482,7 +711,82 @@ HWTEST2_F(CommandEncoderTests, whenUsingDefaultFilteringAndAppendSamplerStatePar
     EXPECT_EQ(SAMPLER_STATE::LOW_QUALITY_FILTER_DISABLE, state.getLowQualityFilter());
 }
 
-HWTEST2_F(CommandEncoderTests, whenForcingLowQualityFilteringAndAppendSamplerStateParamsThenEnableLowQualityFilter, IsAtLeastGen12lp) {
+HWTEST2_F(CommandEncoderTests, givenMiStoreRegisterMemWhenEncodeAndIsBcsThenRegisterOffsetsBcs0Base, MatchAny) {
+    using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
+
+    uint64_t baseAddr = 0x10;
+    uint32_t offset = 0x2000;
+
+    constexpr size_t bufferSize = 2100;
+    uint8_t buffer[bufferSize];
+    LinearStream cmdStream(buffer, bufferSize);
+    auto buf = cmdStream.getSpaceForCmd<MI_STORE_REGISTER_MEM>();
+
+    bool isBcs = true;
+    EncodeStoreMMIO<FamilyType>::encode(buf, offset, baseAddr, true, isBcs);
+    auto storeRegMem = genCmdCast<MI_STORE_REGISTER_MEM *>(buffer);
+    ASSERT_NE(nullptr, storeRegMem);
+    EXPECT_EQ(storeRegMem->getRegisterAddress(), RegisterOffsets::bcs0Base + offset);
+
+    isBcs = false;
+    EncodeStoreMMIO<FamilyType>::encode(buf, offset, baseAddr, true, isBcs);
+    storeRegMem = genCmdCast<MI_STORE_REGISTER_MEM *>(buffer);
+    ASSERT_NE(nullptr, storeRegMem);
+    EXPECT_EQ(storeRegMem->getRegisterAddress(), offset);
+}
+
+HWTEST2_F(CommandEncoderTests, givenMiLoadRegisterMemWhenEncodememAndIsBcsThenRegisterOffsetsBcs0Base, MatchAny) {
+    using MI_LOAD_REGISTER_MEM = typename FamilyType::MI_LOAD_REGISTER_MEM;
+
+    uint64_t baseAddr = 0x10;
+    uint32_t offset = 0x2000;
+
+    constexpr size_t bufferSize = 2100;
+    uint8_t buffer[bufferSize];
+    LinearStream cmdStream(buffer, bufferSize);
+    uint8_t *ptr = buffer;
+    bool isBcs = true;
+
+    EncodeSetMMIO<FamilyType>::encodeMEM(cmdStream, offset, baseAddr, isBcs);
+    auto loadRegMem = genCmdCast<MI_LOAD_REGISTER_MEM *>(ptr);
+    ASSERT_NE(nullptr, loadRegMem);
+    EXPECT_EQ(loadRegMem->getRegisterAddress(), RegisterOffsets::bcs0Base + offset);
+
+    isBcs = false;
+    ptr += sizeof(MI_LOAD_REGISTER_MEM);
+    EncodeSetMMIO<FamilyType>::encodeMEM(cmdStream, offset, baseAddr, isBcs);
+    loadRegMem = genCmdCast<MI_LOAD_REGISTER_MEM *>(ptr);
+    ASSERT_NE(nullptr, loadRegMem);
+    EXPECT_EQ(loadRegMem->getRegisterAddress(), offset);
+}
+
+HWTEST2_F(CommandEncoderTests, givenMiLoadRegisterRegwhenencoderegAndIsBcsThenRegisterOffsetsBcs0Base, MatchAny) {
+    using MI_LOAD_REGISTER_REG = typename FamilyType::MI_LOAD_REGISTER_REG;
+
+    uint32_t srcOffset = 0x2000;
+    uint32_t dstOffset = 0x2004;
+
+    constexpr size_t bufferSize = 2100;
+    uint8_t buffer[bufferSize];
+    LinearStream cmdStream(buffer, bufferSize);
+    uint8_t *ptr = buffer;
+    bool isBcs = true;
+
+    EncodeSetMMIO<FamilyType>::encodeREG(cmdStream, dstOffset, srcOffset, isBcs);
+    auto storeRegReg = genCmdCast<MI_LOAD_REGISTER_REG *>(buffer);
+    ASSERT_NE(nullptr, storeRegReg);
+    EXPECT_EQ(storeRegReg->getSourceRegisterAddress(), RegisterOffsets::bcs0Base + srcOffset);
+    EXPECT_EQ(storeRegReg->getDestinationRegisterAddress(), RegisterOffsets::bcs0Base + dstOffset);
+
+    isBcs = false;
+    ptr += sizeof(MI_LOAD_REGISTER_REG);
+    EncodeSetMMIO<FamilyType>::encodeREG(cmdStream, dstOffset, srcOffset, isBcs);
+    storeRegReg = genCmdCast<MI_LOAD_REGISTER_REG *>(ptr);
+    EXPECT_EQ(storeRegReg->getSourceRegisterAddress(), srcOffset);
+    EXPECT_EQ(storeRegReg->getDestinationRegisterAddress(), dstOffset);
+}
+
+HWTEST2_F(CommandEncoderTests, whenForcingLowQualityFilteringAndAppendSamplerStateParamsThenEnableLowQualityFilter, MatchAny) {
 
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.ForceSamplerLowFilteringPrecision.set(true);
@@ -499,10 +803,25 @@ HWTEST2_F(CommandEncoderTests, whenForcingLowQualityFilteringAndAppendSamplerSta
     EXPECT_EQ(SAMPLER_STATE::LOW_QUALITY_FILTER_ENABLE, state.getLowQualityFilter());
 }
 
-HWTEST2_F(CommandEncoderTests, whenAskingForImplicitScalingValuesThenAlwaysReturnStubs, IsAtMostGen12lp) {
+HWTEST2_F(CommandEncoderTests, givenSdiCommandWhenProgrammingThenForceWriteCompletionCheck, MatchAny) {
+    using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
+
+    constexpr size_t bufferSize = sizeof(MI_STORE_DATA_IMM);
+    uint8_t buffer[bufferSize];
+    LinearStream cmdStream(buffer, bufferSize);
+
+    EncodeStoreMemory<FamilyType>::programStoreDataImm(cmdStream, 0, 0, 0, false, false, nullptr);
+
+    auto storeDataImm = genCmdCast<MI_STORE_DATA_IMM *>(buffer);
+    ASSERT_NE(nullptr, storeDataImm);
+    EXPECT_TRUE(storeDataImm->getForceWriteCompletionCheck());
+}
+
+HWTEST2_F(CommandEncoderTests, whenAskingForImplicitScalingValuesThenAlwaysReturnStubs, IsGen12LP) {
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment executionEnvironment{};
+    executionEnvironment.incRefInternal();
     auto rootExecEnv = executionEnvironment.rootDeviceEnvironments[0].get();
 
     uint8_t buffer[128] = {};
@@ -518,7 +837,26 @@ HWTEST2_F(CommandEncoderTests, whenAskingForImplicitScalingValuesThenAlwaysRetur
     EXPECT_EQ(0u, ImplicitScalingDispatch<FamilyType>::template getSize<WalkerType>(false, false, deviceBitField, vec3, vec3));
 
     void *ptr = nullptr;
-    ImplicitScalingDispatch<FamilyType>::dispatchCommands(linearStream, walkerCmd, &ptr, deviceBitField, RequiredPartitionDim::x, partitionCount, false, false, false, false, 0, *defaultHwInfo);
+
+    auto device = std::make_unique<MockDevice>(&executionEnvironment, 0);
+
+    ImplicitScalingDispatchCommandArgs args{
+        0,                       // workPartitionAllocationGpuVa
+        device.get(),            // device
+        &ptr,                    // outWalkerPtr
+        RequiredPartitionDim::x, // requiredPartitionDim
+        partitionCount,          // partitionCount
+        1,                       // workgroupSize
+        1,                       // threadGroupCount
+        1,                       // maxWgCountPerTile
+        false,                   // useSecondaryBatchBuffer
+        false,                   // apiSelfCleanup
+        false,                   // dcFlush
+        false,                   // forceExecutionOnSingleTile
+        false,                   // blockDispatchToCommandBuffer
+        false};                  // isRequiredDispatchWorkGroupOrder
+
+    ImplicitScalingDispatch<FamilyType>::dispatchCommands(linearStream, walkerCmd, deviceBitField, args);
     EXPECT_EQ(0u, linearStream.getUsed());
 
     EXPECT_TRUE(ImplicitScalingDispatch<FamilyType>::getPipeControlStallRequired());
@@ -531,12 +869,12 @@ HWTEST2_F(CommandEncoderTests, whenAskingForImplicitScalingValuesThenAlwaysRetur
 
     EXPECT_EQ(0u, ImplicitScalingDispatch<FamilyType>::getRegisterConfigurationSize());
 
-    ImplicitScalingDispatch<FamilyType>::dispatchRegisterConfiguration(linearStream, 0, 0);
+    ImplicitScalingDispatch<FamilyType>::dispatchRegisterConfiguration(linearStream, 0, 0, false);
     EXPECT_EQ(0u, linearStream.getUsed());
 
     EXPECT_EQ(0u, ImplicitScalingDispatch<FamilyType>::getOffsetRegisterSize());
 
-    ImplicitScalingDispatch<FamilyType>::dispatchOffsetRegister(linearStream, 0);
+    ImplicitScalingDispatch<FamilyType>::dispatchOffsetRegister(linearStream, 0, 0);
     EXPECT_EQ(0u, linearStream.getUsed());
 
     EXPECT_EQ(static_cast<uint32_t>(sizeof(uint64_t)), ImplicitScalingDispatch<FamilyType>::getImmediateWritePostSyncOffset());
@@ -544,4 +882,27 @@ HWTEST2_F(CommandEncoderTests, whenAskingForImplicitScalingValuesThenAlwaysRetur
     EXPECT_EQ(static_cast<uint32_t>(GfxCoreHelperHw<FamilyType>::getSingleTimestampPacketSizeHw()), ImplicitScalingDispatch<FamilyType>::getTimeStampPostSyncOffset());
 
     EXPECT_FALSE(ImplicitScalingDispatch<FamilyType>::platformSupportsImplicitScaling(*rootExecEnv));
+}
+
+HWTEST_F(CommandEncoderTests, givenInterfaceDescriptorWhenEncodeEuSchedulingPolicyIsCalledThenNothingIsChanged) {
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+
+    INTERFACE_DESCRIPTOR_DATA idd = FamilyType::cmdInitInterfaceDescriptorData;
+    auto expectedIdd = idd;
+
+    KernelDescriptor kernelDescriptor;
+    kernelDescriptor.kernelAttributes.threadArbitrationPolicy = ThreadArbitrationPolicy::AgeBased;
+    int32_t defaultPipelinedThreadArbitrationPolicy = ThreadArbitrationPolicy::RoundRobin;
+    EncodeDispatchKernel<FamilyType>::encodeEuSchedulingPolicy(&idd, kernelDescriptor, defaultPipelinedThreadArbitrationPolicy);
+
+    constexpr uint32_t iddSizeInDW = 8;
+    for (uint32_t i = 0u; i < iddSizeInDW; i++) {
+        EXPECT_EQ(expectedIdd.getRawData(i), idd.getRawData(i));
+    }
+}
+
+HWTEST_F(CommandEncoderTests, whenGetScratchPtrOffsetOfImplicitArgsIsCalledThenZeroIsReturned) {
+
+    auto scratchOffset = EncodeDispatchKernel<FamilyType>::getScratchPtrOffsetOfImplicitArgs();
+    EXPECT_EQ(0u, scratchOffset);
 }

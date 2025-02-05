@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,18 +24,22 @@ class SysmanProductHelperHw : public SysmanProductHelper {
 
     // Frequency
     void getFrequencyStepSize(double *pStepSize) override;
+    bool isFrequencySetRangeSupported() override;
+    zes_freq_throttle_reason_flags_t getThrottleReasons(LinuxSysmanImp *pLinuxSysmanImp, uint32_t subdeviceId) override;
 
     // Memory
     ze_result_t getMemoryProperties(zes_mem_properties_t *pProperties, LinuxSysmanImp *pLinuxSysmanImp, NEO::Drm *pDrm, SysmanKmdInterface *pSysmanKmdInterface, uint32_t subDeviceId, bool isSubdevice) override;
-    ze_result_t getMemoryBandwidth(zes_mem_bandwidth_t *pBandwidth, PlatformMonitoringTech *pPmt, SysmanDeviceImp *pDevice, SysmanKmdInterface *pSysmanKmdInterface, uint32_t subdeviceId) override;
+    ze_result_t getMemoryBandwidth(zes_mem_bandwidth_t *pBandwidth, LinuxSysmanImp *pLinuxSysmanImp, uint32_t subdeviceId) override;
+    void getMemoryHealthIndicator(FirmwareUtil *pFwInterface, zes_mem_health_t *health) override;
 
     // Performance
     void getMediaPerformanceFactorMultiplier(const double performanceFactor, double *pMultiplier) override;
+    bool isPerfFactorSupported() override;
 
     // temperature
-    ze_result_t getGlobalMaxTemperature(PlatformMonitoringTech *pPmt, double *pTemperature) override;
-    ze_result_t getGpuMaxTemperature(PlatformMonitoringTech *pPmt, double *pTemperature) override;
-    ze_result_t getMemoryMaxTemperature(PlatformMonitoringTech *pPmt, double *pTemperature) override;
+    ze_result_t getGlobalMaxTemperature(LinuxSysmanImp *pLinuxSysmanImp, double *pTemperature, uint32_t subdeviceId) override;
+    ze_result_t getGpuMaxTemperature(LinuxSysmanImp *pLinuxSysmanImp, double *pTemperature, uint32_t subdeviceId) override;
+    ze_result_t getMemoryMaxTemperature(LinuxSysmanImp *pLinuxSysmanImp, double *pTemperature, uint32_t subdeviceId) override;
     bool isMemoryMaxTemperatureSupported() override;
 
     // Ras
@@ -45,15 +49,34 @@ class SysmanProductHelperHw : public SysmanProductHelper {
     // global ops
     bool isRepairStatusSupported() override;
 
-    // Voltage
-    void getCurrentVoltage(PlatformMonitoringTech *pPmt, double &voltage) override;
-
     // power
     int32_t getPowerLimitValue(uint64_t value) override;
     uint64_t setPowerLimitValue(int32_t value) override;
     zes_limit_unit_t getPowerLimitUnit() override;
+    bool isPowerSetLimitSupported() override;
+    std::string getCardCriticalPowerLimitFile() override;
+    SysfsValueUnit getCardCriticalPowerLimitNativeUnit() override;
+
+    // standby
+    bool isStandbySupported(SysmanKmdInterface *pSysmanKmdInterface) override;
+
+    // Firmware
+    void getDeviceSupportedFwTypes(FirmwareUtil *pFwInterface, std::vector<std::string> &fwTypes) override;
+
+    // Ecc
+    bool isEccConfigurationSupported() override;
+
+    // Device
+    bool isUpstreamPortConnected() override;
+    bool isZesInitSupported() override;
+
+    // Pci
+    ze_result_t getPciProperties(zes_pci_properties_t *pProperties) override;
+    ze_result_t getPciStats(zes_pci_stats_t *pStats, LinuxSysmanImp *pLinuxSysmanImp) override;
 
     ~SysmanProductHelperHw() override = default;
+
+    const std::map<std::string, std::map<std::string, uint64_t>> *getGuidToKeyOffsetMap() override;
 
   protected:
     SysmanProductHelperHw() = default;

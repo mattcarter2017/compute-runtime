@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,9 +22,15 @@
 #include <string.h>
 #include <unistd.h>
 #endif // defined(_WIN32) || defined(_WIN64)
+#include <mutex>
 #include <vector>
-
 bool verbose = true;
+
+typedef struct {
+    zes_firmware_handle_t firmwareHandle;
+    std::mutex firmwareProgressMutex;
+    bool flashComplete;
+} FirmwareFlashInfo;
 
 std::string getErrorString(ze_result_t error) {
     static const std::map<ze_result_t, std::string> mgetErrorString{
@@ -128,7 +134,8 @@ void usage() {
                  "\n  -C,   --ecc                                                                       selectively run ecc black box test"
                  "\n  -a,   --fan                                                                       selectively run fan black box test"
                  "\n  -h,   --help                                                                      display help message"
-                 "\n  -re,   --rasexp                                                                    selectively run ras experimental API black box test"
+                 "\n  -re,  --rasexp                                                                    selectively run ras experimental API black box test"
+                 "\n  -v,   --vftelemetry                                                               selectively run vf telemetry API black box test"
                  "\n"
                  "\n  All L0 Syman APIs that set values require root privileged execution"
                  "\n"
@@ -162,7 +169,7 @@ void getDeviceHandles(ze_driver_handle_t &driverHandle, std::vector<ze_device_ha
             std::cout << "Device Name = " << deviceProperties.name << std::endl;
             std::cout << "UUID: " << std::endl;
             for (uint32_t i = 0; i < ZE_MAX_UUID_SIZE; i++) {
-                std::cout << static_cast<uint8_t>(deviceProperties.uuid.id[i]) << " ";
+                std::cout << +deviceProperties.uuid.id[i] << " ";
             }
             std::cout << std::endl;
         }
@@ -188,6 +195,14 @@ void getSysmanDeviceHandles(zes_driver_handle_t &sysmanDriverHandle, std::vector
     }
     sysmanDevices.resize(deviceCount);
     VALIDATECALL(zesDeviceGet(sysmanDriverHandle, &deviceCount, sysmanDevices.data()));
+}
+
+std::string getPowerLimitSourceType(zes_power_source_t type) {
+    static const std::map<zes_power_source_t, std::string> powerLimitsSourceTypeMap{
+        {ZES_POWER_SOURCE_ANY, "ZES_POWER_SOURCE_ANY"},
+        {ZES_POWER_SOURCE_MAINS, "ZES_POWER_SOURCE_MAINS"},
+        {ZES_POWER_SOURCE_BATTERY, "ZES_POWER_SOURCE_BATTERY"}};
+    return powerLimitsSourceTypeMap.at(type);
 }
 
 void getPowerLimits(const zes_pwr_handle_t &handle) {
@@ -221,7 +236,7 @@ void getPowerLimits(const zes_pwr_handle_t &handle) {
                 std::cout << "powerLimit.intervalValueLocked = " << +allLimits[i].intervalValueLocked << std::endl;
                 std::cout << "powerLimit.enabledStateLocked = " << +allLimits[i].enabledStateLocked << std::endl;
                 std::cout << "powerLimit.limitValueLocked = " << +allLimits[i].limitValueLocked << std::endl;
-                std::cout << "powerLimit.source = " << allLimits[i].source << std::endl;
+                std::cout << "powerLimit.source = " << getPowerLimitSourceType(allLimits[i].source) << std::endl;
                 std::cout << "powerLimit.limitUnit = " << allLimits[i].limitUnit << std::endl;
                 std::cout << "powerLimit.limit = " << allLimits[i].limit << std::endl;
                 std::cout << "powerLimit.interval = " << allLimits[i].interval << std::endl;
@@ -275,6 +290,20 @@ int geteuid() {
     }
 }
 #endif // defined(_WIN32) || defined(_WIN64)
+static std::string getPowerDomainType(zes_power_domain_t type) {
+    static const std::map<zes_power_domain_t, std::string> powerDomainEnumToStringMap{
+        {ZES_POWER_DOMAIN_CARD, "ZES_POWER_DOMAIN_CARD"},
+        {ZES_POWER_DOMAIN_PACKAGE, "ZES_POWER_DOMAIN_PACKAGE"},
+        {ZES_POWER_DOMAIN_STACK, "ZES_POWER_DOMAIN_STACK"},
+        {ZES_POWER_DOMAIN_MEMORY, "ZES_POWER_DOMAIN_MEMORY"},
+        {ZES_POWER_DOMAIN_GPU, "ZES_POWER_DOMAIN_GPU"}};
+    if (powerDomainEnumToStringMap.find(type) != powerDomainEnumToStringMap.end()) {
+        return powerDomainEnumToStringMap.at(type);
+    } else {
+        return "invalid";
+    }
+}
+
 void testSysmanPower(ze_device_handle_t &device, std::vector<std::string> &buf, uint32_t &curDeviceIndex) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     std::cout << std::endl
@@ -291,15 +320,23 @@ void testSysmanPower(ze_device_handle_t &device, std::vector<std::string> &buf, 
 
     for (const auto &handle : handles) {
         zes_power_properties_t properties = {};
+        zes_power_ext_properties_t extProperties = {};
+        zes_power_limit_ext_desc_t defaultLimit = {};
+
+        extProperties.defaultLimit = &defaultLimit;
+        extProperties.stype = ZES_STRUCTURE_TYPE_POWER_EXT_PROPERTIES;
+        properties.pNext = &extProperties;
         VALIDATECALL(zesPowerGetProperties(handle, &properties));
         if (verbose) {
             std::cout << "properties.onSubdevice = " << static_cast<uint32_t>(properties.onSubdevice) << std::endl;
             std::cout << "properties.subdeviceId = " << properties.subdeviceId << std::endl;
             std::cout << "properties.canControl = " << static_cast<uint32_t>(properties.canControl) << std::endl;
-            std::cout << "properties.isEnergyThresholdSupported= " << static_cast<uint32_t>(properties.isEnergyThresholdSupported) << std::endl;
-            std::cout << "properties.defaultLimit= " << properties.defaultLimit << std::endl;
-            std::cout << "properties.maxLimit =" << properties.maxLimit << std::endl;
-            std::cout << "properties.minLimit =" << properties.minLimit << std::endl;
+            std::cout << "properties.isEnergyThresholdSupported = " << static_cast<uint32_t>(properties.isEnergyThresholdSupported) << std::endl;
+            std::cout << "properties.defaultLimit = " << properties.defaultLimit << std::endl;
+            std::cout << "properties.maxLimit = " << properties.maxLimit << std::endl;
+            std::cout << "properties.minLimit = " << properties.minLimit << std::endl;
+            std::cout << "extProperties.domain = " << getPowerDomainType(extProperties.domain) << std::endl;
+            std::cout << "defaultLimit.limit = " << defaultLimit.limit << std::endl;
         }
         int count = 5; // Measure average power 5 times
         for (; count > 0; count--) {
@@ -539,6 +576,9 @@ void testSysmanPci(ze_device_handle_t &device) {
         std::cout << "properties.maxSpeed.gen = " << std::dec << properties.maxSpeed.gen << std::endl;
         std::cout << "properties.maxSpeed.width = " << std::dec << properties.maxSpeed.width << std::endl;
         std::cout << "properties.maxSpeed.maxBandwidth = " << std::dec << properties.maxSpeed.maxBandwidth << std::endl;
+        std::cout << "properties.haveBandwidthCounters = " << static_cast<uint32_t>(properties.haveBandwidthCounters) << std::endl;
+        std::cout << "properties.havePacketCounters = " << static_cast<uint32_t>(properties.havePacketCounters) << std::endl;
+        std::cout << "properties.haveReplayCounters = " << static_cast<uint32_t>(properties.haveReplayCounters) << std::endl;
     }
 
     uint32_t count = 0;
@@ -554,6 +594,25 @@ void testSysmanPci(ze_device_handle_t &device) {
         pciBarExtProps[i].pNext = nullptr;
         pciBarProps[i].stype = ZES_STRUCTURE_TYPE_PCI_BAR_PROPERTIES;
         pciBarProps[i].pNext = static_cast<void *>(&pciBarExtProps[i]);
+    }
+
+    zes_pci_stats_t pciStats = {};
+    VALIDATECALL(zesDevicePciGetStats(device, &pciStats));
+    if (verbose) {
+        if (properties.haveReplayCounters) {
+            std::cout << "pciStats.replayCounter = " << std::dec << pciStats.replayCounter << std::endl;
+        }
+        if (properties.havePacketCounters) {
+            std::cout << "pciStats.packetCounter = " << std::dec << pciStats.packetCounter << std::endl;
+        }
+        if (properties.haveBandwidthCounters) {
+            std::cout << "pciStats.rxCounter = " << std::dec << pciStats.rxCounter << std::endl;
+            std::cout << "pciStats.txCounter = " << std::dec << pciStats.txCounter << std::endl;
+        }
+        std::cout << "pciStats.timestamp = " << std::dec << pciStats.timestamp << std::endl;
+        std::cout << "pciStats.speed.gen = " << std::dec << pciStats.speed.gen << std::endl;
+        std::cout << "pciStats.speed.width = " << std::dec << pciStats.speed.width << std::endl;
+        std::cout << "pciStats.speed.maxBandWidth = " << std::dec << pciStats.speed.maxBandwidth << std::endl;
     }
 
     VALIDATECALL(zesDevicePciGetBars(device, &count, pciBarProps.data()));
@@ -856,12 +915,12 @@ std::string getEngineType(zes_engine_group_t engineGroup) {
 void testSysmanEngine(ze_device_handle_t &device) {
     std::cout << std::endl
               << " ----  Engine tests ---- " << std::endl;
-    ze_device_properties_t deviceProperties = {ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    VALIDATECALL(zeDeviceGetProperties(device, &deviceProperties));
+    zes_device_properties_t deviceProperties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
+    VALIDATECALL(zesDeviceGetProperties(device, &deviceProperties));
     if (verbose) {
-        std::cout << "Device UUID: ";
+        std::cout << "Device UUID: " << std::endl;
         for (uint32_t i = 0; i < ZE_MAX_UUID_SIZE; i++) {
-            std::cout << static_cast<uint32_t>(deviceProperties.uuid.id[i]) << " ";
+            std::cout << static_cast<uint32_t>(deviceProperties.core.uuid.id[i]) << " ";
         }
         std::cout << std::endl;
     }
@@ -1061,12 +1120,42 @@ void testSysmanMemory(ze_device_handle_t &device) {
         }
     }
 }
+
+static void trackFirmwareFlashProgress(FirmwareFlashInfo *flashData) {
+    bool loopContinue = true;
+    uint32_t progressPercent = 0;
+    do {
+        progressPercent = 0;
+        ze_result_t result = zesFirmwareGetFlashProgress(flashData->firmwareHandle, &progressPercent);
+        if (result != ZE_RESULT_SUCCESS) {
+            break;
+        }
+        printf("\rFirmware Flash Progress: %d %%", progressPercent);
+        fflush(stdout);
+
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+        flashData->firmwareProgressMutex.lock();
+        loopContinue = !flashData->flashComplete;
+        flashData->firmwareProgressMutex.unlock();
+
+    } while (loopContinue);
+    progressPercent = 0;
+    ze_result_t result = zesFirmwareGetFlashProgress(flashData->firmwareHandle, &progressPercent);
+    if (result != ZE_RESULT_SUCCESS) {
+        return;
+    }
+    printf("\rFirmware Flash Progress: %d %%\n", progressPercent);
+    fflush(stdout);
+}
+
 void testSysmanFirmware(ze_device_handle_t &device, std::string imagePath) {
     std::cout << std::endl
               << " ----  firmware tests ---- " << std::endl;
     uint32_t count = 0;
     std::ifstream imageFile;
     uint64_t imgSize = 0;
+    FirmwareFlashInfo flashData{};
     if (imagePath.size() != 0) {
         struct stat statBuf;
         auto status = stat(imagePath.c_str(), &statBuf);
@@ -1096,7 +1185,17 @@ void testSysmanFirmware(ze_device_handle_t &device, std::string imagePath) {
         if (imagePath.size() != 0 && imgSize > 0) {
             std::vector<char> img(imgSize);
             imageFile.read(img.data(), imgSize);
+
+            flashData.flashComplete = false;
+            flashData.firmwareHandle = handle;
+            std::thread thread(trackFirmwareFlashProgress, &flashData);
+
             VALIDATECALL(zesFirmwareFlash(handle, img.data(), static_cast<uint32_t>(imgSize)));
+
+            flashData.firmwareProgressMutex.lock();
+            flashData.flashComplete = true;
+            flashData.firmwareProgressMutex.unlock();
+            thread.join();
 
             VALIDATECALL(zesFirmwareGetProperties(handle, &fwProperties));
             if (verbose) {
@@ -1108,6 +1207,7 @@ void testSysmanFirmware(ze_device_handle_t &device, std::string imagePath) {
         }
     }
 }
+
 void testSysmanReset(ze_device_handle_t &device, bool force) {
     std::cout << std::endl
               << " ----  Reset test (force = " << (force ? "true" : "false") << ") ---- " << std::endl;
@@ -1306,12 +1406,27 @@ void testSysmanGlobalOperations(ze_device_handle_t &device) {
         std::cout << "properties.brandName = " << properties.brandName << std::endl;
         std::cout << "properties.modelName = " << properties.modelName << std::endl;
         std::cout << "properties.vendorName = " << properties.vendorName << std::endl;
-        std::cout << "properties.driverVersion= " << properties.driverVersion << std::endl;
-        std::cout << "properties.core.uuid= " << std::endl;
+        std::cout << "properties.driverVersion = " << properties.driverVersion << std::endl;
+        std::cout << "properties.core.type = " << properties.core.type << std::endl;
+        std::cout << "properties.core.vendorId = " << properties.core.vendorId << std::endl;
+        std::cout << "properties.core.deviceId = " << properties.core.deviceId << std::endl;
+        std::cout << "properties.core.flags = " << properties.core.flags << std::endl;
+        std::cout << "properties.core.coreClockRate = " << properties.core.coreClockRate << std::endl;
+        std::cout << "properties.core.maxHardwareContexts = " << properties.core.maxHardwareContexts << std::endl;
+        std::cout << "properties.core.maxCommandQueuePriority = " << properties.core.maxCommandQueuePriority << std::endl;
+        std::cout << "properties.core.numThreadsPerEU = " << properties.core.numThreadsPerEU << std::endl;
+        std::cout << "properties.core.numEUsPerSubslice = " << properties.core.numEUsPerSubslice << std::endl;
+        std::cout << "properties.core.numSubslicesPerSlice = " << properties.core.numSubslicesPerSlice << std::endl;
+        std::cout << "properties.core.numSlices = " << properties.core.numSlices << std::endl;
+        std::cout << "properties.core.timerResolution = " << properties.core.timerResolution << std::endl;
+        std::cout << "properties.core.timestampValidBits = " << properties.core.timestampValidBits << std::endl;
+        std::cout << "properties.core.kernelTimestampValidBits = " << properties.core.kernelTimestampValidBits << std::endl;
+        std::cout << "properties.core.uuid = " << std::endl;
         for (uint32_t i = 0; i < ZE_MAX_UUID_SIZE; i++) {
-            std::cout << static_cast<uint8_t>(properties.core.uuid.id[i]) << " ";
+            std::cout << +properties.core.uuid.id[i] << " ";
         }
         std::cout << std::endl;
+        std::cout << "properties.core.name = " << properties.core.name << std::endl;
     }
 
     uint32_t count = 0;
@@ -1467,6 +1582,71 @@ void testSysmanFan(ze_device_handle_t &device) {
                       << " ----  Fan get State tests ---- " << std::endl;
             std::cout << "Fan Speed = " << fanSpeed << std::endl;
             std::cout << "Fan Speed Unit = " << getFanUnits(fanUnit) << std::endl;
+        }
+    }
+}
+
+static std::string getMemoryModuleLocation(zes_mem_loc_t type) {
+    static const std::map<zes_mem_loc_t, std::string> memoryModuleLocationEnumToStringMap{
+        {ZES_MEM_LOC_SYSTEM, "ZES_MEM_LOC_SYSTEM"},
+        {ZES_MEM_LOC_DEVICE, "ZES_MEM_LOC_DEVICE"}};
+    if (memoryModuleLocationEnumToStringMap.find(type) != memoryModuleLocationEnumToStringMap.end()) {
+        return memoryModuleLocationEnumToStringMap.at(type);
+    } else {
+        return "NOT SUPPORTED MEMORY MODULE LOCATION";
+    }
+}
+
+void testSysmanVfTelemetry(ze_device_handle_t &device) {
+    std::cout << std::endl
+              << " ----  VF Telemetry tests ---- " << std::endl;
+    uint32_t count = 0;
+    VALIDATECALL(zesDeviceEnumEnabledVFExp(device, &count, nullptr));
+    if (count == 0) {
+        std::cout << "Could not retrieve Active VF handles" << std::endl;
+        return;
+    }
+    std::cout << "Enabled VF Handle count = " << count << std::endl;
+    std::vector<zes_vf_handle_t> handles(count, nullptr);
+    VALIDATECALL(zesDeviceEnumEnabledVFExp(device, &count, handles.data()));
+
+    for (const auto &handle : handles) {
+        zes_vf_exp2_capabilities_t props = {};
+        VALIDATECALL(zesVFManagementGetVFCapabilitiesExp2(handle, &props));
+        if (verbose) {
+            std::cout << std::endl
+                      << "----- PCI BDF ------ " << std::endl;
+            std::cout << "Domain: Bus: Device: Function = " << props.address.domain << " : " << props.address.bus << " : " << props.address.device << " : " << props.address.function << std::endl;
+            std::cout << "Memory Size in Bytes = " << props.vfDeviceMemSize << std::endl;
+            std::cout << "VF Id = " << props.vfID << std::endl;
+        }
+
+        // Get Mem utilization
+        count = 0;
+        VALIDATECALL(zesVFManagementGetVFMemoryUtilizationExp2(handle, &count, nullptr));
+        std::vector<zes_vf_util_mem_exp2_t> memUtils(count);
+        VALIDATECALL(zesVFManagementGetVFMemoryUtilizationExp2(handle, &count, memUtils.data()));
+        std::cout << std::endl
+                  << "----- Memory Activity Stats ----- " << std::endl;
+        for (uint32_t it = 0; it < count; it++) {
+            if (verbose) {
+                std::cout << "Location of the Memory = " << getMemoryModuleLocation(memUtils[it].vfMemLocation) << std::endl;
+                std::cout << "Memory Utilized in Bytes = " << memUtils[it].vfMemUtilized << std::endl;
+            }
+        }
+
+        count = 0;
+        VALIDATECALL(zesVFManagementGetVFEngineUtilizationExp2(handle, &count, nullptr));
+        std::vector<zes_vf_util_engine_exp2_t> engineUtils(count);
+        VALIDATECALL(zesVFManagementGetVFEngineUtilizationExp2(handle, &count, engineUtils.data()));
+        std::cout << std::endl
+                  << "----- Engine Activity Stats ----- " << std::endl;
+        for (uint32_t it = 0; it < count; it++) {
+            if (verbose) {
+                std::cout << "Engine Type = " << getEngineType(engineUtils[it].vfEngineType) << std::endl;
+                std::cout << "Active Counter Value = " << engineUtils[it].activeCounterValue << std::endl;
+                std::cout << "Sampling Counter Value = " << engineUtils[it].samplingCounterValue << std::endl;
+            }
         }
     }
 }
@@ -1709,20 +1889,20 @@ int main(int argc, char *argv[]) {
     }
     if (isParamEnabled(argc, argv, "-E", "--event", &optind)) {
         std::for_each(devices.begin(), devices.end(), [&](auto device) {
-            zesDeviceEventRegister(device,
-                                   ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
-                                       ZES_EVENT_TYPE_FLAG_DEVICE_ATTACH | ZES_EVENT_TYPE_FLAG_RAS_CORRECTABLE_ERRORS |
-                                       ZES_EVENT_TYPE_FLAG_RAS_UNCORRECTABLE_ERRORS | ZES_EVENT_TYPE_FLAG_FABRIC_PORT_HEALTH | ZES_EVENT_TYPE_FLAG_MEM_HEALTH);
+            VALIDATECALL(zesDeviceEventRegister(device,
+                                                ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
+                                                    ZES_EVENT_TYPE_FLAG_DEVICE_ATTACH | ZES_EVENT_TYPE_FLAG_RAS_CORRECTABLE_ERRORS |
+                                                    ZES_EVENT_TYPE_FLAG_RAS_UNCORRECTABLE_ERRORS | ZES_EVENT_TYPE_FLAG_FABRIC_PORT_HEALTH | ZES_EVENT_TYPE_FLAG_MEM_HEALTH));
         });
         testSysmanListenEvents(driver, devices,
                                ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
                                    ZES_EVENT_TYPE_FLAG_DEVICE_ATTACH | ZES_EVENT_TYPE_FLAG_RAS_CORRECTABLE_ERRORS |
                                    ZES_EVENT_TYPE_FLAG_RAS_UNCORRECTABLE_ERRORS | ZES_EVENT_TYPE_FLAG_FABRIC_PORT_HEALTH);
         std::for_each(devices.begin(), devices.end(), [&](auto device) {
-            zesDeviceEventRegister(device,
-                                   ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
-                                       ZES_EVENT_TYPE_FLAG_DEVICE_ATTACH | ZES_EVENT_TYPE_FLAG_RAS_CORRECTABLE_ERRORS |
-                                       ZES_EVENT_TYPE_FLAG_RAS_UNCORRECTABLE_ERRORS | ZES_EVENT_TYPE_FLAG_FABRIC_PORT_HEALTH | ZES_EVENT_TYPE_FLAG_MEM_HEALTH);
+            VALIDATECALL(zesDeviceEventRegister(device,
+                                                ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
+                                                    ZES_EVENT_TYPE_FLAG_DEVICE_ATTACH | ZES_EVENT_TYPE_FLAG_RAS_CORRECTABLE_ERRORS |
+                                                    ZES_EVENT_TYPE_FLAG_RAS_UNCORRECTABLE_ERRORS | ZES_EVENT_TYPE_FLAG_FABRIC_PORT_HEALTH | ZES_EVENT_TYPE_FLAG_MEM_HEALTH));
         });
         testSysmanListenEventsEx(driver, devices,
                                  ZES_EVENT_TYPE_FLAG_DEVICE_RESET_REQUIRED | ZES_EVENT_TYPE_FLAG_DEVICE_DETACH |
@@ -1742,6 +1922,12 @@ int main(int argc, char *argv[]) {
     if (isParamEnabled(argc, argv, "-a", "--fan", &optind)) {
         std::for_each(devices.begin(), devices.end(), [&](auto device) {
             testSysmanFan(device);
+        });
+    }
+
+    if (isParamEnabled(argc, argv, "-v", "--vftelemetry", &optind)) {
+        std::for_each(devices.begin(), devices.end(), [&](auto device) {
+            testSysmanVfTelemetry(device);
         });
     }
 

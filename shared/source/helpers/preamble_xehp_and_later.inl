@@ -8,12 +8,11 @@
 #include "shared/source/command_stream/csr_definitions.h"
 #include "shared/source/command_stream/stream_properties.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
+#include "shared/source/gen_common/reg_configs_common.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/pipe_control_args.h"
 #include "shared/source/helpers/pipeline_select_helper.h"
 #include "shared/source/helpers/preamble_base.inl"
-
-#include "reg_configs_common.h"
 
 namespace NEO {
 
@@ -22,7 +21,7 @@ void PreambleHelper<GfxFamily>::addPipeControlBeforeVfeCmd(LinearStream *pComman
 }
 
 template <typename GfxFamily>
-void PreambleHelper<GfxFamily>::programL3(LinearStream *pCommandStream, uint32_t l3Config) {
+void PreambleHelper<GfxFamily>::programL3(LinearStream *pCommandStream, uint32_t l3Config, bool isBcs) {
 }
 
 template <typename GfxFamily>
@@ -60,18 +59,15 @@ void PreambleHelper<GfxFamily>::programVfeState(void *pVfeState,
 
     appendProgramVFEState(rootDeviceEnvironment, streamProperties, &cmd);
 
-    if (debugManager.flags.CFEComputeOverdispatchDisable.get() != -1) {
-        cmd.setComputeOverdispatchDisable(debugManager.flags.CFEComputeOverdispatchDisable.get());
+    if (debugManager.flags.ComputeOverdispatchDisable.get() != -1) {
+        cmd.setComputeOverdispatchDisable(debugManager.flags.ComputeOverdispatchDisable.get());
     }
 
-    if (debugManager.flags.CFEMaximumNumberOfThreads.get() != -1) {
-        cmd.setMaximumNumberOfThreads(debugManager.flags.CFEMaximumNumberOfThreads.get());
+    if (debugManager.flags.MaximumNumberOfThreads.get() != -1) {
+        cmd.setMaximumNumberOfThreads(debugManager.flags.MaximumNumberOfThreads.get());
     }
-    if (debugManager.flags.CFEOverDispatchControl.get() != -1) {
-        cmd.setOverDispatchControl(static_cast<typename CFE_STATE::OVER_DISPATCH_CONTROL>(debugManager.flags.CFEOverDispatchControl.get()));
-    }
-    if (debugManager.flags.CFELargeGRFThreadAdjustDisable.get() != -1) {
-        cmd.setLargeGRFThreadAdjustDisable(debugManager.flags.CFELargeGRFThreadAdjustDisable.get());
+    if (debugManager.flags.OverDispatchControl.get() != -1) {
+        cmd.setOverDispatchControl(static_cast<typename CFE_STATE::OVER_DISPATCH_CONTROL>(debugManager.flags.OverDispatchControl.get()));
     }
 
     *cfeState = cmd;

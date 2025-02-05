@@ -1,11 +1,12 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "shared/source/built_ins/built_ins.h"
+#include "shared/source/command_stream/command_stream_receiver_hw.h"
 #include "shared/source/compiler_interface/compiler_interface.h"
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/image/image_surface_state.h"
@@ -13,9 +14,11 @@
 #include "shared/source/os_interface/os_context.h"
 #include "shared/test/common/fixtures/memory_management_fixture.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
+#include "shared/test/common/helpers/engine_descriptor_helper.h"
 #include "shared/test/common/helpers/kernel_binary_helper.h"
 #include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_allocation_properties.h"
+#include "shared/test/common/mocks/mock_direct_submission_hw.h"
 #include "shared/test/common/mocks/mock_gmm.h"
 #include "shared/test/common/mocks/mock_gmm_resource_info.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
@@ -32,6 +35,7 @@
 #include "opencl/test/unit_test/fixtures/image_fixture.h"
 #include "opencl/test/unit_test/fixtures/multi_root_device_fixture.h"
 #include "opencl/test/unit_test/mem_obj/image_compression_fixture.h"
+#include "opencl/test/unit_test/mocks/mock_command_queue.h"
 #include "opencl/test/unit_test/mocks/mock_context.h"
 #include "opencl/test/unit_test/mocks/mock_image.h"
 #include "opencl/test/unit_test/mocks/mock_platform.h"
@@ -653,7 +657,7 @@ static cl_mem_flags noHostPtrFlags[] = {
     CL_MEM_HOST_WRITE_ONLY,
     CL_MEM_HOST_NO_ACCESS};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     CreateImageTest_Create,
     CreateImageNoHostPtr,
     testing::ValuesIn(noHostPtrFlags));
@@ -779,6 +783,7 @@ TEST_P(CreateImageHostPtr, WhenGettingImageDescThenCorrectValuesAreReturned) {
     EXPECT_EQ(image->getHostPtrSlicePitch(), static_cast<size_t>(imageDesc.image_width * elementSize * imageDesc.image_height) * isArrayOr3DType);
     EXPECT_EQ(image->getImageCount(), 1u);
     EXPECT_NE(0u, image->getSize());
+    EXPECT_FALSE(image->getIsDisplayable());
     EXPECT_NE(nullptr, allocation);
 }
 
@@ -1084,7 +1089,7 @@ static cl_mem_flags validHostPtrFlags[] = {
     CL_MEM_HOST_WRITE_ONLY | CL_MEM_COPY_HOST_PTR,
     CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     CreateImageTest_Create,
     CreateImageHostPtr,
     testing::ValuesIn(validHostPtrFlags));
@@ -1189,7 +1194,7 @@ TEST(ImageTest, givenImageWhenGettingCompressionOfImageThenCorrectValueIsReturne
     EXPECT_NE(nullptr, image);
 
     auto allocation = image->getGraphicsAllocation(context.getDevice(0)->getRootDeviceIndex());
-    allocation->getDefaultGmm()->isCompressionEnabled = true;
+    allocation->getDefaultGmm()->setCompressionEnabled(true);
     size_t sizeReturned = 0;
     cl_bool usesCompression;
     cl_int retVal = CL_SUCCESS;
@@ -1202,7 +1207,7 @@ TEST(ImageTest, givenImageWhenGettingCompressionOfImageThenCorrectValueIsReturne
     ASSERT_EQ(sizeof(cl_bool), sizeReturned);
     EXPECT_TRUE(usesCompression);
 
-    allocation->getDefaultGmm()->isCompressionEnabled = false;
+    allocation->getDefaultGmm()->setCompressionEnabled(false);
     sizeReturned = 0;
     usesCompression = cl_bool{CL_FALSE};
     retVal = image->getMemObjectInfo(
@@ -1459,6 +1464,46 @@ TEST(ImageTest, givenClMemCopyHostPointerPassedToImageCreateWhenAllocationIsNotI
     EXPECT_LT(taskCount, taskCountSent);
 }
 
+using ImageDirectSubmissionTest = testing::Test;
+
+HWTEST_F(ImageDirectSubmissionTest, givenImageCreatedWhenDestrucedThenVerifyTaskCountTick) {
+    REQUIRE_IMAGES_OR_SKIP(defaultHwInfo);
+    DebugManagerStateRestore restore;
+    debugManager.flags.EnableDirectSubmission.set(1);
+
+    MockClDevice mockClDevice(new MockDevice());
+    MockContext ctx(&mockClDevice);
+    MockCommandQueueHw<FamilyType> mockCmdQueueHw{&ctx, &mockClDevice, nullptr};
+    constexpr static TaskCountType taskCountReady = 3u;
+    auto &ultCsr = mockCmdQueueHw.getUltCommandStreamReceiver();
+    ultCsr.heapStorageRequiresRecyclingTag = false;
+
+    auto directSubmission = new MockDirectSubmissionHw<FamilyType, RenderDispatcher<FamilyType>>(ultCsr);
+    ultCsr.directSubmission.reset(directSubmission);
+    ultCsr.directSubmissionAvailable = true;
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 1;
+    imageDesc.image_height = 1;
+
+    std::unique_ptr<Image> image(ImageHelper<Image1dDefaults>::create(&ctx, &imageDesc));
+    EXPECT_NE(nullptr, image);
+    image->getGraphicsAllocation(0u)->setAllocationType(AllocationType::image);
+    image->getGraphicsAllocation(mockClDevice.getRootDeviceIndex())->updateTaskCount(taskCountReady, mockClDevice.getDefaultEngine().osContext->getContextId());
+
+    ultCsr.initializeTagAllocation();
+    ultCsr.taskCount.store(9u);
+
+    const auto taskCountBefore = mockClDevice.getGpgpuCommandStreamReceiver().peekTaskCount();
+
+    image.reset();
+
+    auto taskCountSent = mockClDevice.getGpgpuCommandStreamReceiver().peekTaskCount();
+
+    EXPECT_LT(taskCountBefore, taskCountSent);
+}
+
 struct ImageConvertTypeTest
     : public ::testing::Test {
 
@@ -1594,10 +1639,10 @@ TEST_P(MipLevelCoordinateTest, givenMipmappedImageWhenValidateRegionAndOriginIsC
     EXPECT_EQ(CL_INVALID_MIP_LEVEL, Image::validateRegionAndOrigin(origin, region, desc));
 }
 
-INSTANTIATE_TEST_CASE_P(MipLevelCoordinate,
-                        MipLevelCoordinateTest,
-                        ::testing::Values(CL_MEM_OBJECT_IMAGE1D, CL_MEM_OBJECT_IMAGE1D_ARRAY, CL_MEM_OBJECT_IMAGE2D,
-                                          CL_MEM_OBJECT_IMAGE2D_ARRAY, CL_MEM_OBJECT_IMAGE3D));
+INSTANTIATE_TEST_SUITE_P(MipLevelCoordinate,
+                         MipLevelCoordinateTest,
+                         ::testing::Values(CL_MEM_OBJECT_IMAGE1D, CL_MEM_OBJECT_IMAGE1D_ARRAY, CL_MEM_OBJECT_IMAGE2D,
+                                           CL_MEM_OBJECT_IMAGE2D_ARRAY, CL_MEM_OBJECT_IMAGE3D));
 
 typedef ::testing::TestWithParam<std::pair<uint32_t, bool>> HasSlicesTest;
 
@@ -1606,15 +1651,15 @@ TEST_P(HasSlicesTest, givenMemObjectTypeWhenHasSlicesIsCalledThenReturnsTrueIfTy
     EXPECT_EQ(pair.second, Image::hasSlices(pair.first));
 }
 
-INSTANTIATE_TEST_CASE_P(HasSlices,
-                        HasSlicesTest,
-                        ::testing::Values(std::make_pair(CL_MEM_OBJECT_IMAGE1D, false),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE1D_ARRAY, true),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE2D, false),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE2D_ARRAY, true),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE3D, true),
-                                          std::make_pair(CL_MEM_OBJECT_BUFFER, false),
-                                          std::make_pair(CL_MEM_OBJECT_PIPE, false)));
+INSTANTIATE_TEST_SUITE_P(HasSlices,
+                         HasSlicesTest,
+                         ::testing::Values(std::make_pair(CL_MEM_OBJECT_IMAGE1D, false),
+                                           std::make_pair(CL_MEM_OBJECT_IMAGE1D_ARRAY, true),
+                                           std::make_pair(CL_MEM_OBJECT_IMAGE2D, false),
+                                           std::make_pair(CL_MEM_OBJECT_IMAGE2D_ARRAY, true),
+                                           std::make_pair(CL_MEM_OBJECT_IMAGE3D, true),
+                                           std::make_pair(CL_MEM_OBJECT_BUFFER, false),
+                                           std::make_pair(CL_MEM_OBJECT_PIPE, false)));
 
 typedef ::testing::Test ImageTransformTest;
 HWTEST_F(ImageTransformTest, givenSurfaceStateWhenTransformImage3dTo2dArrayIsCalledThenSurface2dArrayIsSet) {
@@ -1646,8 +1691,6 @@ HWTEST_F(ImageTransformTest, givenSurfaceStateWhenTransformImage2dArrayTo3dIsCal
 }
 
 HWTEST_F(ImageTransformTest, givenSurfaceBaseAddressAndUnifiedSurfaceWhenSetUnifiedAuxAddressCalledThenAddressIsSet) {
-    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
-    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     MockContext context;
     auto image = std::unique_ptr<Image>(ImageHelper<Image3dDefaults>::create(&context));
     auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
@@ -1662,7 +1705,7 @@ HWTEST_F(ImageTransformTest, givenSurfaceBaseAddressAndUnifiedSurfaceWhenSetUnif
 
     EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceBaseAddress());
 
-    setUnifiedAuxBaseAddress<FamilyType>(&surfaceState, gmm.get());
+    ImageSurfaceStateHelper<FamilyType>::setUnifiedAuxBaseAddress(&surfaceState, gmm.get());
     uint64_t offset = gmm->gmmResourceInfo->getUnifiedAuxSurfaceOffset(GMM_UNIFIED_AUX_TYPE::GMM_AUX_SURF);
 
     EXPECT_EQ(surfBsaseAddress + offset, surfaceState.getAuxiliarySurfaceBaseAddress());
@@ -1763,10 +1806,10 @@ TEST(ImageTest, givenPropertiesWithClDeviceHandleListKHRWhenCreateImageThenCorre
     cl_device_id deviceId2 = clDevice2;
 
     cl_mem_properties_intel properties[] = {
-        CL_DEVICE_HANDLE_LIST_KHR,
+        CL_MEM_DEVICE_HANDLE_LIST_KHR,
         reinterpret_cast<cl_mem_properties_intel>(deviceId),
         reinterpret_cast<cl_mem_properties_intel>(deviceId2),
-        CL_DEVICE_HANDLE_LIST_END_KHR,
+        CL_MEM_DEVICE_HANDLE_LIST_END_KHR,
         0};
 
     DebugManagerStateRestore dbgRestorer;
@@ -1827,7 +1870,7 @@ TEST(ImageTest, givenPropertiesWithClDeviceHandleListKHRWhenCreateImageThenCorre
 }
 
 using MultiRootDeviceImageTest = ::testing::Test;
-HWTEST2_F(MultiRootDeviceImageTest, givenHostPtrToCopyWhenImageIsCreatedWithMultiStorageThenMemoryIsPutInFirstDeviceInContext, IsAtLeastGen12lp) {
+HWTEST2_F(MultiRootDeviceImageTest, givenHostPtrToCopyWhenImageIsCreatedWithMultiStorageThenMemoryIsPutInFirstDeviceInContext, MatchAny) {
     REQUIRE_IMAGES_OR_SKIP(defaultHwInfo);
 
     cl_int retVal = 0;
@@ -1902,7 +1945,7 @@ TEST(ImageTest, givenImageWhenFalsePassedToSet3DUavOrRtvThenValueInImageIsSetToF
 
 using ImageAdjustDepthTests = ::testing::Test;
 
-HWTEST_F(ImageAdjustDepthTests, givenSurfaceStateWhenImage3DRTVOrUAVThenDepthCalculationIsDone) {
+HWTEST2_F(ImageAdjustDepthTests, givenSurfaceStateWhenImage3DRTVOrUAVThenDepthCalculationIsDone, IsAtLeastXe2HpgCore) {
 
     typename FamilyType::RENDER_SURFACE_STATE ss;
     uint32_t minArrayElement = 1;
@@ -1910,49 +1953,31 @@ HWTEST_F(ImageAdjustDepthTests, givenSurfaceStateWhenImage3DRTVOrUAVThenDepthCal
     uint32_t originalDepth = 10;
     uint32_t mipCount = 1;
     ss.setDepth(originalDepth);
-    auto releaseHelper = std::make_unique<MockReleaseHelper>();
-    releaseHelper->shouldAdjustDepthResult = true;
 
-    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, true, releaseHelper.get());
+    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, true);
     EXPECT_NE(ss.getDepth(), originalDepth);
 }
 
-HWTEST_F(ImageAdjustDepthTests, givenSurfaceStateWhenImageIsNot3DRTVOrUAVThenDepthCalculationIsDone) {
+HWTEST2_F(ImageAdjustDepthTests, givenSurfaceStateWhenImageIsNot3DRTVOrUAVThenDepthCalculationIsDone, IsAtLeastXe2HpgCore) {
     typename FamilyType::RENDER_SURFACE_STATE ss;
     uint32_t minArrayElement = 1;
     uint32_t renderTargetViewExtent = 1;
     uint32_t originalDepth = 10;
     uint32_t mipCount = 1;
     ss.setDepth(originalDepth);
-    auto releaseHelper = std::make_unique<MockReleaseHelper>();
-    releaseHelper->shouldAdjustDepthResult = true;
 
-    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, false, releaseHelper.get());
+    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, false);
     EXPECT_EQ(ss.getDepth(), originalDepth);
 }
 
-HWTEST_F(ImageAdjustDepthTests, givenSurfaceStateWhenAdjustDepthReturnFalseThenOriginalDepthIsUsed) {
+HWTEST2_F(ImageAdjustDepthTests, givenSurfaceStateWhenAdjustDepthReturnFalseThenOriginalDepthIsUsed, IsAtMostXeHpcCore) {
     typename FamilyType::RENDER_SURFACE_STATE ss;
     uint32_t minArrayElement = 1;
     uint32_t renderTargetViewExtent = 1;
     uint32_t originalDepth = 10;
     uint32_t mipCount = 1;
     ss.setDepth(originalDepth);
-    auto releaseHelper = std::make_unique<MockReleaseHelper>();
-    releaseHelper->shouldAdjustDepthResult = false;
 
-    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, true, releaseHelper.get());
-    EXPECT_EQ(ss.getDepth(), originalDepth);
-}
-
-HWTEST_F(ImageAdjustDepthTests, givenSurfaceStateWhenReeaseHelperIsNullprThenOriginalDepthIsUsed) {
-    typename FamilyType::RENDER_SURFACE_STATE ss;
-    uint32_t minArrayElement = 1;
-    uint32_t renderTargetViewExtent = 1;
-    uint32_t originalDepth = 10;
-    uint32_t mipCount = 1;
-    ss.setDepth(originalDepth);
-    ReleaseHelper *releaseHelper = nullptr;
-    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, true, releaseHelper);
+    ImageHw<FamilyType>::adjustDepthLimitations(&ss, minArrayElement, renderTargetViewExtent, originalDepth, mipCount, true);
     EXPECT_EQ(ss.getDepth(), originalDepth);
 }

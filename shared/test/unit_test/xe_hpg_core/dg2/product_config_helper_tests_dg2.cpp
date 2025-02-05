@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -152,37 +152,33 @@ DG2TEST_F(ProductHelperTestDg2, whenGettingAubstreamProductFamilyThenProperEnumV
     EXPECT_EQ(aub_stream::ProductFamily::Dg2, productHelper->getAubStreamProductFamily());
 }
 
-DG2TEST_F(ProductHelperTestDg2, givenDg2ConfigWhenSetupHardwareInfoBaseThenGtSystemInfoIsCorrect) {
-    HardwareInfo hwInfo = *defaultHwInfo;
-    GT_SYSTEM_INFO &gtSystemInfo = hwInfo.gtSystemInfo;
-    Dg2HwConfig::setupHardwareInfoBase(&hwInfo, false, releaseHelper);
-
-    EXPECT_EQ(336u, gtSystemInfo.TotalVsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalHsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalDsThreads);
-    EXPECT_EQ(336u, gtSystemInfo.TotalGsThreads);
-    EXPECT_EQ(64u, gtSystemInfo.TotalPsThreadsWindowerRange);
-    EXPECT_EQ(8u, gtSystemInfo.CsrSizeInMb);
-    EXPECT_FALSE(gtSystemInfo.IsL3HashModeEnabled);
-    EXPECT_FALSE(gtSystemInfo.IsDynamicallyPopulated);
-}
-
 DG2TEST_F(ProductHelperTestDg2, givenDg2ConfigWhenSetupHardwareInfoThenGtSystemInfoIsCorrect) {
     HardwareInfo hwInfo = *defaultHwInfo;
     GT_SYSTEM_INFO &gtSystemInfo = hwInfo.gtSystemInfo;
-
     Dg2HwConfig::setupHardwareInfo(&hwInfo, false, releaseHelper);
-    EXPECT_EQ(8u, gtSystemInfo.CsrSizeInMb);
+
+    EXPECT_EQ(0u, gtSystemInfo.TotalVsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalHsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalDsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalGsThreads);
+    EXPECT_EQ(0u, gtSystemInfo.TotalPsThreadsWindowerRange);
+    EXPECT_EQ(0u, gtSystemInfo.CsrSizeInMb);
     EXPECT_FALSE(gtSystemInfo.IsL3HashModeEnabled);
+    EXPECT_TRUE(gtSystemInfo.IsDynamicallyPopulated);
 }
 
 DG2TEST_F(ProductHelperTestDg2, givenDg2ProductHelperWhenIsInitBuiltinAsyncSupportedThenReturnTrue) {
     EXPECT_TRUE(productHelper->isInitBuiltinAsyncSupported(*defaultHwInfo));
 }
 
+DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenCheckIsCopyBufferRectSplitSupportedThenReturnsFalse) {
+    EXPECT_FALSE(productHelper->isCopyBufferRectSplitSupported());
+}
+
 DG2TEST_F(ProductHelperTestDg2, givenG10DevIdWhenAdditionalKernelExecInfoSupportCheckedThenCorrectValueIsReturned) {
     HardwareInfo myHwInfo = *defaultHwInfo;
     myHwInfo.platform.usDeviceID = dg2G10DeviceIds[0];
+    myHwInfo.platform.usRevId = productHelper->getHwRevIdFromStepping(REVISION_A0, myHwInfo);
     EXPECT_FALSE(productHelper->isDisableOverdispatchAvailable(myHwInfo));
 
     FrontEndPropertiesSupport fePropertiesSupport{};
@@ -249,7 +245,7 @@ DG2TEST_F(ProductHelperTestDg2, whenAdjustingDefaultEngineTypeThenSelectEngineTy
             hwInfo.platform.usRevId = productHelper.getHwRevIdFromStepping(revision, hwInfo);
             hwInfo.platform.usDeviceID = deviceId;
             hwInfo.capabilityTable.defaultEngineType = defaultHwInfo->capabilityTable.defaultEngineType;
-            gfxCoreHelper.adjustDefaultEngineType(&hwInfo, productHelper);
+            gfxCoreHelper.adjustDefaultEngineType(&hwInfo, productHelper, nullptr);
             if (DG2::isG10(hwInfo) && revision < REVISION_B) {
                 EXPECT_EQ(aub_stream::ENGINE_RCS, hwInfo.capabilityTable.defaultEngineType);
             } else {
@@ -291,8 +287,6 @@ DG2TEST_F(ProductHelperTestDg2, givenDg2G10A0OrA1SteppingWhenAskingIfWAIsRequire
         refreshReleaseHelper(&hwInfo);
 
         EXPECT_EQ(expectedValue, productHelper->isDefaultEngineTypeAdjustmentRequired(hwInfo));
-        EXPECT_EQ(expectedValue, productHelper->isAllocationSizeAdjustmentRequired(hwInfo));
-        EXPECT_EQ(expectedValue, releaseHelper->isPrefetchDisablingRequired());
     }
 }
 
@@ -684,6 +678,8 @@ DG2TEST_F(ProductHelperTestDg2, givenDg2WhenSetForceNonCoherentThenProperFlagSet
 DG2TEST_F(ProductHelperTestDg2, givenEnabledSliceInNonStandardConfigWhenComputeUnitsUsedForScratchThenProperCalculationIsReturned) {
     HardwareInfo &hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getMutableHardwareInfo();
     GT_SYSTEM_INFO &testSysInfo = hwInfo.gtSystemInfo;
+    testSysInfo.MaxSlicesSupported = 2;
+    testSysInfo.SliceCount = 2;
     testSysInfo.IsDynamicallyPopulated = true;
     for (auto &sliceInfo : testSysInfo.SliceInfo) {
         sliceInfo.Enabled = false;
@@ -715,6 +711,18 @@ DG2TEST_F(ProductHelperTestDg2, givenNotEnabledSliceWhenComputeUnitsUsedForScrat
 DG2TEST_F(ProductHelperTestDg2, givenDG2WhenCheckingIsTimestampWaitSupportedForEventsThenReturnTrue) {
 
     EXPECT_TRUE(productHelper->isTimestampWaitSupportedForEvents());
+}
+
+DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenCallGetCommandBuffersPreallocatedPerCommandQueueThenReturnCorrectValue) {
+    EXPECT_EQ(2u, productHelper->getCommandBuffersPreallocatedPerCommandQueue());
+}
+
+DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenCallGetInternalHeapsPreallocatedThenReturnCorrectValue) {
+    EXPECT_EQ(productHelper->getInternalHeapsPreallocated(), 1u);
+
+    DebugManagerStateRestore restorer;
+    debugManager.flags.SetAmountOfInternalHeapsToPreallocate.set(3);
+    EXPECT_EQ(productHelper->getInternalHeapsPreallocated(), 3u);
 }
 
 DG2TEST_F(ProductConfigTests, givenDg2G10DeviceIdsWhenConfigIsCheckedThenCorrectValueIsReturned) {
@@ -752,7 +760,7 @@ DG2TEST_F(ProductConfigTests, givenInvalidRevisionIdWhenDeviceIdIsDefaultThenDef
     hwInfo.platform.usRevId = CommonConstants::invalidRevisionID;
 
     productConfig = compilerProductHelper->getHwIpVersion(hwInfo);
-    EXPECT_EQ(productConfig, AOT::DG2_G10_A0);
+    EXPECT_EQ(productConfig, AOT::DG2_G10_C0);
 }
 
 DG2TEST_F(ProductConfigTests, givenDg2G10DeviceIdWhenDifferentRevisionIsPassedThenCorrectProductConfigIsReturned) {
@@ -783,7 +791,7 @@ DG2TEST_F(ProductConfigTests, givenDg2DeviceIdWhenIncorrectRevisionIsPassedThenD
             hwInfo.platform.usDeviceID = deviceId;
             hwInfo.platform.usRevId = CommonConstants::invalidRevisionID;
             productConfig = compilerProductHelper->getHwIpVersion(hwInfo);
-            EXPECT_EQ(productConfig, AOT::DG2_G10_A0);
+            EXPECT_EQ(productConfig, AOT::DG2_G10_C0);
         }
     }
 }
@@ -819,7 +827,7 @@ DG2TEST_F(ProductConfigTests, givenNotSetDeviceAndRevisionIdWhenGetProductConfig
     hwInfo.platform.usDeviceID = 0x0;
 
     productConfig = compilerProductHelper->getHwIpVersion(hwInfo);
-    EXPECT_EQ(productConfig, AOT::DG2_G10_A0);
+    EXPECT_EQ(productConfig, AOT::DG2_G10_C0);
 }
 
 DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenAskedIfStorageInfoAdjustmentIsRequiredThenTrueIsReturned) {
@@ -831,6 +839,9 @@ DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenAskedIfStorageInfoAdjustme
 }
 
 DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenGettingEvictIfNecessaryFlagSupportedThenExpectTrue) {
-
     EXPECT_TRUE(productHelper->isEvictionIfNecessaryFlagSupported());
+}
+
+DG2TEST_F(ProductHelperTestDg2, givenProductHelperWhenGettingUseLocalPreferredForCacheableBuffersThenExpectTrue) {
+    EXPECT_TRUE(productHelper->useLocalPreferredForCacheableBuffers());
 }

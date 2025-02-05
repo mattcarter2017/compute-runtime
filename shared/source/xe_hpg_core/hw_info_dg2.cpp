@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,7 +13,6 @@
 #include "shared/source/xe_hpg_core/hw_cmds_dg2.h"
 
 #include "aubstream/engine_node.h"
-#include "device_ids_configs_dg2.h"
 
 namespace NEO {
 
@@ -41,7 +40,6 @@ const RuntimeCapabilityTable DG2::capabilityTable{
     {0, 0, 0, 0, false, false, false, false},                  // kmdNotifyProperties
     MemoryConstants::max48BitAddress,                          // gpuAddressSpace
     0,                                                         // sharedSystemMemCapabilities
-    83.333,                                                    // defaultProfilingTimerResolution
     MemoryConstants::pageSize,                                 // requiredPreemptionSurfaceSize
     "",                                                        // deviceName
     nullptr,                                                   // preferredPlatformName
@@ -77,71 +75,36 @@ const RuntimeCapabilityTable DG2::capabilityTable{
     false,                                                     // supportsOnDemandPageFaults
     false,                                                     // supportsIndependentForwardProgress
     false,                                                     // hostPtrTrackingEnabled
-    true,                                                      // levelZeroSupported
     false,                                                     // isIntegratedDevice
     true,                                                      // supportsMediaBlock
     true,                                                      // p2pAccessSupported
     false,                                                     // p2pAtomicAccessSupported
     true,                                                      // fusedEuEnabled
     true,                                                      // l0DebuggerSupported
-    true                                                       // supportsFloatAtomics
+    true,                                                      // supportsFloatAtomics
+    0                                                          // cxlType
 };
 
 WorkaroundTable DG2::workaroundTable = {};
 FeatureTable DG2::featureTable = {};
 
-void DG2::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo) {
+void DG2::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper) {
+    setupDefaultFeatureTableAndWorkaroundTable(hwInfo, releaseHelper);
     FeatureTable *featureTable = &hwInfo->featureTable;
-    WorkaroundTable *workaroundTable = &hwInfo->workaroundTable;
 
-    featureTable->flags.ftrL3IACoherency = true;
     featureTable->flags.ftrFlatPhysCCS = true;
-    featureTable->flags.ftrPPGTT = true;
-    featureTable->flags.ftrSVM = true;
-    featureTable->flags.ftrIA32eGfxPTEs = true;
-    featureTable->flags.ftrStandardMipTailFormat = true;
-    featureTable->flags.ftrTranslationTable = true;
-    featureTable->flags.ftrUserModeTranslationTable = true;
-    featureTable->flags.ftrTileMappedResource = true;
-    featureTable->flags.ftrFbc = true;
-    featureTable->flags.ftrAstcHdr2D = true;
-    featureTable->flags.ftrAstcLdr2D = true;
-
-    featureTable->flags.ftrGpGpuMidBatchPreempt = true;
-    featureTable->flags.ftrGpGpuThreadGroupLevelPreempt = true;
-
-    featureTable->flags.ftrTileY = false;
     featureTable->flags.ftrLocalMemory = true;
-    featureTable->flags.ftrLinearCCS = true;
     featureTable->flags.ftrE2ECompression = true;
-    featureTable->flags.ftrCCSNode = true;
-    featureTable->flags.ftrCCSRing = true;
-
     featureTable->flags.ftrUnified3DMediaCompressionFormats = true;
     featureTable->flags.ftrTile64Optimization = true;
-
-    workaroundTable->flags.wa4kAlignUVOffsetNV12LinearSurface = true;
+    featureTable->ftrBcsInfo = 1;
 };
 
 void DG2::setupHardwareInfoBase(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->ThreadCount = gtSysInfo->EUCount * releaseHelper->getNumThreadsPerEu();
-    gtSysInfo->TotalVsThreads = 336;
-    gtSysInfo->TotalHsThreads = 336;
-    gtSysInfo->TotalDsThreads = 336;
-    gtSysInfo->TotalGsThreads = 336;
-    gtSysInfo->TotalPsThreadsWindowerRange = 64;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->MaxEuPerSubSlice = DG2::maxEuPerSubslice;
-    gtSysInfo->MaxSlicesSupported = DG2::maxSlicesSupported;
-    gtSysInfo->MaxSubSlicesSupported = DG2::maxSubslicesSupported;
-    gtSysInfo->MaxDualSubSlicesSupported = DG2::maxDualSubslicesSupported;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
+    setupDefaultGtSysInfo(hwInfo, releaseHelper);
 
-    adjustHardwareInfo(hwInfo);
     if (setupFeatureTableAndWorkaroundTable) {
-        setupFeatureAndWorkaroundTable(hwInfo);
+        setupFeatureAndWorkaroundTable(hwInfo, *releaseHelper);
     }
 }
 
@@ -154,46 +117,14 @@ const HardwareInfo Dg2HwConfig::hwInfo = {
 
 GT_SYSTEM_INFO Dg2HwConfig::gtSystemInfo = {0};
 void Dg2HwConfig::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const ReleaseHelper *releaseHelper) {
-    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->CsrSizeInMb = 8;
-    gtSysInfo->IsL3HashModeEnabled = false;
-    gtSysInfo->IsDynamicallyPopulated = false;
-
-    // non-zero values for unit tests
-    if (gtSysInfo->SliceCount == 0) {
-        gtSysInfo->SliceCount = 2;
-        gtSysInfo->SubSliceCount = 8;
-        gtSysInfo->DualSubSliceCount = gtSysInfo->SubSliceCount;
-        gtSysInfo->EUCount = 40;
-        gtSysInfo->MaxEuPerSubSlice = gtSysInfo->EUCount / gtSysInfo->SubSliceCount;
-        gtSysInfo->MaxSlicesSupported = gtSysInfo->SliceCount;
-        gtSysInfo->MaxSubSlicesSupported = gtSysInfo->SubSliceCount;
-        gtSysInfo->IsDynamicallyPopulated = true;
-        gtSysInfo->L3BankCount = 1;
-    }
-    gtSysInfo->L3CacheSizeInKb = 1;
-
-    gtSysInfo->CCSInfo.IsValid = true;
-    gtSysInfo->CCSInfo.NumberOfCCSEnabled = 1;
-
-    hwInfo->featureTable.ftrBcsInfo = 1;
-    for (uint32_t slice = 0; slice < gtSysInfo->SliceCount; slice++) {
-        gtSysInfo->SliceInfo[slice].Enabled = true;
-    }
-
-    adjustHardwareInfo(hwInfo);
-    if (setupFeatureTableAndWorkaroundTable) {
-        DG2::setupFeatureAndWorkaroundTable(hwInfo);
-    }
+    DG2::setupHardwareInfoBase(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
 };
 
 const HardwareInfo DG2::hwInfo = Dg2HwConfig::hwInfo;
 
 void setupDG2HardwareInfoImpl(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, uint64_t hwInfoConfig, const ReleaseHelper *releaseHelper) {
-    DG2::setupHardwareInfoBase(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
     Dg2HwConfig::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
 }
 
 void (*DG2::setupHardwareInfo)(HardwareInfo *, bool, uint64_t, const ReleaseHelper *) = setupDG2HardwareInfoImpl;
-#include "hw_info_setup_dg2.inl"
 } // namespace NEO

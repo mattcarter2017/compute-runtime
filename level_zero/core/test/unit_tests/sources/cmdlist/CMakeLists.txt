@@ -27,7 +27,9 @@ target_sources(${TARGET_NAME} PRIVATE
                ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_blit.cpp
                ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_fill.cpp
                ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_memory_extension.cpp
-               ${CMAKE_CURRENT_SOURCE_DIR}/test_in_order_cmdlist.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/test_in_order_cmdlist_1.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/test_in_order_cmdlist_2.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/test_in_order_cmdlist_3.cpp
 )
 
 if(TESTS_XEHP_AND_LATER)
@@ -35,6 +37,12 @@ if(TESTS_XEHP_AND_LATER)
                  ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_copy_event_xehp_and_later.cpp
                  ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_fill_event_xehp_and_later.cpp
                  ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_xehp_and_later.cpp
+  )
+endif()
+
+if(TESTS_XE2_AND_LATER)
+  target_sources(${TARGET_NAME} PRIVATE
+                 ${CMAKE_CURRENT_SOURCE_DIR}/test_cmdlist_xe2_and_later.cpp
   )
 endif()
 

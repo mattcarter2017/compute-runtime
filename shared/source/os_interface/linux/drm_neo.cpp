@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,11 +15,11 @@
 #include "shared/source/gmm_helper/client_context/gmm_client_context.h"
 #include "shared/source/gmm_helper/gmm.h"
 #include "shared/source/gmm_helper/resource_info.h"
-#include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/helpers/gfx_core_helper.h"
+#include "shared/source/helpers/gpu_page_fault_helper.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/ptr_math.h"
 #include "shared/source/os_interface/driver_info.h"
@@ -39,11 +39,15 @@
 #include "shared/source/os_interface/linux/pci_path.h"
 #include "shared/source/os_interface/linux/sys_calls.h"
 #include "shared/source/os_interface/linux/system_info.h"
+#include "shared/source/os_interface/linux/xe/ioctl_helper_xe.h"
 #include "shared/source/os_interface/os_environment.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/source/os_interface/product_helper.h"
+#include "shared/source/release_helper/release_helper.h"
 #include "shared/source/utilities/api_intercept.h"
+#include "shared/source/utilities/cpu_info.h"
 #include "shared/source/utilities/directory.h"
+#include "shared/source/utilities/io_functions.h"
 
 #include <cstdio>
 #include <cstring>
@@ -51,6 +55,10 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+
+#ifndef DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR
+#define DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR (1 << 4)
+#endif
 
 namespace NEO {
 
@@ -88,14 +96,14 @@ int Drm::ioctl(DrmIoctl request, void *arg) {
     int returnedErrno = 0;
     SYSTEM_ENTER();
     do {
-        auto measureTime = debugManager.flags.PrintIoctlTimes.get();
+        auto measureTime = debugManager.flags.PrintKmdTimes.get();
         std::chrono::steady_clock::time_point start;
         std::chrono::steady_clock::time_point end;
 
         auto printIoctl = debugManager.flags.PrintIoctlEntries.get();
 
         if (printIoctl) {
-            printf("IOCTL %s called\n", getIoctlString(request, ioctlHelper.get()).c_str());
+            printf("IOCTL %s called\n", ioctlHelper->getIoctlString(request).c_str());
         }
 
         if (measureTime) {
@@ -128,10 +136,10 @@ int Drm::ioctl(DrmIoctl request, void *arg) {
         if (printIoctl) {
             if (ret == 0) {
                 printf("IOCTL %s returns %d\n",
-                       getIoctlString(request, ioctlHelper.get()).c_str(), ret);
+                       ioctlHelper->getIoctlString(request).c_str(), ret);
             } else {
                 printf("IOCTL %s returns %d, errno %d(%s)\n",
-                       getIoctlString(request, ioctlHelper.get()).c_str(), ret, returnedErrno, strerror(returnedErrno));
+                       ioctlHelper->getIoctlString(request).c_str(), ret, returnedErrno, strerror(returnedErrno));
             }
         }
 
@@ -142,40 +150,17 @@ int Drm::ioctl(DrmIoctl request, void *arg) {
 
 int Drm::getParamIoctl(DrmParam param, int *dstValue) {
     GetParam getParam{};
-    getParam.param = getDrmParamValue(param, ioctlHelper.get());
+    getParam.param = ioctlHelper->getDrmParamValue(param);
     getParam.value = dstValue;
 
-    int retVal = ioctlHelper ? ioctlHelper->ioctl(DrmIoctl::getparam, &getParam) : ioctl(DrmIoctl::getparam, &getParam);
+    int retVal = ioctlHelper->ioctl(DrmIoctl::getparam, &getParam);
     if (debugManager.flags.PrintIoctlEntries.get()) {
         printf("DRM_IOCTL_I915_GETPARAM: param: %s, output value: %d, retCode:% d\n",
-               getDrmParamString(param, ioctlHelper.get()).c_str(),
+               ioctlHelper->getDrmParamString(param).c_str(),
                *getParam.value,
                retVal);
     }
     return retVal;
-}
-
-int Drm::getExecSoftPin(int &execSoftPin) {
-    return getParamIoctl(DrmParam::paramHasExecSoftpin, &execSoftPin);
-}
-
-bool Drm::queryI915DeviceIdAndRevision() {
-    HardwareInfo *hwInfo = rootDeviceEnvironment.getMutableHardwareInfo();
-    int deviceId = hwInfo->platform.usDeviceID;
-    int revisionId = hwInfo->platform.usRevId;
-    auto ret = getParamIoctl(DrmParam::paramChipsetId, &deviceId);
-    if (ret != 0) {
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query device ID parameter!\n");
-        return false;
-    }
-    ret = getParamIoctl(DrmParam::paramRevision, &revisionId);
-    if (ret != 0) {
-        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query device Rev ID parameter!\n");
-        return false;
-    }
-    hwInfo->platform.usDeviceID = deviceId;
-    hwInfo->platform.usRevId = revisionId;
-    return true;
 }
 
 int Drm::enableTurboBoost() {
@@ -225,44 +210,81 @@ bool Drm::readSysFsAsString(const std::string &relativeFilePath, std::string &re
     return true;
 }
 
-int Drm::queryGttSize(uint64_t &gttSizeOutput) {
+int Drm::queryGttSize(uint64_t &gttSizeOutput, bool alignUpToFullRange) {
     GemContextParam contextParam = {0};
     contextParam.param = ioctlHelper->getDrmParamValue(DrmParam::contextParamGttSize);
 
     int ret = ioctlHelper->ioctl(DrmIoctl::gemContextGetparam, &contextParam);
     if (ret == 0) {
-        gttSizeOutput = contextParam.value;
+        if (alignUpToFullRange) {
+            gttSizeOutput = Drm::alignUpGttSize(contextParam.value);
+        } else {
+            gttSizeOutput = contextParam.value;
+        }
     }
 
     return ret;
 }
 
 bool Drm::isGpuHangDetected(OsContext &osContext) {
+    bool ret = checkResetStatus(osContext);
+    auto threshold = getGpuFaultCheckThreshold();
+
+    if (checkGpuPageFaultRequired()) {
+        if (gpuFaultCheckCounter >= threshold) {
+            auto memoryManager = static_cast<DrmMemoryManager *>(this->rootDeviceEnvironment.executionEnvironment.memoryManager.get());
+            memoryManager->checkUnexpectedGpuPageFault();
+            gpuFaultCheckCounter = 0;
+            return false;
+        }
+        gpuFaultCheckCounter++;
+    }
+    return ret;
+}
+
+bool Drm::checkResetStatus(OsContext &osContext) {
     const auto osContextLinux = static_cast<OsContextLinux *>(&osContext);
     const auto &drmContextIds = osContextLinux->getDrmContextIds();
 
     for (const auto drmContextId : drmContextIds) {
         ResetStats resetStats{};
         resetStats.contextId = drmContextId;
-
-        const auto retVal{ioctlHelper->ioctl(DrmIoctl::getResetStats, &resetStats)};
+        ResetStatsFault fault{};
+        uint32_t status = 0;
+        const auto retVal{ioctlHelper->getResetStats(resetStats, &status, &fault)};
         UNRECOVERABLE_IF(retVal != 0);
-
+        auto debuggingEnabled = rootDeviceEnvironment.executionEnvironment.isDebuggingEnabled();
+        if (!debuggingEnabled && checkToDisableScratchPage() && ioctlHelper->validPageFault(fault.flags)) {
+            bool banned = ((status & ioctlHelper->getStatusForResetStats(true)) != 0);
+            IoFunctions::fprintf(stderr, "Segmentation fault from GPU at 0x%llx, ctx_id: %u (%s) type: %d (%s), level: %d (%s), access: %d (%s), banned: %d, aborting.\n",
+                                 fault.addr,
+                                 resetStats.contextId,
+                                 EngineHelpers::engineTypeToString(osContext.getEngineType()).c_str(),
+                                 fault.type, GpuPageFaultHelpers::faultTypeToString(static_cast<FaultType>(fault.type)).c_str(),
+                                 fault.level, GpuPageFaultHelpers::faultLevelToString(static_cast<FaultLevel>(fault.level)).c_str(),
+                                 fault.access, GpuPageFaultHelpers::faultAccessToString(static_cast<FaultAccess>(fault.access)).c_str(),
+                                 banned);
+            IoFunctions::fprintf(stdout, "Segmentation fault from GPU at 0x%llx, ctx_id: %u (%s) type: %d (%s), level: %d (%s), access: %d (%s), banned: %d, aborting.\n",
+                                 fault.addr,
+                                 resetStats.contextId,
+                                 EngineHelpers::engineTypeToString(osContext.getEngineType()).c_str(),
+                                 fault.type, GpuPageFaultHelpers::faultTypeToString(static_cast<FaultType>(fault.type)).c_str(),
+                                 fault.level, GpuPageFaultHelpers::faultLevelToString(static_cast<FaultLevel>(fault.level)).c_str(),
+                                 fault.access, GpuPageFaultHelpers::faultAccessToString(static_cast<FaultAccess>(fault.access)).c_str(),
+                                 banned);
+            UNRECOVERABLE_IF(true);
+        }
         if (resetStats.batchActive > 0 || resetStats.batchPending > 0) {
             PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "ERROR: GPU HANG detected!\n");
             osContextLinux->setHangDetected();
             return true;
         }
     }
-
     return false;
 }
 
 void Drm::checkPreemptionSupport() {
-    int value = 0;
-    auto ret = getParamIoctl(DrmParam::paramHasScheduler, &value);
-    auto schedulerCapPreemption = ioctlHelper->getDrmParamValue(DrmParam::schedulerCapPreemption);
-    preemptionSupported = ((0 == ret) && (value & schedulerCapPreemption));
+    preemptionSupported = ioctlHelper->isPreemptionSupported();
 }
 
 void Drm::checkQueueSliceSupport() {
@@ -427,11 +449,15 @@ int Drm::getErrno() {
 }
 
 int Drm::setupHardwareInfo(const DeviceDescriptor *device, bool setupFeatureTableAndWorkaroundTable) {
-    HardwareInfo *hwInfo = rootDeviceEnvironment.getMutableHardwareInfo();
-    auto deviceId = hwInfo->platform.usDeviceID;
-    auto revisionId = hwInfo->platform.usRevId;
+    const auto usDeviceIdOverride = rootDeviceEnvironment.getHardwareInfo()->platform.usDeviceID;
+    const auto usRevIdOverride = rootDeviceEnvironment.getHardwareInfo()->platform.usRevId;
 
+    // reset hwInfo and apply overrides
     rootDeviceEnvironment.setHwInfo(device->pHwInfo);
+    HardwareInfo *hwInfo = rootDeviceEnvironment.getMutableHardwareInfo();
+    hwInfo->platform.usDeviceID = usDeviceIdOverride;
+    hwInfo->platform.usRevId = usRevIdOverride;
+
     rootDeviceEnvironment.initProductHelper();
     rootDeviceEnvironment.initGfxCoreHelper();
     rootDeviceEnvironment.initApiGfxCoreHelper();
@@ -443,19 +469,43 @@ int Drm::setupHardwareInfo(const DeviceDescriptor *device, bool setupFeatureTabl
         return -1;
     }
 
-    hwInfo->platform.usDeviceID = deviceId;
-    hwInfo->platform.usRevId = revisionId;
-
     const auto productFamily = hwInfo->platform.eProductFamily;
     setupIoctlHelper(productFamily);
     ioctlHelper->setupIpVersion();
     rootDeviceEnvironment.initReleaseHelper();
 
+    auto releaseHelper = rootDeviceEnvironment.getReleaseHelper();
+    device->setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
+
+    querySystemInfo();
+
+    if (systemInfo) {
+        systemInfo->checkSysInfoMismatch(hwInfo);
+        setupSystemInfo(hwInfo, systemInfo.get());
+
+        auto numRegions = systemInfo->getNumRegions();
+        if (numRegions > 0) {
+            hwInfo->featureTable.regionCount = numRegions;
+        }
+    }
+    if (!queryMemoryInfo()) {
+        setPerContextVMRequired(true);
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to query memory info\n");
+    }
+
+    if (!queryEngineInfo()) {
+        setPerContextVMRequired(true);
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to query engine info\n");
+    }
+
+    if (!hwInfo->gtSystemInfo.L3BankCount) {
+        hwInfo->gtSystemInfo.L3BankCount = hwInfo->gtSystemInfo.MaxDualSubSlicesSupported;
+    }
+
     DrmQueryTopologyData topologyData = {};
 
-    bool status = queryTopology(*hwInfo, topologyData);
-
-    if (!status) {
+    if (!queryTopology(*hwInfo, topologyData)) {
+        topologyData.sliceCount = hwInfo->gtSystemInfo.SliceCount;
         PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Topology query failed!\n");
 
         auto ret = getEuTotal(topologyData.euCount);
@@ -472,36 +522,92 @@ int Drm::setupHardwareInfo(const DeviceDescriptor *device, bool setupFeatureTabl
     }
 
     hwInfo->gtSystemInfo.SliceCount = static_cast<uint32_t>(topologyData.sliceCount);
+    if (!topologyMap.empty()) {
+        hwInfo->gtSystemInfo.IsDynamicallyPopulated = true;
+        std::bitset<GT_MAX_SLICE> totalSliceMask{maxNBitValue(GT_MAX_SLICE)};
+        uint32_t latestSliceIndex = 0;
+        for (auto &mapping : topologyMap) {
+            std::bitset<GT_MAX_SLICE> sliceMask;
+            DEBUG_BREAK_IF(mapping.second.sliceIndices.empty());
+            for (auto &slice : mapping.second.sliceIndices) {
+                sliceMask.set(slice);
+                latestSliceIndex = slice;
+            }
+            totalSliceMask &= sliceMask;
+        }
+        for (uint32_t slice = 0; slice < GT_MAX_SLICE; slice++) {
+            hwInfo->gtSystemInfo.SliceInfo[slice].Enabled = totalSliceMask.test(slice);
+        }
+        if (totalSliceMask.none()) {
+            PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Incorrect slice mask from topology map!\n");
+            return -1;
+        }
+        if (totalSliceMask.count() == 1u) {
+            std::bitset<GT_MAX_SUBSLICE_PER_SLICE> totalSubSliceMask{maxNBitValue(GT_MAX_SUBSLICE_PER_SLICE)};
+            for (auto &mapping : topologyMap) {
+                std::bitset<GT_MAX_SUBSLICE_PER_SLICE> subSliceMask;
+                DEBUG_BREAK_IF(mapping.second.subsliceIndices.empty());
+                for (auto &subslice : mapping.second.subsliceIndices) {
+                    if (subslice >= GT_MAX_SUBSLICE_PER_SLICE) {
+                        subSliceMask = {};
+                        break;
+                    }
+                    subSliceMask.set(subslice);
+                }
+                totalSubSliceMask &= subSliceMask;
+            }
+
+            for (uint32_t subslice = 0; subslice < GT_MAX_SUBSLICE_PER_SLICE; subslice++) {
+                hwInfo->gtSystemInfo.SliceInfo[latestSliceIndex].SubSliceInfo[subslice].Enabled = totalSubSliceMask.test(subslice);
+            }
+        }
+    }
+
     hwInfo->gtSystemInfo.SubSliceCount = static_cast<uint32_t>(topologyData.subSliceCount);
     hwInfo->gtSystemInfo.DualSubSliceCount = static_cast<uint32_t>(topologyData.subSliceCount);
-    hwInfo->gtSystemInfo.EUCount = static_cast<uint32_t>(topologyData.euCount);
-    if (topologyData.maxSubSliceCount > 0) {
-        hwInfo->gtSystemInfo.MaxSubSlicesSupported = static_cast<uint32_t>(topologyData.maxSubSliceCount);
-        hwInfo->gtSystemInfo.MaxDualSubSlicesSupported = static_cast<uint32_t>(topologyData.maxSubSliceCount);
+
+    if (!hwInfo->gtSystemInfo.MaxEuPerSubSlice) {
+        hwInfo->gtSystemInfo.MaxEuPerSubSlice = topologyData.maxEusPerSubSlice;
     }
 
-    if (hwInfo->gtSystemInfo.MaxSlicesSupported == 0) {
-        hwInfo->gtSystemInfo.MaxSlicesSupported = hwInfo->gtSystemInfo.SliceCount;
-    }
-    if (hwInfo->gtSystemInfo.MaxEuPerSubSlice == 0 && hwInfo->gtSystemInfo.SubSliceCount != 0) {
-        hwInfo->gtSystemInfo.MaxEuPerSubSlice = hwInfo->gtSystemInfo.EUCount / hwInfo->gtSystemInfo.SubSliceCount;
+    auto maxEuCount = static_cast<uint32_t>(topologyData.subSliceCount) * hwInfo->gtSystemInfo.MaxEuPerSubSlice;
+
+    if (topologyData.euCount == 0 || static_cast<uint32_t>(topologyData.euCount) > maxEuCount) {
+        hwInfo->gtSystemInfo.EUCount = maxEuCount;
+    } else {
+        hwInfo->gtSystemInfo.EUCount = static_cast<uint32_t>(topologyData.euCount);
     }
 
-    status = querySystemInfo();
-    auto releaseHelper = rootDeviceEnvironment.getReleaseHelper();
-    device->setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable, releaseHelper);
+    if (!hwInfo->gtSystemInfo.EUCount) {
+        return -1;
+    }
+
+    auto numThreadsPerEu = systemInfo ? systemInfo->getNumThreadsPerEu() : (releaseHelper ? releaseHelper->getNumThreadsPerEu() : 7u);
+
+    hwInfo->gtSystemInfo.ThreadCount = numThreadsPerEu * hwInfo->gtSystemInfo.EUCount;
+
+    hwInfo->gtSystemInfo.MaxSlicesSupported = hwInfo->gtSystemInfo.SliceCount;
+
+    auto calculatedMaxSubSliceCount = topologyData.maxSlices * topologyData.maxSubSlicesPerSlice;
+    auto maxSubSliceCount = std::max(static_cast<uint32_t>(calculatedMaxSubSliceCount), hwInfo->gtSystemInfo.MaxSubSlicesSupported);
+
+    hwInfo->gtSystemInfo.MaxSubSlicesSupported = maxSubSliceCount;
+    hwInfo->gtSystemInfo.MaxDualSubSlicesSupported = maxSubSliceCount;
+
+    if (topologyData.numL3Banks > 0) {
+        hwInfo->gtSystemInfo.L3BankCount = topologyData.numL3Banks;
+    }
+
+    if (systemInfo) {
+        hwInfo->gtSystemInfo.L3CacheSizeInKb = systemInfo->getL3BankSizeInKb() * hwInfo->gtSystemInfo.L3BankCount;
+    }
+
     rootDeviceEnvironment.setRcsExposure();
 
-    if (status) {
-        systemInfo->checkSysInfoMismatch(hwInfo);
-        setupSystemInfo(hwInfo, systemInfo.get());
-
-        uint32_t bankCount = (hwInfo->gtSystemInfo.L3BankCount > 0) ? hwInfo->gtSystemInfo.L3BankCount : hwInfo->gtSystemInfo.MaxDualSubSlicesSupported;
-
-        hwInfo->gtSystemInfo.L3CacheSizeInKb = systemInfo->getL3BankSizeInKb() * bankCount;
-    }
-
     setupCacheInfo(*hwInfo);
+    hwInfo->capabilityTable.deviceName = device->devName;
+
+    rootDeviceEnvironment.initializeGfxCoreHelperFromHwInfo();
 
     return 0;
 }
@@ -644,7 +750,7 @@ std::vector<DataType> Drm::query(uint32_t queryId, uint32_t queryItemFlags) {
 }
 
 void Drm::printIoctlStatistics() {
-    if (!debugManager.flags.PrintIoctlTimes.get()) {
+    if (!debugManager.flags.PrintKmdTimes.get()) {
         return;
     }
 
@@ -652,7 +758,7 @@ void Drm::printIoctlStatistics() {
     printf("%41s %15s %10s %20s %20s %20s", "Request", "Total time(ns)", "Count", "Avg time per ioctl", "Min", "Max\n");
     for (const auto &ioctlData : this->ioctlStatistics) {
         printf("%41s %15llu %10lu %20f %20lld %20lld\n",
-               getIoctlString(ioctlData.first, ioctlHelper.get()).c_str(),
+               ioctlHelper->getIoctlString(ioctlData.first).c_str(),
                ioctlData.second.totalTime,
                static_cast<unsigned long>(ioctlData.second.count),
                ioctlData.second.totalTime / static_cast<double>(ioctlData.second.count),
@@ -775,6 +881,9 @@ int Drm::getOaTimestampFrequency(int &frequency) {
 }
 
 bool Drm::queryEngineInfo() {
+    UNRECOVERABLE_IF(!memoryInfoQueried);
+    UNRECOVERABLE_IF(engineInfoQueried);
+    engineInfoQueried = true;
     return Drm::queryEngineInfo(false);
 }
 
@@ -783,9 +892,12 @@ bool Drm::sysmanQueryEngineInfo() {
 }
 
 bool Drm::isDebugAttachAvailable() {
-    int prelimEnableEuDebug = 0;
-    getPrelimEuDebug(prelimEnableEuDebug);
-    return (prelimEnableEuDebug == 1) && ioctlHelper->isDebugAttachAvailable();
+    int enableEuDebug = getEuDebugSysFsEnable();
+    return (enableEuDebug == 1) && ioctlHelper->isDebugAttachAvailable();
+}
+
+int Drm::getEuDebugSysFsEnable() {
+    return ioctlHelper->getEuDebugSysFsEnable();
 }
 
 int getMaxGpuFrequencyOfDevice(Drm &drm, std::string &sysFsPciPath, int &maxGpuFrequency) {
@@ -880,35 +992,36 @@ bool Drm::useVMBindImmediate() const {
 
 void Drm::setupSystemInfo(HardwareInfo *hwInfo, SystemInfo *sysInfo) {
     GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
-    gtSysInfo->ThreadCount = gtSysInfo->EUCount * sysInfo->getNumThreadsPerEu();
-    gtSysInfo->MemoryType = sysInfo->getMemoryType();
     gtSysInfo->MaxEuPerSubSlice = sysInfo->getMaxEuPerDualSubSlice();
+    gtSysInfo->MemoryType = sysInfo->getMemoryType();
     gtSysInfo->MaxSlicesSupported = sysInfo->getMaxSlicesSupported();
-    if (sysInfo->getMaxDualSubSlicesSupported() > 0) {
-        gtSysInfo->MaxSubSlicesSupported = sysInfo->getMaxDualSubSlicesSupported();
-        gtSysInfo->MaxDualSubSlicesSupported = sysInfo->getMaxDualSubSlicesSupported();
-    }
+    gtSysInfo->MaxSubSlicesSupported = sysInfo->getMaxDualSubSlicesSupported();
+    gtSysInfo->MaxDualSubSlicesSupported = sysInfo->getMaxDualSubSlicesSupported();
+    gtSysInfo->CsrSizeInMb = sysInfo->getCsrSizeInMb();
+    gtSysInfo->SLMSizeInKb = sysInfo->getSlmSizePerDss();
 }
 
 void Drm::setupCacheInfo(const HardwareInfo &hwInfo) {
-    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<GfxCoreHelper>();
+    auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
 
-    if (debugManager.flags.ClosEnabled.get() == 0 || gfxCoreHelper.getNumCacheRegions() == 0) {
-        this->cacheInfo.reset(new CacheInfo(*this, 0, 0, 0));
+    if (debugManager.flags.ClosEnabled.get() == 0 || productHelper.getNumCacheRegions() == 0) {
+        this->l3CacheInfo.reset(new CacheInfo{*ioctlHelper, 0, 0, 0});
         return;
     }
 
-    const GT_SYSTEM_INFO *gtSysInfo = &hwInfo.gtSystemInfo;
+    auto allocateL3CacheInfo{[&productHelper, &hwInfo, &ioctlHelper = *(this->ioctlHelper)]() {
+        constexpr uint16_t maxNumWays = 32;
+        constexpr uint16_t globalReservationLimit = 16;
+        constexpr uint16_t clientReservationLimit = 8;
+        constexpr uint16_t maxReservationNumWays = std::min(globalReservationLimit, clientReservationLimit);
+        const size_t totalCacheSize = hwInfo.gtSystemInfo.L3CacheSizeInKb * MemoryConstants::kiloByte;
+        const size_t maxReservationCacheSize = (totalCacheSize * maxReservationNumWays) / maxNumWays;
+        const uint32_t maxReservationNumCacheRegions = productHelper.getNumCacheRegions() - 1;
 
-    constexpr uint16_t maxNumWays = 32;
-    constexpr uint16_t globalReservationLimit = 16;
-    constexpr uint16_t clientReservationLimit = 8;
-    constexpr uint16_t maxReservationNumWays = std::min(globalReservationLimit, clientReservationLimit);
-    const size_t totalCacheSize = gtSysInfo->L3CacheSizeInKb * MemoryConstants::kiloByte;
-    const size_t maxReservationCacheSize = (totalCacheSize * maxReservationNumWays) / maxNumWays;
-    const uint32_t maxReservationNumCacheRegions = gfxCoreHelper.getNumCacheRegions() - 1;
+        return new CacheInfo(ioctlHelper, maxReservationCacheSize, maxReservationNumCacheRegions, maxReservationNumWays);
+    }};
 
-    this->cacheInfo.reset(new CacheInfo(*this, maxReservationCacheSize, maxReservationNumCacheRegions, maxReservationNumWays));
+    this->l3CacheInfo.reset(allocateL3CacheInfo());
 }
 
 void Drm::getPrelimVersion(std::string &prelimVersion) {
@@ -925,25 +1038,15 @@ void Drm::getPrelimVersion(std::string &prelimVersion) {
     ifs.close();
 }
 
-void Drm::getPrelimEuDebug(int &prelimEuDebug) {
-    prelimEuDebug = 0;
-    std::string sysFsPciPath = getSysFsPciPath();
-    std::string prelimEuDebugPath = sysFsPciPath + "/prelim_enable_eu_debug";
-
-    std::ifstream ifs(prelimEuDebugPath.c_str(), std::ifstream::in);
-
-    if (!ifs.fail()) {
-        ifs >> prelimEuDebug;
-    }
-
-    ifs.close();
-}
-
-int Drm::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags) {
-    return ioctlHelper->waitUserFence(ctxId, address, value, static_cast<uint32_t>(dataWidth), timeout, flags);
+int Drm::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
+    return ioctlHelper->waitUserFence(ctxId, address, value, static_cast<uint32_t>(dataWidth), timeout, flags, userInterrupt, externalInterruptId, allocForInterruptWait);
 }
 
 bool Drm::querySystemInfo() {
+    if (systemInfoQueried) {
+        return this->systemInfo != nullptr;
+    }
+    systemInfoQueried = true;
     auto request = ioctlHelper->getDrmParamValue(DrmParam::queryHwconfigTable);
     auto deviceBlobQuery = this->query<uint32_t>(request, 0);
     if (deviceBlobQuery.empty()) {
@@ -960,12 +1063,18 @@ std::vector<uint64_t> Drm::getMemoryRegions() {
 }
 
 bool Drm::queryMemoryInfo() {
+    UNRECOVERABLE_IF(memoryInfoQueried);
     this->memoryInfo = ioctlHelper->createMemoryInfo();
+    memoryInfoQueried = true;
     return this->memoryInfo != nullptr;
 }
 
 bool Drm::queryEngineInfo(bool isSysmanEnabled) {
     this->engineInfo = ioctlHelper->createEngineInfo(isSysmanEnabled);
+    if (this->engineInfo && (this->engineInfo->hasEngines() == false)) {
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Engine info size is equal to 0.\n");
+    }
+
     return this->engineInfo != nullptr;
 }
 
@@ -988,15 +1097,26 @@ bool Drm::completionFenceSupport() {
 
 void Drm::setupIoctlHelper(const PRODUCT_FAMILY productFamily) {
     if (!this->ioctlHelper) {
-        std::string prelimVersion = "";
-        getPrelimVersion(prelimVersion);
-        this->ioctlHelper = IoctlHelper::getI915Helper(productFamily, prelimVersion, *this);
+        auto drmVersion = Drm::getDrmVersion(getFileDescriptor());
+        auto productSpecificIoctlHelperCreator = ioctlHelperFactory[productFamily];
+        if (productSpecificIoctlHelperCreator && !debugManager.flags.IgnoreProductSpecificIoctlHelper.get()) {
+            this->ioctlHelper = productSpecificIoctlHelperCreator.value()(*this);
+        } else if ("xe" == drmVersion) {
+            this->ioctlHelper = IoctlHelperXe::create(*this);
+        } else {
+            std::string prelimVersion = "";
+            getPrelimVersion(prelimVersion);
+            this->ioctlHelper = IoctlHelper::getI915Helper(productFamily, prelimVersion, *this);
+        }
         this->ioctlHelper->initialize();
     }
 }
 
 bool Drm::queryTopology(const HardwareInfo &hwInfo, DrmQueryTopologyData &topologyData) {
-
+    UNRECOVERABLE_IF(!systemInfoQueried);
+    UNRECOVERABLE_IF(!engineInfoQueried);
+    UNRECOVERABLE_IF(topologyQueried);
+    topologyQueried = true;
     auto result = this->ioctlHelper->getTopologyDataAndMap(hwInfo, topologyData, topologyMap);
     return result;
 }
@@ -1007,11 +1127,7 @@ void Drm::queryPageFaultSupport() {
         return;
     }
 
-    if (const auto paramId = ioctlHelper->getHasPageFaultParamId(); paramId) {
-        int support = 0;
-        const auto ret = getParamIoctl(*paramId, &support);
-        pageFaultSupported = (0 == ret) && (support > 0);
-    }
+    pageFaultSupported = this->ioctlHelper->isPageFaultSupported();
 }
 
 bool Drm::hasPageFaultSupport() const {
@@ -1033,7 +1149,26 @@ bool Drm::hasKmdMigrationSupport() const {
     return kmdMigrationSupported;
 }
 
-unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType, bool engineInstancedDevice) {
+void Drm::configureScratchPagePolicy() {
+    if (debugManager.flags.DisableScratchPages.get() != -1) {
+        disableScratch = !!debugManager.flags.DisableScratchPages.get();
+        return;
+    }
+    const auto &productHelper = this->getRootDeviceEnvironment().getHelper<ProductHelper>();
+    if (rootDeviceEnvironment.executionEnvironment.isDebuggingEnabled()) {
+        disableScratch = productHelper.isDisableScratchPagesRequiredForDebugger();
+    } else {
+        disableScratch = productHelper.isDisableScratchPagesSupported();
+    }
+}
+
+void Drm::configureGpuFaultCheckThreshold() {
+    if (debugManager.flags.GpuFaultCheckThreshold.get() != -1) {
+        gpuFaultCheckThreshold = debugManager.flags.GpuFaultCheckThreshold.get();
+    }
+}
+
+unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType) {
     auto engineInfo = this->engineInfo.get();
 
     auto retVal = static_cast<unsigned int>(ioctlHelper->getDrmParamValue(DrmEngineMapper::engineNodeMap(engineType)));
@@ -1046,7 +1181,7 @@ unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, au
         return retVal;
     }
 
-    bool useVirtualEnginesForCcs = !engineInstancedDevice;
+    bool useVirtualEnginesForCcs = true;
     if (debugManager.flags.UseDrmVirtualEnginesForCcs.get() != -1) {
         useVirtualEnginesForCcs = !!debugManager.flags.UseDrmVirtualEnginesForCcs.get();
     }
@@ -1067,10 +1202,10 @@ unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, au
 
     uint32_t numEnginesInContext = 1;
 
-    ContextParamEngines<1 + maxEngines> contextEngines{};
+    ContextParamEngines<> contextEngines{};
     ContextEnginesLoadBalance<maxEngines> balancer{};
 
-    contextEngines.engines[0] = {engine->engineClass, engine->engineInstance};
+    ioctlHelper->insertEngineToContextParams(contextEngines, 0u, engine, deviceIndex, false);
 
     bool setupVirtualEngines = false;
     unsigned int engineCount = static_cast<unsigned int>(numberOfCCS);
@@ -1098,8 +1233,7 @@ unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, au
     if (setupVirtualEngines) {
         balancer.base.name = ioctlHelper->getDrmParamValue(DrmParam::contextEnginesExtLoadBalance);
         contextEngines.extensions = castToUint64(&balancer);
-        contextEngines.engines[0].engineClass = ioctlHelper->getDrmParamValue(DrmParam::engineClassInvalid);
-        contextEngines.engines[0].engineInstance = ioctlHelper->getDrmParamValue(DrmParam::engineClassInvalidNone);
+        ioctlHelper->insertEngineToContextParams(contextEngines, 0u, nullptr, deviceIndex, true);
 
         for (auto engineIndex = 0u; engineIndex < engineCount; engineIndex++) {
             if (useVirtualEnginesForBcs && engine->engineClass == ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)) {
@@ -1119,13 +1253,13 @@ unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, au
             }
             UNRECOVERABLE_IF(!engine);
             balancer.engines[engineIndex] = {engine->engineClass, engine->engineInstance};
-            contextEngines.engines[1 + engineIndex] = {engine->engineClass, engine->engineInstance};
+            ioctlHelper->insertEngineToContextParams(contextEngines, engineIndex, engine, deviceIndex, true);
         }
     }
 
     GemContextParam param{};
     param.contextId = drmContextId;
-    param.size = static_cast<uint32_t>(ptrDiff(contextEngines.engines + numEnginesInContext, &contextEngines));
+    param.size = static_cast<uint32_t>(ptrDiff(contextEngines.enginesData, &contextEngines) + sizeof(EngineClassInstance) * numEnginesInContext);
     param.param = ioctlHelper->getDrmParamValue(DrmParam::contextParamEngines);
     param.value = castToUint64(&contextEngines);
 
@@ -1137,15 +1271,15 @@ unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, au
 }
 
 void Drm::waitForBind(uint32_t vmHandleId) {
-    if (pagingFence[vmHandleId] >= fenceVal[vmHandleId]) {
+    if (*ioctlHelper->getPagingFenceAddress(vmHandleId, nullptr) >= fenceVal[vmHandleId]) {
         return;
     }
     auto lock = this->lockBindFenceMutex();
-    auto fenceAddress = castToUint64(&this->pagingFence[vmHandleId]);
+    auto fenceAddress = castToUint64(ioctlHelper->getPagingFenceAddress(vmHandleId, nullptr));
     auto fenceValue = this->fenceVal[vmHandleId];
     lock.unlock();
 
-    waitUserFence(0u, fenceAddress, fenceValue, ValueWidth::u64, -1, ioctlHelper->getWaitUserFenceSoftFlag());
+    waitUserFence(0u, fenceAddress, fenceValue, ValueWidth::u64, -1, ioctlHelper->getWaitUserFenceSoftFlag(), false, NEO::InterruptId::notUsed, nullptr);
 }
 
 bool Drm::isSetPairAvailable() {
@@ -1160,18 +1294,22 @@ bool Drm::isSetPairAvailable() {
 }
 
 bool Drm::isChunkingAvailable() {
-    if ((debugManager.flags.EnableBOChunking.get() != 0) && (hasKmdMigrationSupport())) {
+    if (debugManager.flags.EnableBOChunking.get() != 0) {
         std::call_once(checkChunkingOnce, [this]() {
             int ret = ioctlHelper->isChunkingAvailable();
             if (ret) {
-                chunkingAvailable = true;
                 if (debugManager.flags.EnableBOChunking.get() == -1) {
                     chunkingMode = chunkingModeDevice;
                 } else {
                     chunkingMode = debugManager.flags.EnableBOChunking.get();
+                    if (!(hasKmdMigrationSupport())) {
+                        chunkingMode &= (~(chunkingModeShared));
+                    }
                 }
             }
-
+            if (chunkingMode > 0) {
+                chunkingAvailable = true;
+            }
             if (debugManager.flags.MinimalAllocationSizeForChunking.get() != -1) {
                 minimalChunkingSize = debugManager.flags.MinimalAllocationSizeForChunking.get();
             }
@@ -1189,13 +1327,7 @@ bool Drm::isChunkingAvailable() {
 
 bool Drm::isVmBindAvailable() {
     std::call_once(checkBindOnce, [this]() {
-        int ret = ioctlHelper->isVmBindAvailable();
-
-        const auto &productHelper = this->getRootDeviceEnvironment().getHelper<ProductHelper>();
-
-        ret &= static_cast<int>(productHelper.isNewResidencyModelSupported());
-
-        bindAvailable = ret;
+        bindAvailable = ioctlHelper->isVmBindAvailable();
 
         Drm::overrideBindSupport(bindAvailable);
 
@@ -1218,27 +1350,35 @@ uint64_t Drm::getPatIndex(Gmm *gmm, AllocationType allocationType, CacheRegion c
         return static_cast<uint64_t>(debugManager.flags.OverridePatIndex.get());
     }
 
+    auto &productHelper = rootDeviceEnvironment.getProductHelper();
+    GMM_RESOURCE_USAGE_TYPE usageType = CacheSettingsHelper::getGmmUsageType(allocationType, false, productHelper);
+    auto isUncachedType = CacheSettingsHelper::isUncachedType(usageType);
+
+    if (isUncachedType && debugManager.flags.OverridePatIndexForUncachedTypes.get() != -1) {
+        return static_cast<uint64_t>(debugManager.flags.OverridePatIndexForUncachedTypes.get());
+    }
+
+    if (!isUncachedType && debugManager.flags.OverridePatIndexForCachedTypes.get() != -1) {
+        return static_cast<uint64_t>(debugManager.flags.OverridePatIndexForCachedTypes.get());
+    }
+
     if (!this->vmBindPatIndexProgrammingSupported) {
         return CommonConstants::unsupportedPatIndex;
     }
 
-    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<GfxCoreHelper>();
-    auto &productHelper = rootDeviceEnvironment.getProductHelper();
-
     GMM_RESOURCE_INFO *resourceInfo = nullptr;
-    GMM_RESOURCE_USAGE_TYPE usageType = CacheSettingsHelper::getGmmUsageType(allocationType, false, productHelper);
     bool cachable = !CacheSettingsHelper::isUncachedType(usageType);
     bool compressed = false;
 
     if (gmm) {
         resourceInfo = gmm->gmmResourceInfo->peekGmmResourceInfo();
         usageType = gmm->resourceParams.Usage;
-        compressed = gmm->isCompressionEnabled;
+        compressed = gmm->isCompressionEnabled();
         cachable = gmm->gmmResourceInfo->getResourceFlags()->Info.Cacheable;
     }
 
     uint64_t patIndex = rootDeviceEnvironment.getGmmClientContext()->cachePolicyGetPATIndex(resourceInfo, usageType, compressed, cachable);
-    patIndex = productHelper.overridePatIndex(CacheSettingsHelper::isUncachedType(usageType), patIndex);
+    patIndex = productHelper.overridePatIndex(isUncachedType, patIndex, allocationType);
 
     UNRECOVERABLE_IF(patIndex == static_cast<uint64_t>(GMM_PAT_ERROR));
 
@@ -1247,10 +1387,27 @@ uint64_t Drm::getPatIndex(Gmm *gmm, AllocationType allocationType, CacheRegion c
     }
 
     if (closEnabled) {
-        patIndex = gfxCoreHelper.getPatIndex(cacheRegion, cachePolicy);
+        patIndex = productHelper.getPatIndex(cacheRegion, cachePolicy);
     }
 
     return patIndex;
+}
+
+void programUserFence(Drm *drm, OsContext *osContext, BufferObject *bo, VmBindExtUserFenceT &vmBindExtUserFence, uint32_t vmHandleId, uint64_t nextExtension) {
+    auto ioctlHelper = drm->getIoctlHelper();
+    uint64_t address = 0;
+    uint64_t value = 0;
+
+    if (drm->isPerContextVMRequired()) {
+        auto osContextLinux = static_cast<OsContextLinux *>(osContext);
+        address = castToUint64(ioctlHelper->getPagingFenceAddress(vmHandleId, osContextLinux));
+        value = osContextLinux->getNextFenceVal(vmHandleId);
+    } else {
+        address = castToUint64(ioctlHelper->getPagingFenceAddress(vmHandleId, nullptr));
+        value = drm->getNextFenceVal(vmHandleId);
+    }
+
+    ioctlHelper->fillVmBindExtUserFence(vmBindExtUserFence, address, value, nextExtension);
 }
 
 int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleId, BufferObject *bo, bool bind) {
@@ -1269,16 +1426,19 @@ int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleI
     if (bind) {
         bool allowUUIDsForDebug = !osContext->isInternalEngine() && !EngineHelpers::isBcs(osContext->getEngineType());
         if (bo->getBindExtHandles().size() > 0 && allowUUIDsForDebug) {
-            extensions = ioctlHelper->prepareVmBindExt(bo->getBindExtHandles());
+            extensions = ioctlHelper->prepareVmBindExt(bo->getBindExtHandles(), bo->getRegisteredBindHandleCookie());
         }
         bool bindCapture = bo->isMarkedForCapture();
         bool bindImmediate = bo->isImmediateBindingRequired();
         bool bindMakeResident = false;
+        bool readOnlyResource = bo->isReadOnlyGpuResource();
+
         if (drm->useVMBindImmediate()) {
             bindMakeResident = bo->isExplicitResidencyRequired();
             bindImmediate = true;
         }
-        flags |= ioctlHelper->getFlagsForVmBind(bindCapture, bindImmediate, bindMakeResident);
+        bool bindLock = bo->isExplicitLockedMemoryRequired();
+        flags |= ioctlHelper->getFlagsForVmBind(bindCapture, bindImmediate, bindMakeResident, bindLock, readOnlyResource);
     }
 
     auto &bindAddresses = bo->getColourAddresses();
@@ -1297,6 +1457,9 @@ int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleI
         vmBind.length = bo->peekSize();
         vmBind.offset = 0;
         vmBind.start = bo->peekAddress();
+        vmBind.userptr = bo->getUserptr();
+        vmBind.sharedSystemUsmEnabled = drm->isSharedSystemAllocEnabled();
+        vmBind.sharedSystemUsmBind = false;
 
         if (bo->getColourWithBind()) {
             vmBind.length = bo->getColourChunk();
@@ -1308,8 +1471,12 @@ int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleI
 
         if (drm->isVmBindPatIndexProgrammingSupported()) {
             UNRECOVERABLE_IF(bo->peekPatIndex() == CommonConstants::unsupportedPatIndex);
-            ioctlHelper->fillVmBindExtSetPat(vmBindExtSetPat, bo->peekPatIndex(), castToUint64(extensions.get()));
-            vmBind.extensions = castToUint64(vmBindExtSetPat);
+            if (ioctlHelper->isVmBindPatIndexExtSupported()) {
+                ioctlHelper->fillVmBindExtSetPat(vmBindExtSetPat, bo->peekPatIndex(), castToUint64(extensions.get()));
+                vmBind.extensions = castToUint64(vmBindExtSetPat);
+            } else {
+                vmBind.extensions = castToUint64(extensions.get());
+            }
             vmBind.patIndex = bo->peekPatIndex();
         } else {
             vmBind.extensions = castToUint64(extensions.get());
@@ -1322,26 +1489,10 @@ int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleI
         if (ioctlHelper->isWaitBeforeBindRequired(bind)) {
             if (drm->useVMBindImmediate()) {
                 lock = drm->lockBindFenceMutex();
-
-                if (!drm->hasPageFaultSupport() || bo->isExplicitResidencyRequired()) {
-                    auto nextExtension = vmBind.extensions;
-
-                    uint64_t address = 0;
-                    uint64_t value = 0;
-
-                    if (drm->isPerContextVMRequired()) {
-                        auto osContextLinux = static_cast<OsContextLinux *>(osContext);
-                        address = castToUint64(osContextLinux->getFenceAddr(vmHandleId));
-                        value = osContextLinux->getNextFenceVal(vmHandleId);
-                    } else {
-                        address = castToUint64(drm->getFenceAddr(vmHandleId));
-                        value = drm->getNextFenceVal(vmHandleId);
-                    }
-
-                    incrementFenceValue = true;
-                    ioctlHelper->fillVmBindExtUserFence(vmBindExtUserFence, address, value, nextExtension);
-                    vmBind.extensions = castToUint64(vmBindExtUserFence);
-                }
+                auto nextExtension = vmBind.extensions;
+                incrementFenceValue = true;
+                programUserFence(drm, osContext, bo, vmBindExtUserFence, vmHandleId, nextExtension);
+                ioctlHelper->setVmBindUserFence(vmBind, vmBindExtUserFence);
             }
         }
         if (bind) {
@@ -1357,6 +1508,14 @@ int changeBufferObjectBinding(Drm *drm, OsContext *osContext, uint32_t vmHandleI
             if (ret) {
                 break;
             }
+        }
+        bool waitOnUserFenceAfterBindAndUnbind = false;
+        if (debugManager.flags.EnableWaitOnUserFenceAfterBindAndUnbind.get() != -1) {
+            waitOnUserFenceAfterBindAndUnbind = !!debugManager.flags.EnableWaitOnUserFenceAfterBindAndUnbind.get();
+        }
+        if (ioctlHelper->isWaitBeforeBindRequired(bind) && waitOnUserFenceAfterBindAndUnbind && drm->useVMBindImmediate()) {
+            auto osContextLinux = static_cast<OsContextLinux *>(osContext);
+            osContextLinux->waitForPagingFence();
         }
         if (incrementFenceValue) {
             if (drm->isPerContextVMRequired()) {
@@ -1405,23 +1564,35 @@ int Drm::createDrmVirtualMemory(uint32_t &drmVmId) {
         ctl.extensions = castToUint64(vmControlExtRegion.get());
     }
 
-    bool disableScratch = false;
-    if (rootDeviceEnvironment.executionEnvironment.isDebuggingEnabled()) {
-        disableScratch = false;
-    }
-    if (debugManager.flags.DisableScratchPages.get() != -1) {
-        disableScratch = debugManager.flags.DisableScratchPages.get();
-    }
-
     bool useVmBind = isVmBindAvailable();
     bool enablePageFault = hasPageFaultSupport() && useVmBind;
 
-    ctl.flags = ioctlHelper->getFlagsForVmCreate(disableScratch, enablePageFault, useVmBind);
+    ctl.flags = ioctlHelper->getFlagsForVmCreate(checkToDisableScratchPage(), enablePageFault, useVmBind);
 
     auto ret = ioctlHelper->ioctl(DrmIoctl::gemVmCreate, &ctl);
 
     if (ret == 0) {
         drmVmId = ctl.vmId;
+        if (isSharedSystemAllocEnabled()) {
+            VmBindParams vmBind{};
+            vmBind.vmId = static_cast<uint32_t>(ctl.vmId);
+            vmBind.flags = DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR;
+            vmBind.length = (0x1ull << ((NEO::CpuInfo::getInstance().getVirtualAddressSize()) - 1));
+            vmBind.sharedSystemUsmEnabled = true;
+            vmBind.sharedSystemUsmBind = true;
+            VmBindExtUserFenceT vmBindExtUserFence{};
+            ioctlHelper->fillVmBindExtUserFence(vmBindExtUserFence,
+                                                castToUint64(ioctlHelper->getPagingFenceAddress(0, nullptr)),
+                                                getNextFenceVal(0),
+                                                vmBind.extensions);
+            ioctlHelper->setVmBindUserFence(vmBind, vmBindExtUserFence);
+
+            if (ioctlHelper->vmBind(vmBind)) {
+                setSharedSystemAllocEnable(false);
+                printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr,
+                                 "INFO:  Shared System USM capability not detected\n");
+            }
+        }
         if (ctl.vmId == 0) {
             // 0 is reserved for invalid/unassigned ppgtt
             return -1;
@@ -1521,17 +1692,27 @@ PhysicalDevicePciSpeedInfo Drm::getPciSpeedInfo() const {
     return pciSpeedInfo;
 }
 
-void Drm::waitOnUserFences(const OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, uint32_t postSyncOffset) {
+int Drm::waitOnUserFences(OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, int64_t timeout, uint32_t postSyncOffset, bool userInterrupt,
+                          uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
+
+    int ret = waitOnUserFencesImpl(static_cast<const OsContextLinux &>(osContext), address, value, numActiveTiles,
+                                   timeout, postSyncOffset, userInterrupt, externalInterruptId, allocForInterruptWait);
+    if (ret != 0 && getErrno() == EIO && checkGpuPageFaultRequired()) {
+        checkResetStatus(osContext);
+    }
+    return ret;
+}
+int Drm::waitOnUserFencesImpl(const OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, int64_t timeout, uint32_t postSyncOffset, bool userInterrupt,
+                              uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
     auto &drmContextIds = osContext.getDrmContextIds();
     UNRECOVERABLE_IF(numActiveTiles > drmContextIds.size());
     auto completionFenceCpuAddress = address;
-    static constexpr int64_t defaultTimeout = -1;
-    const auto selectedTimeout = osContext.isHangDetected() ? 1 : defaultTimeout;
+    const auto selectedTimeout = osContext.isHangDetected() ? 1 : timeout;
 
     for (auto drmIterator = 0u; drmIterator < numActiveTiles; drmIterator++) {
         if (*reinterpret_cast<uint32_t *>(completionFenceCpuAddress) < value) {
             static constexpr uint16_t flags = 0;
-            int retVal = waitUserFence(drmContextIds[drmIterator], completionFenceCpuAddress, value, Drm::ValueWidth::u64, selectedTimeout, flags);
+            int retVal = waitUserFence(drmContextIds[drmIterator], completionFenceCpuAddress, value, Drm::ValueWidth::u64, selectedTimeout, flags, userInterrupt, externalInterruptId, allocForInterruptWait);
             if (debugManager.flags.PrintCompletionFenceUsage.get()) {
                 std::cout << "Completion fence waited."
                           << " Status: " << retVal
@@ -1539,16 +1720,55 @@ void Drm::waitOnUserFences(const OsContextLinux &osContext, uint64_t address, ui
                           << ", current value: " << *reinterpret_cast<uint32_t *>(completionFenceCpuAddress)
                           << ", wait value: " << value << std::endl;
             }
+            if (retVal != 0) {
+                return retVal;
+            }
         } else if (debugManager.flags.PrintCompletionFenceUsage.get()) {
             std::cout << "Completion fence already completed."
                       << " CPU address: " << std::hex << completionFenceCpuAddress << std::dec
                       << ", current value: " << *reinterpret_cast<uint32_t *>(completionFenceCpuAddress)
                       << ", wait value: " << value << std::endl;
         }
+
+        if (externalInterruptId != NEO::InterruptId::notUsed) {
+            break;
+        }
+
         completionFenceCpuAddress = ptrOffset(completionFenceCpuAddress, postSyncOffset);
     }
+
+    return 0;
 }
 const HardwareInfo *Drm::getHardwareInfo() const { return rootDeviceEnvironment.getHardwareInfo(); }
+
+uint64_t Drm::alignUpGttSize(uint64_t inputGttSize) {
+
+    constexpr uint64_t gttSize47bit = (1ull << 47);
+    constexpr uint64_t gttSize48bit = (1ull << 48);
+
+    if (inputGttSize > gttSize47bit && inputGttSize < gttSize48bit) {
+        return gttSize48bit;
+    }
+    return inputGttSize;
+}
+
+bool Drm::isDrmSupported(int fileDescriptor) {
+    auto drmVersion = Drm::getDrmVersion(fileDescriptor);
+    return "i915" == drmVersion || "xe" == drmVersion;
+}
+
+bool Drm::queryDeviceIdAndRevision() {
+    auto drmVersion = Drm::getDrmVersion(getFileDescriptor());
+    if ("xe" == drmVersion) {
+        this->setPerContextVMRequired(false);
+        return IoctlHelperXe::queryDeviceIdAndRevision(*this);
+    }
+    return IoctlHelperI915::queryDeviceIdAndRevision(*this);
+}
+
+uint32_t Drm::getAggregatedProcessCount() const {
+    return ioctlHelper->getNumProcesses();
+}
 
 template std::vector<uint16_t> Drm::query<uint16_t>(uint32_t queryId, uint32_t queryItemFlags);
 template std::vector<uint32_t> Drm::query<uint32_t>(uint32_t queryId, uint32_t queryItemFlags);

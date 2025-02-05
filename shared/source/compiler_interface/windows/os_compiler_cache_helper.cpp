@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,10 +15,6 @@
 #include <algorithm>
 
 namespace NEO {
-int64_t defaultCacheEnabled() {
-    return 1l;
-}
-
 std::string getKnownFolderPath(REFKNOWNFOLDERID rfid) {
     PWSTR path = nullptr;
     auto result = SysCalls::shGetKnownFolderPath(rfid, 0, nullptr, &path);
@@ -36,9 +32,9 @@ std::string getKnownFolderPath(REFKNOWNFOLDERID rfid) {
 }
 
 bool createCompilerCachePath(std::string &cacheDir) {
-    if (NEO::SysCalls::pathExists(cacheDir)) {
+    if (pathExists(cacheDir)) {
         cacheDir = joinPath(cacheDir, "neo_compiler_cache");
-        if (NEO::SysCalls::pathExists(cacheDir)) {
+        if (pathExists(cacheDir)) {
             return true;
         }
 
@@ -64,11 +60,11 @@ bool checkDefaultCacheDirSettings(std::string &cacheDir, NEO::EnvironmentVariabl
     }
 
     cacheDir = joinPath(cacheDir, "NEO\\");
-    if (!SysCalls::pathExists(cacheDir)) {
+    if (!pathExists(cacheDir)) {
         SysCalls::createDirectoryA(cacheDir.c_str(), NULL);
     }
 
-    if (NEO::SysCalls::pathExists(cacheDir)) {
+    if (pathExists(cacheDir)) {
         return createCompilerCachePath(cacheDir);
     }
 

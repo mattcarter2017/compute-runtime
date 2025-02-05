@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -48,14 +48,13 @@ size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredDSH(const Kernel &kerne
 
 template <typename GfxFamily>
 size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredIOH(const Kernel &kernel,
-                                                             const size_t localWorkSizes[3]) {
+                                                             const size_t localWorkSizes[3], const RootDeviceEnvironment &rootDeviceEnvironment) {
     auto localWorkSize = Math::computeTotalElementsCount(localWorkSizes);
-    typedef typename GfxFamily::DefaultWalkerType DefaultWalkerType;
     const auto &kernelDescriptor = kernel.getDescriptor();
     const auto &hwInfo = kernel.getHardwareInfo();
-    const auto &gfxCoreHelper = kernel.getGfxCoreHelper();
 
     auto numChannels = kernelDescriptor.kernelAttributes.numLocalIdChannels;
+    auto grfCount = kernelDescriptor.kernelAttributes.numGrfRequired;
     uint32_t grfSize = hwInfo.capabilityTable.grfSize;
     auto simdSize = kernelDescriptor.kernelAttributes.simdSize;
     uint32_t requiredWalkOrder = 0u;
@@ -70,20 +69,19 @@ size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredIOH(const Kernel &kerne
         requiredWalkOrder,
         simdSize);
     auto size = kernel.getCrossThreadDataSize() +
-                getPerThreadDataSizeTotal(simdSize, grfSize, numChannels, localWorkSize, isHwLocalIdGeneration, gfxCoreHelper);
+                getPerThreadDataSizeTotal(simdSize, grfSize, grfCount, numChannels, localWorkSize, isHwLocalIdGeneration, rootDeviceEnvironment);
 
     auto pImplicitArgs = kernel.getImplicitArgs();
     if (pImplicitArgs) {
-        size += ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, isHwLocalIdGeneration, gfxCoreHelper);
+        size += ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, isHwLocalIdGeneration, rootDeviceEnvironment);
     }
-    return alignUp(size, DefaultWalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
+    return alignUp(size, NEO::EncodeDispatchKernel<GfxFamily>::getDefaultIOHAlignment());
 }
 
 template <typename GfxFamily>
 size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredSSH(const Kernel &kernel) {
-    typedef typename GfxFamily::BINDING_TABLE_STATE BINDING_TABLE_STATE;
     auto sizeSSH = kernel.getSurfaceStateHeapSize();
-    sizeSSH += sizeSSH ? BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE : 0;
+    sizeSSH += sizeSSH ? GfxFamily::cacheLineSize : 0;
     return sizeSSH;
 }
 
@@ -110,7 +108,8 @@ size_t HardwareCommandsHelper<GfxFamily>::getTotalSizeRequiredIOH(
     const MultiDispatchInfo &multiDispatchInfo) {
     return getSizeRequired(multiDispatchInfo, [](const DispatchInfo &dispatchInfo) { return getSizeRequiredIOH(
                                                                                          *dispatchInfo.getKernel(),
-                                                                                         dispatchInfo.getLocalWorkgroupSize().values); });
+                                                                                         dispatchInfo.getLocalWorkgroupSize().values,
+                                                                                         dispatchInfo.getClDevice().getRootDeviceEnvironment()); });
 }
 
 template <typename GfxFamily>
@@ -162,8 +161,8 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
     EncodeDispatchKernel<GfxFamily>::setGrfInfo(&interfaceDescriptor, kernelDescriptor.kernelAttributes.numGrfRequired,
                                                 sizeCrossThreadData, sizePerThreadData, device.getRootDeviceEnvironment());
 
-    EncodeDispatchKernel<GfxFamily>::appendAdditionalIDDFields(&interfaceDescriptor, device.getRootDeviceEnvironment(),
-                                                               threadsPerThreadGroup, slmTotalSize, SlmPolicy::slmPolicyNone);
+    EncodeDispatchKernel<GfxFamily>::setupPreferredSlmSize(&interfaceDescriptor, device.getRootDeviceEnvironment(),
+                                                           threadsPerThreadGroup, slmTotalSize, SlmPolicy::slmPolicyNone);
 
     if constexpr (heaplessModeEnabled == false) {
         interfaceDescriptor.setBindingTablePointer(static_cast<uint32_t>(bindingTablePointer));
@@ -178,7 +177,7 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
 
     const auto &hardwareInfo = device.getHardwareInfo();
     auto &gfxCoreHelper = device.getGfxCoreHelper();
-    auto programmableIDSLMSize = static_cast<uint32_t>(gfxCoreHelper.computeSlmValues(hardwareInfo, slmTotalSize));
+    auto programmableIDSLMSize = EncodeDispatchKernel<GfxFamily>::computeSlmValues(hardwareInfo, slmTotalSize);
 
     if (debugManager.flags.OverrideSlmAllocationSize.get() != -1) {
         programmableIDSLMSize = static_cast<uint32_t>(debugManager.flags.OverrideSlmAllocationSize.get());
@@ -186,12 +185,18 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
 
     interfaceDescriptor.setSharedLocalMemorySize(programmableIDSLMSize);
     EncodeDispatchKernel<GfxFamily>::programBarrierEnable(interfaceDescriptor,
-                                                          kernelDescriptor.kernelAttributes.barrierCount,
+                                                          kernelDescriptor,
                                                           hardwareInfo);
 
     PreemptionHelper::programInterfaceDescriptorDataPreemption<GfxFamily>(&interfaceDescriptor, preemptionMode);
 
-    EncodeDispatchKernel<GfxFamily>::adjustInterfaceDescriptorData(interfaceDescriptor, device, hardwareInfo, threadGroupCount, kernelDescriptor.kernelAttributes.numGrfRequired, *walkerCmd);
+    auto defaultPipelinedThreadArbitrationPolicy = gfxCoreHelper.getDefaultThreadArbitrationPolicy();
+    if (NEO::debugManager.flags.OverrideThreadArbitrationPolicy.get() != -1) {
+        defaultPipelinedThreadArbitrationPolicy = NEO::debugManager.flags.OverrideThreadArbitrationPolicy.get();
+    }
+    EncodeDispatchKernel<GfxFamily>::encodeEuSchedulingPolicy(&interfaceDescriptor, kernelDescriptor, defaultPipelinedThreadArbitrationPolicy);
+    const uint32_t threadGroupDimensions[] = {walkerCmd->getThreadGroupIdXDimension(), walkerCmd->getThreadGroupIdYDimension(), walkerCmd->getThreadGroupIdXDimension()};
+    EncodeDispatchKernel<GfxFamily>::encodeThreadGroupDispatch(interfaceDescriptor, device, hardwareInfo, threadGroupDimensions, threadGroupCount, kernelDescriptor.kernelAttributes.numGrfRequired, threadsPerThreadGroup, *walkerCmd);
 
     *pInterfaceDescriptor = interfaceDescriptor;
     return (size_t)offsetInterfaceDescriptor;
@@ -240,44 +245,64 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
     DEBUG_BREAK_IF(simd != 1 && simd != 8 && simd != 16 && simd != 32);
     // Copy the kernel over to the ISH
     constexpr bool heaplessModeEnabled = GfxFamily::template isHeaplessMode<WalkerType>();
+    constexpr bool bindfulAllowed = !heaplessModeEnabled;
 
     size_t dstBindingTablePointer = 0;
     uint32_t samplerCount = 0;
     uint32_t samplerStateOffset = 0;
     uint32_t bindingTablePrefetchSize = 0;
 
-    if constexpr (heaplessModeEnabled == false) {
+    ssh.align(GfxFamily::cacheLineSize);
+    dstBindingTablePointer = HardwareCommandsHelper<GfxFamily>::checkForAdditionalBTAndSetBTPointer(ssh, kernel);
 
-        ssh.align(BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
-        dstBindingTablePointer = HardwareCommandsHelper<GfxFamily>::checkForAdditionalBTAndSetBTPointer(ssh, kernel);
-
-        const auto &kernelInfo = kernel.getKernelInfo();
-        // Copy our sampler state if it exists
-        const auto &samplerTable = kernelInfo.kernelDescriptor.payloadMappings.samplerTable;
-        if (isValidOffset(samplerTable.tableOffset) && isValidOffset(samplerTable.borderColor)) {
-            samplerCount = samplerTable.numSamplers;
-            samplerStateOffset = EncodeStates<GfxFamily>::copySamplerState(&dsh, samplerTable.tableOffset,
-                                                                           samplerCount, samplerTable.borderColor,
-                                                                           kernel.getDynamicStateHeap(), device.getBindlessHeapsHelper(),
-                                                                           device.getRootDeviceEnvironment());
+    const auto &kernelInfo = kernel.getKernelInfo();
+    // Copy our sampler state if it exists
+    const auto &samplerTable = kernelInfo.kernelDescriptor.payloadMappings.samplerTable;
+    if (isValidOffset(samplerTable.tableOffset) && isValidOffset(samplerTable.borderColor)) {
+        samplerCount = samplerTable.numSamplers;
+        samplerStateOffset = EncodeStates<GfxFamily>::copySamplerState(&dsh, samplerTable.tableOffset,
+                                                                       samplerCount, samplerTable.borderColor,
+                                                                       kernel.getDynamicStateHeap(), device.getBindlessHeapsHelper(),
+                                                                       device.getRootDeviceEnvironment());
+        if constexpr (heaplessModeEnabled) {
+            uint64_t bindlessSamplerStateAddress = samplerStateOffset;
+            bindlessSamplerStateAddress += dsh.getGraphicsAllocation()->getGpuAddress();
+            kernel.patchBindlessSamplerStatesInCrossThreadData(bindlessSamplerStateAddress);
         }
+    }
 
+    if constexpr (bindfulAllowed) {
         if (EncodeSurfaceState<GfxFamily>::doBindingTablePrefetch()) {
             bindingTablePrefetchSize = std::min(31u, static_cast<uint32_t>(kernel.getNumberOfBindingTableStates()));
         }
     }
 
+    const bool isBindlessKernel = NEO::KernelDescriptor::isBindlessAddressingKernel(kernel.getKernelInfo().kernelDescriptor);
+    if (isBindlessKernel) {
+        uint64_t bindlessSurfaceStatesBaseAddress = ptrDiff(ssh.getSpace(0), ssh.getCpuBase());
+        if constexpr (heaplessModeEnabled) {
+            bindlessSurfaceStatesBaseAddress += ssh.getGraphicsAllocation()->getGpuAddress();
+        }
+
+        auto sshHeapSize = kernel.getSurfaceStateHeapSize();
+        // Allocate space for new ssh data
+        auto dstSurfaceState = ssh.getSpace(sshHeapSize);
+        memcpy_s(dstSurfaceState, sshHeapSize, kernel.getSurfaceStateHeap(), sshHeapSize);
+
+        kernel.patchBindlessSurfaceStatesInCrossThreadData<heaplessModeEnabled>(bindlessSurfaceStatesBaseAddress);
+    }
+
     auto &gfxCoreHelper = device.getGfxCoreHelper();
-    auto grfSize = kernel.getDescriptor().kernelAttributes.numGrfRequired;
+    auto grfCount = kernel.getDescriptor().kernelAttributes.numGrfRequired;
     auto localWorkItems = localWorkSize[0] * localWorkSize[1] * localWorkSize[2];
-    auto threadsPerThreadGroup = gfxCoreHelper.calculateNumThreadsPerThreadGroup(simd, static_cast<uint32_t>(localWorkItems), grfSize, !localIdsGenerationByRuntime);
+    auto threadsPerThreadGroup = gfxCoreHelper.calculateNumThreadsPerThreadGroup(simd, static_cast<uint32_t>(localWorkItems), grfCount, !localIdsGenerationByRuntime, device.getRootDeviceEnvironment());
 
     uint32_t sizeCrossThreadData = kernel.getCrossThreadDataSize();
 
     auto inlineDataProgrammingRequired = EncodeDispatchKernel<GfxFamily>::inlineDataProgrammingRequired(kernel.getKernelInfo().kernelDescriptor);
     size_t offsetCrossThreadData = HardwareCommandsHelper<GfxFamily>::sendCrossThreadData<WalkerType>(
         ioh, kernel, inlineDataProgrammingRequired,
-        walkerCmd, sizeCrossThreadData, scratchAddress);
+        walkerCmd, sizeCrossThreadData, scratchAddress, device.getRootDeviceEnvironment());
 
     size_t sizePerThreadDataTotal = 0;
     size_t sizePerThreadData = 0;
@@ -328,6 +353,7 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
                                           WalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
         walkerCmd->setIndirectDataLength(indirectDataLength);
     }
+    ioh.align(NEO::EncodeDispatchKernel<GfxFamily>::getDefaultIOHAlignment());
 
     return offsetCrossThreadData;
 }

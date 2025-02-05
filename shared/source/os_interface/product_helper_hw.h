@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,10 +24,9 @@ class ProductHelperHw : public ProductHelper {
     void adjustSamplerState(void *sampler, const HardwareInfo &hwInfo) const override;
     uint64_t getHostMemCapabilities(const HardwareInfo *hwInfo) const override;
     uint64_t getDeviceMemCapabilities() const override;
-    uint64_t getSingleDeviceSharedMemCapabilities() const override;
+    uint64_t getSingleDeviceSharedMemCapabilities(bool isKmdMigrationAvailable) const override;
     uint64_t getCrossDeviceSharedMemCapabilities() const override;
     uint64_t getSharedSystemMemCapabilities(const HardwareInfo *hwInfo) const override;
-    void getKernelExtendedProperties(uint32_t *fp16, uint32_t *fp32, uint32_t *fp64) const override;
     std::vector<int32_t> getKernelSupportedThreadArbitrationPolicies() const override;
     uint32_t getDeviceMemoryMaxClkRate(const HardwareInfo &hwInfo, const OSInterface *osIface, uint32_t subDeviceIndex) const override;
     uint64_t getDeviceMemoryPhysicalSizeInBytes(const OSInterface *osIface, uint32_t subDeviceIndex) const override;
@@ -47,17 +46,18 @@ class ProductHelperHw : public ProductHelper {
     uint32_t getAubStreamSteppingFromHwRevId(const HardwareInfo &hwInfo) const override;
     std::optional<aub_stream::ProductFamily> getAubStreamProductFamily() const override;
     bool isDefaultEngineTypeAdjustmentRequired(const HardwareInfo &hwInfo) const override;
-    std::string getDeviceMemoryName() const override;
     bool isDisableOverdispatchAvailable(const HardwareInfo &hwInfo) const override;
     bool allowCompression(const HardwareInfo &hwInfo) const override;
     LocalMemoryAccessMode getLocalMemoryAccessMode(const HardwareInfo &hwInfo) const override;
-    bool isAllocationSizeAdjustmentRequired(const HardwareInfo &hwInfo) const override;
     bool isNewResidencyModelSupported() const override;
     bool isDirectSubmissionSupported(ReleaseHelper *releaseHelper) const override;
     bool isDirectSubmissionConstantCacheInvalidationNeeded(const HardwareInfo &hwInfo) const override;
+    bool restartDirectSubmissionForHostptrFree() const override;
+    bool isAdjustDirectSubmissionTimeoutOnThrottleAndAcLineStatusEnabled() const override;
+    TimeoutParams getDirectSubmissionControllerTimeoutParams(bool acLineConnected, QueueThrottle queueThrottle) const override;
     std::pair<bool, bool> isPipeControlPriorToNonPipelinedStateCommandsWARequired(const HardwareInfo &hwInfo, bool isRcs, const ReleaseHelper *releaseHelper) const override;
     bool heapInLocalMem(const HardwareInfo &hwInfo) const override;
-    void setCapabilityCoherencyFlag(const HardwareInfo &hwInfo, bool &coherencyFlag) override;
+    void setCapabilityCoherencyFlag(const HardwareInfo &hwInfo, bool &coherencyFlag) const override;
     bool isAdditionalMediaSamplerProgrammingRequired() const override;
     bool isInitialFlagsProgrammingRequired() const override;
     bool isReturnedCmdSizeForMediaSamplerAdjustmentRequired() const override;
@@ -68,10 +68,19 @@ class ProductHelperHw : public ProductHelper {
     bool isStorageInfoAdjustmentRequired() const override;
     bool isBlitterForImagesSupported() const override;
     bool isPageFaultSupported() const override;
-    bool blitEnqueueAllowed() const override;
+    bool blitEnqueuePreferred(bool isWriteToImageFromBuffer) const override;
     bool isKmdMigrationSupported() const override;
+    bool isDisableScratchPagesSupported() const override;
+    bool isDisableScratchPagesRequiredForDebugger() const override;
+    bool areSecondaryContextsSupported() const override;
     bool isTile64With3DSurfaceOnBCSSupported(const HardwareInfo &hwInfo) const override;
     bool isDcFlushAllowed() const override;
+    bool isDcFlushMitigated() const override;
+    bool mitigateDcFlush() const override;
+    bool overrideUsageForDcFlushMitigation(AllocationType allocationType) const override;
+    bool overridePatToUCAndTwoWayCohForDcFlushMitigation(AllocationType allocationType) const override;
+    bool overridePatToUCAndOneWayCohForDcFlushMitigation(AllocationType allocationType) const override;
+    bool overrideCacheableForDcFlushMitigation(AllocationType allocationType) const override;
     uint32_t computeMaxNeededSubSliceSpace(const HardwareInfo &hwInfo) const override;
     bool getUuid(NEO::DriverModel *driverModel, uint32_t subDeviceCount, uint32_t deviceIndex, std::array<uint8_t, ProductHelper::uuidSize> &uuid) const override;
     bool isFlushTaskAllowed() const override;
@@ -80,14 +89,16 @@ class ProductHelperHw : public ProductHelper {
     bool isCopyEngineSelectorEnabled(const HardwareInfo &hwInfo) const override;
     bool isGlobalFenceInCommandStreamRequired(const HardwareInfo &hwInfo) const override;
     bool isGlobalFenceInDirectSubmissionRequired(const HardwareInfo &hwInfo) const override;
-    bool isAdjustProgrammableIdPreferredSlmSizeRequired(const HardwareInfo &hwInfo) const override;
     uint32_t getThreadEuRatioForScratch(const HardwareInfo &hwInfo) const override;
+    void adjustScratchSize(size_t &requiredScratchSize) const override;
     size_t getSvmCpuAlignment() const override;
     bool isComputeDispatchAllWalkerEnableInCfeStateRequired(const HardwareInfo &hwInfo) const override;
+    bool adjustDispatchAllRequired(const HardwareInfo &hwInfo) const override;
     bool isVmBindPatIndexProgrammingSupported() const override;
     bool isIpSamplingSupported(const HardwareInfo &hwInfo) const override;
     bool isGrfNumReportedWithScm() const override;
     bool isThreadArbitrationPolicyReportedWithScm() const override;
+    bool isCopyBufferRectSplitSupported() const override;
     bool isCooperativeEngineSupported(const HardwareInfo &hwInfo) const override;
     bool isTimestampWaitSupportedForEvents() const override;
     bool isTilePlacementResourceWaRequired(const HardwareInfo &hwInfo) const override;
@@ -110,18 +121,23 @@ class ProductHelperHw : public ProductHelper {
     bool isPlatformQuerySupported() const override;
     bool isNonBlockingGpuSubmissionSupported() const override;
     bool isResolveDependenciesByPipeControlsSupported(const HardwareInfo &hwInfo, bool isOOQ, TaskCountType queueTaskCount, const CommandStreamReceiver &queueCsr) const override;
-    bool isMidThreadPreemptionDisallowedForRayTracingKernels() const override;
     bool isBufferPoolAllocatorSupported() const override;
     bool isUsmPoolAllocatorSupported() const override;
+    bool isDeviceUsmAllocationReuseSupported() const override;
+    bool isHostUsmAllocationReuseSupported() const override;
+    bool useLocalPreferredForCacheableBuffers() const override;
+    bool useGemCreateExtInAllocateMemoryByKMD() const override;
     bool isTlbFlushRequired() const override;
-    bool isDummyBlitWaRequired() const override;
-    bool isDetectIndirectAccessInKernelSupported(const KernelDescriptor &kernelDescriptor, const bool isPrecompiled, const uint32_t kernelIndirectDetectionVersion) const override;
+    bool isDetectIndirectAccessInKernelSupported(const KernelDescriptor &kernelDescriptor, const bool isPrecompiled, const uint32_t precompiledKernelIndirectDetectionVersion) const override;
+    uint32_t getRequiredDetectIndirectVersion() const override;
+    uint32_t getRequiredDetectIndirectVersionVC() const override;
     bool isLinearStoragePreferred(bool isImage1d, bool forceLinearStorage) const override;
     bool isTranslationExceptionSupported() const override;
     uint32_t getMaxNumSamplers() const override;
     uint32_t getCommandBuffersPreallocatedPerCommandQueue() const override;
     uint32_t getInternalHeapsPreallocated() const override;
     bool overrideAllocationCacheable(const AllocationData &allocationData) const override;
+    bool is2MBLocalMemAlignmentEnabled() const override;
 
     bool getFrontEndPropertyScratchSizeSupport() const override;
     bool getFrontEndPropertyPrivateScratchSizeSupport() const override;
@@ -137,7 +153,6 @@ class ProductHelperHw : public ProductHelper {
     bool getScmPropertyLargeGrfModeSupport() const override;
     bool getScmPropertyDevicePreemptionModeSupport() const override;
 
-    bool getStateBaseAddressPropertyGlobalAtomicsSupport() const override;
     bool getStateBaseAddressPropertyBindingTablePoolBaseAddressSupport() const override;
 
     bool getPreemptionDbgPropertyPreemptionModeSupport() const override;
@@ -158,11 +173,29 @@ class ProductHelperHw : public ProductHelper {
     bool is48bResourceNeededForRayTracing() const override;
     bool disableL3CacheForDebug(const HardwareInfo &hwInfo) const override;
     bool isSkippingStatefulInformationRequired(const KernelDescriptor &kernelDescriptor) const override;
-    bool getMediaFrequencyTileIndex(const ReleaseHelper *releaseHelper, uint32_t &tileIndex) const override;
     bool isResolvingSubDeviceIDNeeded(const ReleaseHelper *releaseHelper) const override;
-    uint64_t overridePatIndex(bool isUncachedType, uint64_t patIndex) const override;
+    uint64_t overridePatIndex(bool isUncachedType, uint64_t patIndex, AllocationType allocationType) const override;
     std::vector<uint32_t> getSupportedNumGrfs(const ReleaseHelper *releaseHelper) const override;
     aub_stream::EngineType getDefaultCopyEngine() const override;
+    void adjustEngineGroupType(EngineGroupType &engineGroupType) const override;
+    std::optional<GfxMemoryAllocationMethod> getPreferredAllocationMethod(AllocationType allocationType) const override;
+    bool isCachingOnCpuAvailable() const override;
+    bool isNewCoherencyModelSupported() const override;
+    bool deferMOCSToPatIndex() const override;
+    bool supportReadOnlyAllocations() const override;
+    const std::vector<uint32_t> getSupportedLocalDispatchSizes(const HardwareInfo &hwInfo) const override;
+    uint32_t getMaxLocalRegionSize(const HardwareInfo &hwInfo) const override;
+    bool localDispatchSizeQuerySupported() const override;
+    bool isDeviceToHostCopySignalingFenceRequired() const override;
+    size_t getMaxFillPaternSizeForCopyEngine() const override;
+    bool isAvailableExtendedScratch() const override;
+    std::optional<bool> isCoherentAllocation(uint64_t patIndex) const override;
+    bool isStagingBuffersEnabled() const override;
+    uint32_t getCacheLineSize() const override;
+    bool supports2DBlockStore() const override;
+    bool supports2DBlockLoad() const override;
+    uint32_t getNumCacheRegions() const override;
+    uint64_t getPatIndex(CacheRegion cacheRegion, CachePolicy cachePolicy) const override;
 
     ~ProductHelperHw() override = default;
 

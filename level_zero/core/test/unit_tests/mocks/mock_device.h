@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -60,7 +60,7 @@ struct MockDevice : public Device {
     ADDMETHOD_NOBASE(getBuiltinFunctionsLib, BuiltinFunctionsLib *, nullptr, ());
     ADDMETHOD_CONST_NOBASE(getMaxNumHwThreads, uint32_t, 16u, ());
     ADDMETHOD_NOBASE(activateMetricGroupsDeferred, ze_result_t, ZE_RESULT_SUCCESS, (uint32_t count, zet_metric_group_handle_t *phMetricGroups));
-    ADDMETHOD_NOBASE_REFRETURN(getOsInterface, NEO::OSInterface &, ());
+    ADDMETHOD_NOBASE_REFRETURN(getOsInterface, NEO::OSInterface *, ());
     ADDMETHOD_CONST_NOBASE(getPlatformInfo, uint32_t, 0u, ());
     ADDMETHOD_NOBASE_REFRETURN(getMetricDeviceContext, MetricDeviceContext &, ());
     ADDMETHOD_CONST_NOBASE_REFRETURN(getHwInfo, const NEO::HardwareInfo &, ());
@@ -74,9 +74,8 @@ struct MockDevice : public Device {
     ADDMETHOD_NOBASE(allocateMemoryFromHostPtr, NEO::GraphicsAllocation *, nullptr, (const void *buffer, size_t size, bool hostCopyAllowed));
     ADDMETHOD_NOBASE_VOIDRETURN(setSysmanHandle, (SysmanDevice *));
     ADDMETHOD_NOBASE(getSysmanHandle, SysmanDevice *, nullptr, ());
-    ADDMETHOD_NOBASE(getCsrForOrdinalAndIndex, ze_result_t, ZE_RESULT_SUCCESS, (NEO::CommandStreamReceiver * *csr, uint32_t ordinal, uint32_t index));
-    ADDMETHOD_NOBASE(getCsrForOrdinalAndIndexWithPriority, ze_result_t, ZE_RESULT_SUCCESS, (NEO::CommandStreamReceiver * *csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority));
-    ADDMETHOD_NOBASE(getCsrForLowPriority, ze_result_t, ZE_RESULT_SUCCESS, (NEO::CommandStreamReceiver * *csr));
+    ADDMETHOD_NOBASE(getCsrForOrdinalAndIndex, ze_result_t, ZE_RESULT_SUCCESS, (NEO::CommandStreamReceiver * *csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority, bool allocateInterrupt));
+    ADDMETHOD_NOBASE(getCsrForLowPriority, ze_result_t, ZE_RESULT_SUCCESS, (NEO::CommandStreamReceiver * *csr, bool copyOnly));
     ADDMETHOD_NOBASE(getDebugProperties, ze_result_t, ZE_RESULT_SUCCESS, (zet_device_debug_properties_t * properties));
     ADDMETHOD_NOBASE(getDebugSession, DebugSession *, nullptr, (const zet_debug_config_t &config));
     ADDMETHOD_NOBASE_VOIDRETURN(removeDebugSession, ());
@@ -103,10 +102,14 @@ struct MockDeviceImp : public L0::DeviceImp {
     using Base = L0::DeviceImp;
     using Base::adjustCommandQueueDesc;
     using Base::debugSession;
+    using Base::deviceInOrderCounterAllocator;
     using Base::getNEODevice;
+    using Base::hostInOrderCounterAllocator;
     using Base::implicitScalingCapable;
+    using Base::inOrderTimestampAllocator;
     using Base::neoDevice;
     using Base::subDeviceCopyEngineGroups;
+    using Base::syncDispatchTokenAllocation;
 
     MockDeviceImp(NEO::Device *device, NEO::ExecutionEnvironment *execEnv) {
         device->incRefInternal();

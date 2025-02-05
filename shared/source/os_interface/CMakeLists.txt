@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019-2023 Intel Corporation
+# Copyright (C) 2019-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -22,10 +22,13 @@ set(NEO_CORE_OS_INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/device_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/device_factory.h
     ${CMAKE_CURRENT_SOURCE_DIR}/driver_info.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/external_semaphore.h
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper.inl
-    ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_bdw_and_later.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_tgllp_and_later.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_xe_hpc_and_later.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_xe2_and_later.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/metrics_library.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_context.h
@@ -33,6 +36,7 @@ set(NEO_CORE_OS_INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/os_handle.h
     ${CMAKE_CURRENT_SOURCE_DIR}/os_interface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_interface.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/os_library.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_library.h
     ${CMAKE_CURRENT_SOURCE_DIR}/os_memory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_memory.h
@@ -47,12 +51,8 @@ set(NEO_CORE_OS_INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/sys_calls_common.h
 )
 
-if(SUPPORT_XEHP_AND_LATER)
-  list(APPEND NEO_CORE_OS_INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_xehp_and_later.inl)
-endif()
-
-if(SUPPORT_DG2_AND_LATER)
-  list(APPEND NEO_CORE_OS_INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_dg2_and_later.inl)
+if(SUPPORT_XE_HPC_CORE OR SUPPORT_XE_HPG_CORE)
+  list(APPEND NEO_CORE_OS_INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_xe_hpg_and_xe_hpc.inl)
 endif()
 
 set_property(GLOBAL PROPERTY NEO_CORE_OS_INTERFACE ${NEO_CORE_OS_INTERFACE})

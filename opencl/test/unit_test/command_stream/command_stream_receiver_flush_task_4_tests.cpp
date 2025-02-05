@@ -302,8 +302,6 @@ struct CrossDeviceDependenciesTests : public ::testing::Test {
 };
 
 HWTEST_F(CrossDeviceDependenciesTests, givenMultipleEventInMultiRootDeviceEnvironmentWhenTheyArePassedToMarkerThenMiSemaphoreWaitCommandSizeIsIncluded) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
-
     Event event1(pCmdQ1, CL_COMMAND_NDRANGE_KERNEL, 5, 15);
     event1.getMultiRootTimestampSyncNode();
     Event event2(nullptr, CL_COMMAND_NDRANGE_KERNEL, 6, 16);
@@ -742,6 +740,10 @@ HWTEST_F(CommandStreamReceiverFlushTaskTests, givenEnqueueWithoutArbitrationPoli
     debugManager.flags.ForceThreadArbitrationPolicyProgrammingWithScm.set(1);
 
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    if (commandStreamReceiver.heaplessStateInitialized) {
+        GTEST_SKIP();
+    }
+
     commandStreamReceiver.streamProperties.initSupport(pDevice->getRootDeviceEnvironment());
     auto &csrThreadArbitrationPolicy = commandStreamReceiver.streamProperties.stateComputeMode.threadArbitrationPolicy.value;
 
@@ -763,7 +765,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskTests, givenEnqueueWithoutArbitrationPoli
 struct PreambleThreadArbitrationMatcher {
     template <PRODUCT_FAMILY productFamily>
     static constexpr bool isMatched() {
-        if constexpr (HwMapper<productFamily>::GfxProduct::supportsCmdSet(IGFX_GEN8_CORE)) {
+        if constexpr (HwMapper<productFamily>::GfxProduct::supportsCmdSet(IGFX_GEN12LP_CORE)) {
             return TestTraits<NEO::ToGfxCoreFamily<productFamily>::get()>::implementsPreambleThreadArbitration;
         }
         return false;
@@ -816,7 +818,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskTests, givenTagValueNotMeetingTaskCountTo
     CpuIntrinsicsTests::pauseAddress = mockCsr->tagAddress;
     CpuIntrinsicsTests::pauseValue = taskCountToWait;
 
-    const auto ret = mockCsr->waitForCompletionWithTimeout(WaitParams{false, false, 1}, taskCountToWait);
+    const auto ret = mockCsr->waitForCompletionWithTimeout(WaitParams{false, false, false, 1}, taskCountToWait);
     EXPECT_EQ(NEO::WaitStatus::ready, ret);
 }
 
@@ -836,7 +838,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskTests, givenTagValueNotMeetingTaskCountTo
     CpuIntrinsicsTests::pauseAddress = mockCsr->tagAddress;
     CpuIntrinsicsTests::pauseValue = taskCountToWait;
 
-    const auto ret = mockCsr->waitForCompletionWithTimeout(WaitParams{true, true, 10}, taskCountToWait);
+    const auto ret = mockCsr->waitForCompletionWithTimeout(WaitParams{true, true, false, 10}, taskCountToWait);
     EXPECT_EQ(NEO::WaitStatus::notReady, ret);
 }
 

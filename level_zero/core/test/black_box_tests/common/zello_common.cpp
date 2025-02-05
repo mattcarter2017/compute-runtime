@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,8 +8,10 @@
 #include "zello_common.h"
 
 #include <bitset>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <map>
 
 #ifdef _WIN64
 #include <windows.h>
@@ -19,7 +21,34 @@
 
 namespace LevelZeroBlackBoxTests {
 
+struct LoadedDriverExtensions {
+    std::vector<ze_driver_extension_properties_t> extensions;
+    bool loaded = false;
+};
+
+static LoadedDriverExtensions driverExtensions;
+
+using LoadedDeviceQueueProperties = std::map<ze_device_handle_t, std::vector<ze_command_queue_group_properties_t>>;
+static LoadedDeviceQueueProperties deviceQueueProperties;
+
+std::vector<ze_command_queue_group_properties_t> &getDeviceQueueProperties(ze_device_handle_t device) {
+    auto &queueProperties = deviceQueueProperties[device];
+    if (queueProperties.size() == 0) {
+        uint32_t numQueueGroups = 0;
+        SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
+        if (numQueueGroups == 0) {
+            std::cerr << "No queue groups found!\n";
+            std::terminate();
+        }
+        queueProperties.resize(numQueueGroups);
+        SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups,
+                                                                    queueProperties.data()));
+    }
+    return queueProperties;
+}
+
 bool verbose;
+uint32_t overrideErrorMax = 0;
 
 bool isParamEnabled(int argc, char *argv[], const char *shortName, const char *longName) {
     char **arg = &argv[1];
@@ -37,6 +66,8 @@ bool isParamEnabled(int argc, char *argv[], const char *shortName, const char *l
 int getParamValue(int argc, char *argv[], const char *shortName, const char *longName, int defaultValue) {
     char **arg = &argv[1];
     char **argE = &argv[argc];
+    char *end = nullptr;
+    int base = 0;
 
     for (; arg != argE; ++arg) {
         if ((0 == strcmp(*arg, shortName)) || (0 == strcmp(*arg, longName))) {
@@ -44,7 +75,26 @@ int getParamValue(int argc, char *argv[], const char *shortName, const char *lon
             if (arg == argE) {
                 break;
             }
-            return atoi(*arg);
+            return static_cast<int>(strtol(*arg, &end, base));
+        }
+    }
+
+    return defaultValue;
+}
+
+uint32_t getParamValue(int argc, char *argv[], const char *shortName, const char *longName, uint32_t defaultValue) {
+    char **arg = &argv[1];
+    char **argE = &argv[argc];
+    char *end = nullptr;
+    int base = 0;
+
+    for (; arg != argE; ++arg) {
+        if ((0 == strcmp(*arg, shortName)) || (0 == strcmp(*arg, longName))) {
+            arg++;
+            if (arg == argE) {
+                break;
+            }
+            return static_cast<uint32_t>(strtoul(*arg, &end, base));
         }
     }
 
@@ -207,6 +257,10 @@ uint32_t getBufferLength(int argc, char *argv[], uint32_t defaultLength) {
     return length;
 }
 
+void getErrorMax(int argc, char *argv[]) {
+    overrideErrorMax = getParamValue(argc, argv, "-em", "--errorMax", 0);
+}
+
 void printResult(bool aubMode, bool outputValidationSuccessful, const std::string &blackBoxName, const std::string &currentTest) {
     std::cout << std::endl
               << blackBoxName;
@@ -231,19 +285,17 @@ void printResult(bool aubMode, bool outputValidationSuccessful, const std::strin
     printResult(aubMode, outputValidationSuccessful, blackBoxName, currentTest);
 }
 
-uint32_t getCommandQueueOrdinal(ze_device_handle_t &device) {
-    uint32_t numQueueGroups = 0;
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
-    if (numQueueGroups == 0) {
-        std::cerr << "No queue groups found!\n";
-        std::terminate();
+uint32_t getCommandQueueOrdinal(ze_device_handle_t &device, bool useCooperativeFlag) {
+    std::vector<ze_command_queue_group_properties_t> &queueProperties = getDeviceQueueProperties(device);
+
+    ze_command_queue_group_property_flags_t computeFlags = ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE;
+    if (useCooperativeFlag) {
+        computeFlags |= ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COOPERATIVE_KERNELS;
     }
-    std::vector<ze_command_queue_group_properties_t> queueProperties(numQueueGroups);
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups,
-                                                                queueProperties.data()));
-    uint32_t computeQueueGroupOrdinal = numQueueGroups;
-    for (uint32_t i = 0; i < numQueueGroups; i++) {
-        if (queueProperties[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) {
+
+    uint32_t computeQueueGroupOrdinal = std::numeric_limits<uint32_t>::max();
+    for (uint32_t i = 0; i < queueProperties.size(); i++) {
+        if (queueProperties[i].flags & computeFlags) {
             computeQueueGroupOrdinal = i;
             break;
         }
@@ -252,18 +304,10 @@ uint32_t getCommandQueueOrdinal(ze_device_handle_t &device) {
 }
 
 std::vector<uint32_t> getComputeQueueOrdinals(ze_device_handle_t &device) {
-    std::vector<uint32_t> ordinals;
-    uint32_t numQueueGroups = 0;
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
-    if (numQueueGroups == 0) {
-        std::cerr << "No queue groups found!\n";
-        std::terminate();
-    }
-    std::vector<ze_command_queue_group_properties_t> queueProperties(numQueueGroups);
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups,
-                                                                queueProperties.data()));
+    std::vector<ze_command_queue_group_properties_t> &queueProperties = getDeviceQueueProperties(device);
 
-    for (uint32_t i = 0; i < numQueueGroups; i++) {
+    std::vector<uint32_t> ordinals;
+    for (uint32_t i = 0; i < queueProperties.size(); i++) {
         if (queueProperties[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) {
             ordinals.push_back(i);
         }
@@ -272,17 +316,10 @@ std::vector<uint32_t> getComputeQueueOrdinals(ze_device_handle_t &device) {
 }
 
 uint32_t getCopyOnlyCommandQueueOrdinal(ze_device_handle_t &device) {
-    uint32_t numQueueGroups = 0;
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
-    if (numQueueGroups == 0) {
-        std::cerr << "No queue groups found!\n";
-        std::terminate();
-    }
-    std::vector<ze_command_queue_group_properties_t> queueProperties(numQueueGroups);
-    SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups,
-                                                                queueProperties.data()));
+    std::vector<ze_command_queue_group_properties_t> &queueProperties = getDeviceQueueProperties(device);
+
     uint32_t copyOnlyQueueGroupOrdinal = std::numeric_limits<uint32_t>::max();
-    for (uint32_t i = 0; i < numQueueGroups; i++) {
+    for (uint32_t i = 0; i < queueProperties.size(); i++) {
         if (!(queueProperties[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) && (queueProperties[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY)) {
             copyOnlyQueueGroupOrdinal = i;
             break;
@@ -293,21 +330,12 @@ uint32_t getCopyOnlyCommandQueueOrdinal(ze_device_handle_t &device) {
 
 ze_command_queue_handle_t createCommandQueue(ze_context_handle_t &context, ze_device_handle_t &device,
                                              uint32_t *ordinal, ze_command_queue_mode_t mode,
-                                             ze_command_queue_priority_t priority) {
-    ze_command_queue_handle_t cmdQueue;
-    ze_command_queue_desc_t descriptor = {};
-    descriptor.stype = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC;
+                                             ze_command_queue_priority_t priority, bool useCooperativeFlag) {
 
-    descriptor.pNext = nullptr;
-    descriptor.flags = 0;
-    descriptor.mode = mode;
-    descriptor.priority = priority;
-
-    descriptor.ordinal = getCommandQueueOrdinal(device);
-    descriptor.index = 0;
-    SUCCESS_OR_TERMINATE(zeCommandQueueCreate(context, device, &descriptor, &cmdQueue));
+    uint32_t queueOrdinal = getCommandQueueOrdinal(device, useCooperativeFlag);
+    auto cmdQueue = createCommandQueueWithOrdinal(context, device, queueOrdinal, mode, priority);
     if (ordinal != nullptr) {
-        *ordinal = descriptor.ordinal;
+        *ordinal = queueOrdinal;
     }
     return cmdQueue;
 }
@@ -331,8 +359,8 @@ ze_command_queue_handle_t createCommandQueueWithOrdinal(ze_context_handle_t &con
     return cmdQueue;
 }
 
-ze_command_queue_handle_t createCommandQueue(ze_context_handle_t &context, ze_device_handle_t &device, uint32_t *ordinal) {
-    return createCommandQueue(context, device, ordinal, ZE_COMMAND_QUEUE_MODE_DEFAULT, ZE_COMMAND_QUEUE_PRIORITY_NORMAL);
+ze_command_queue_handle_t createCommandQueue(ze_context_handle_t &context, ze_device_handle_t &device, uint32_t *ordinal, bool useCooperativeFlag) {
+    return createCommandQueue(context, device, ordinal, ZE_COMMAND_QUEUE_MODE_DEFAULT, ZE_COMMAND_QUEUE_PRIORITY_NORMAL, useCooperativeFlag);
 }
 
 ze_result_t createCommandList(ze_context_handle_t &context, ze_device_handle_t &device, ze_command_list_handle_t &cmdList, uint32_t ordinal) {
@@ -346,30 +374,54 @@ ze_result_t createCommandList(ze_context_handle_t &context, ze_device_handle_t &
     return zeCommandListCreate(context, device, &descriptor, &cmdList);
 }
 
-ze_result_t createCommandList(ze_context_handle_t &context, ze_device_handle_t &device, ze_command_list_handle_t &cmdList) {
-    return createCommandList(context, device, cmdList, getCommandQueueOrdinal(device));
+ze_result_t createCommandList(ze_context_handle_t &context, ze_device_handle_t &device, ze_command_list_handle_t &cmdList, bool useCooperativeFlag) {
+    return createCommandList(context, device, cmdList, getCommandQueueOrdinal(device, useCooperativeFlag));
 }
 
 void createEventPoolAndEvents(ze_context_handle_t &context,
                               ze_device_handle_t &device,
                               ze_event_pool_handle_t &eventPool,
-                              ze_event_pool_flag_t poolFlag,
+                              ze_event_pool_flags_t poolFlag,
+                              bool counterEvents,
+                              const zex_counter_based_event_desc_t *counterBasedDesc,
+                              pfnZexCounterBasedEventCreate2 zexCounterBasedEventCreate2Func,
                               uint32_t poolSize,
                               ze_event_handle_t *events,
-                              ze_event_scope_flag_t signalScope,
-                              ze_event_scope_flag_t waitScope) {
+                              ze_event_scope_flags_t signalScope,
+                              ze_event_scope_flags_t waitScope) {
+
     ze_event_pool_desc_t eventPoolDesc{ZE_STRUCTURE_TYPE_EVENT_POOL_DESC};
-    ze_event_desc_t eventDesc = {ZE_STRUCTURE_TYPE_EVENT_DESC};
     eventPoolDesc.count = poolSize;
     eventPoolDesc.flags = poolFlag;
-    SUCCESS_OR_TERMINATE(zeEventPoolCreate(context, &eventPoolDesc, 1, &device, &eventPool));
 
-    for (uint32_t i = 0; i < poolSize; i++) {
-        eventDesc.index = i;
-        eventDesc.signal = signalScope;
-        eventDesc.wait = waitScope;
-        SUCCESS_OR_TERMINATE(zeEventCreate(eventPool, &eventDesc, events + i));
+    if (!counterEvents) {
+        SUCCESS_OR_TERMINATE(zeEventPoolCreate(context, &eventPoolDesc, 1, &device, &eventPool));
     }
+
+    ze_event_desc_t eventDesc = {ZE_STRUCTURE_TYPE_EVENT_DESC};
+    for (uint32_t i = 0; i < poolSize; i++) {
+        if (counterEvents) {
+            SUCCESS_OR_TERMINATE(zexCounterBasedEventCreate2Func(context, device, counterBasedDesc, events + i));
+        } else {
+            eventDesc.index = i;
+            eventDesc.signal = signalScope;
+            eventDesc.wait = waitScope;
+            SUCCESS_OR_TERMINATE(zeEventCreate(eventPool, &eventDesc, events + i));
+        }
+    }
+}
+
+bool counterBasedEventsExtensionPresent(ze_driver_handle_t &driverHandle) {
+    std::string cbEventsExtensionString("ZE_experimental_event_pool_counter_based");
+    ze_driver_extension_properties_t cbEventsExtension{};
+
+    std::snprintf(cbEventsExtension.name, sizeof(cbEventsExtension.name), "%s", cbEventsExtensionString.c_str());
+    cbEventsExtension.version = ZE_EVENT_POOL_COUNTER_BASED_EXP_VERSION_CURRENT;
+
+    std::vector<ze_driver_extension_properties_t> extensionsToCheck;
+    extensionsToCheck.push_back(cbEventsExtension);
+
+    return LevelZeroBlackBoxTests::checkExtensionIsPresent(driverHandle, extensionsToCheck);
 }
 
 std::vector<ze_device_handle_t> zelloGetSubDevices(ze_device_handle_t &device, uint32_t &subDevCount) {
@@ -424,7 +476,29 @@ void initialize(ze_driver_handle_t &driver, ze_context_handle_t &context, ze_dev
 
     devices = zelloInitContextAndGetDevices(context, driver);
     device = devices[0];
-    cmdQueue = createCommandQueue(context, device, &ordinal);
+    cmdQueue = createCommandQueue(context, device, &ordinal, false);
+}
+
+bool checkImageSupport(ze_device_handle_t hDevice, bool test1D, bool test2D, bool test3D, bool testArray) {
+    ze_device_image_properties_t imageProperties = {};
+    imageProperties.stype = ZE_STRUCTURE_TYPE_DEVICE_IMAGE_PROPERTIES;
+
+    SUCCESS_OR_TERMINATE(zeDeviceGetImageProperties(hDevice, &imageProperties));
+
+    if (test1D && (imageProperties.maxImageDims1D == 0)) {
+        return false;
+    }
+    if (test2D && (imageProperties.maxImageDims2D == 0)) {
+        return false;
+    }
+    if (test3D && (imageProperties.maxImageDims3D == 0)) {
+        return false;
+    }
+    if (testArray && (imageProperties.maxImageArraySlices == 0)) {
+        return false;
+    }
+
+    return true;
 }
 
 void teardown(ze_context_handle_t context, ze_command_queue_handle_t cmdQueue) {
@@ -575,7 +649,7 @@ ze_result_t CommandHandler::create(ze_context_handle_t context, ze_device_handle
     isImmediate = immediate;
     ze_result_t result;
     ze_command_queue_desc_t cmdQueueDesc = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
-    cmdQueueDesc.ordinal = getCommandQueueOrdinal(device);
+    cmdQueueDesc.ordinal = getCommandQueueOrdinal(device, false);
     cmdQueueDesc.index = 0;
 
     if (isImmediate) {
@@ -587,7 +661,7 @@ ze_result_t CommandHandler::create(ze_context_handle_t context, ze_device_handle
         if (result != ZE_RESULT_SUCCESS) {
             return result;
         }
-        result = createCommandList(context, device, cmdList);
+        result = createCommandList(context, device, cmdList, false);
     }
 
     return result;
@@ -621,17 +695,118 @@ ze_result_t CommandHandler::destroy() {
 }
 
 TestBitMask getTestMask(int argc, char *argv[], uint32_t defaultValue) {
-    uint32_t value = static_cast<uint32_t>(getParamValue(argc, argv, "-m", "-mask", static_cast<int>(defaultValue)));
-    std::cerr << "Test mask ";
+    uint32_t value = getParamValue(argc, argv, "-m", "-mask", defaultValue);
+    std::cout << "Test mask ";
     if (value != defaultValue) {
-        std::cerr << "override ";
+        std::cout << "override ";
     } else {
-        std::cerr << "default ";
+        std::cout << "default ";
     }
     TestBitMask bitValue(value);
-    std::cerr << "value 0b" << bitValue << std::endl;
+    std::cout << "value 0b" << bitValue << std::endl;
 
     return bitValue;
+}
+
+void printGroupCount(ze_group_count_t &groupCount) {
+    if (verbose) {
+        std::cout << "Number of groups : (" << groupCount.groupCountX << ", "
+                  << groupCount.groupCountY << ", " << groupCount.groupCountZ << ")"
+                  << std::endl;
+    }
+}
+
+void printBuildLog(std::string &buildLog) {
+    if (buildLog.size() > 0) {
+        std::cerr << "Build log:" << std::endl
+                  << buildLog << std::endl;
+    }
+}
+
+void printBuildLog(const char *strLog) {
+    std::cerr << "Build log:" << std::endl
+              << strLog << std::endl;
+}
+
+void loadDriverExtensions(ze_driver_handle_t &driverHandle, std::vector<ze_driver_extension_properties_t> &driverExtensions) {
+    uint32_t extensionsCount = 0;
+    SUCCESS_OR_TERMINATE(zeDriverGetExtensionProperties(driverHandle, &extensionsCount, nullptr));
+    if (extensionsCount == 0) {
+        std::cerr << "No extensions supported on this driver" << std::endl;
+        driverExtensions.resize(extensionsCount);
+        return;
+    }
+
+    driverExtensions.resize(extensionsCount);
+    SUCCESS_OR_TERMINATE(zeDriverGetExtensionProperties(driverHandle, &extensionsCount, driverExtensions.data()));
+
+    for (uint32_t i = 0; i < extensionsCount; i++) {
+        uint32_t supportedVersion = driverExtensions[i].version;
+        if (verbose) {
+            std::cout << "Extension #" << i << " name: " << driverExtensions[i].name << " version: " << ZE_MAJOR_VERSION(supportedVersion) << "." << ZE_MINOR_VERSION(supportedVersion) << std::endl;
+        }
+    }
+}
+
+bool checkExtensionIsPresent(ze_driver_handle_t &driverHandle, std::vector<ze_driver_extension_properties_t> &extensionsToCheck) {
+    uint32_t numMatchedExtensions = 0;
+
+    if (!driverExtensions.loaded) {
+        loadDriverExtensions(driverHandle, driverExtensions.extensions);
+        driverExtensions.loaded = true;
+    }
+
+    for (uint32_t i = 0; i < driverExtensions.extensions.size(); i++) {
+        for (const auto &checkedExtension : extensionsToCheck) {
+            std::string checkedExtensionName = checkedExtension.name;
+            if (strncmp(driverExtensions.extensions[i].name, checkedExtensionName.c_str(), checkedExtensionName.size()) == 0) {
+                uint32_t version = checkedExtension.version;
+                uint32_t supportedVersion = driverExtensions.extensions[i].version;
+                if (verbose) {
+                    std::cout << "Checked extension: " << checkedExtensionName << " found in the driver." << std::endl;
+                }
+                if (version <= supportedVersion) {
+                    if (verbose) {
+                        std::cout << "Checked extension version: " << ZE_MAJOR_VERSION(version) << "." << ZE_MINOR_VERSION(version) << " is equal or lower than present." << std::endl;
+                    }
+                    numMatchedExtensions++;
+                } else {
+                    if (verbose) {
+                        std::cout << "Checked extension version: " << ZE_MAJOR_VERSION(version) << "." << ZE_MINOR_VERSION(version) << " is greater than present." << std::endl;
+                    }
+                }
+            }
+        }
+    }
+
+    return (numMatchedExtensions == extensionsToCheck.size());
+}
+
+void prepareScratchTestValues(uint32_t &arraySize, uint32_t &vectorSize, uint32_t &expectedMemorySize, uint32_t &srcAdditionalMul, uint32_t &srcMemorySize, uint32_t &idxMemorySize) {
+    uint32_t typeSize = sizeof(uint32_t);
+
+    arraySize = 32;
+    vectorSize = 16;
+    srcAdditionalMul = 3u;
+
+    expectedMemorySize = arraySize * vectorSize * typeSize * 2;
+    srcMemorySize = expectedMemorySize * srcAdditionalMul;
+    idxMemorySize = arraySize * typeSize;
+}
+
+void prepareScratchTestBuffers(void *srcBuffer, void *idxBuffer, void *expectedMemory, uint32_t arraySize, uint32_t vectorSize, uint32_t expectedMemorySize, uint32_t srcAdditionalMul) {
+    auto srcBufferLong = static_cast<uint64_t *>(srcBuffer);
+    auto expectedMemoryLong = static_cast<uint64_t *>(expectedMemory);
+
+    for (uint32_t i = 0; i < arraySize; ++i) {
+        static_cast<uint32_t *>(idxBuffer)[i] = 2;
+        for (uint32_t vecIdx = 0; vecIdx < vectorSize; ++vecIdx) {
+            for (uint32_t srcMulIdx = 0; srcMulIdx < srcAdditionalMul; ++srcMulIdx) {
+                srcBufferLong[(i * vectorSize * srcAdditionalMul) + srcMulIdx * vectorSize + vecIdx] = 1l;
+            }
+            expectedMemoryLong[i * vectorSize + vecIdx] = 2l;
+        }
+    }
 }
 
 } // namespace LevelZeroBlackBoxTests

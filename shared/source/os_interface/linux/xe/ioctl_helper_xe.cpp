@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,42 +7,43 @@
 
 #include "shared/source/os_interface/linux/xe/ioctl_helper_xe.h"
 
-#include "shared/source/command_stream/csr_definitions.h"
 #include "shared/source/debugger/debugger.h"
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
+#include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/basic_math.h"
-#include "shared/source/helpers/bit_helpers.h"
 #include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/engine_control.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/ptr_math.h"
-#include "shared/source/helpers/register_offsets.h"
 #include "shared/source/helpers/string.h"
+#include "shared/source/os_interface/linux/drm_buffer_object.h"
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/linux/engine_info.h"
 #include "shared/source/os_interface/linux/memory_info.h"
 #include "shared/source/os_interface/linux/os_context_linux.h"
+#include "shared/source/os_interface/linux/sys_calls.h"
+#include "shared/source/os_interface/linux/xe/xedrm.h"
 #include "shared/source/os_interface/os_time.h"
-
-#include "drm/xe_drm.h"
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <sstream>
-
-#define XE_FIND_INVALID_INSTANCE 16
 
 #define STRINGIFY_ME(X) return #X
 #define RETURN_ME(X) return X
 
-#define XE_USERPTR_FAKE_FLAG 0x800000
-#define XE_USERPTR_FAKE_MASK 0x7FFFFF
+#ifndef DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR
+#define DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR (1 << 4)
+#endif
 
-#define USER_FENCE_VALUE 0xc0ffee0000000000ull
+#ifndef DRM_XE_QUERY_CONFIG_FLAG_HAS_CPU_ADDR_MIRROR
+#define DRM_XE_QUERY_CONFIG_FLAG_HAS_CPU_ADDR_MIRROR (1 << 1)
+#endif
 
 namespace NEO {
 
@@ -59,7 +60,7 @@ const char *IoctlHelperXe::xeGetClassName(int className) {
     case DRM_XE_ENGINE_CLASS_COMPUTE:
         return "ccs";
     }
-    return "???";
+    return "Unknown class name";
 }
 
 const char *IoctlHelperXe::xeGetBindOperationName(int bindOperation) {
@@ -78,16 +79,39 @@ const char *IoctlHelperXe::xeGetBindOperationName(int bindOperation) {
     return "Unknown operation";
 }
 
-const char *IoctlHelperXe::xeGetBindFlagsName(int bindFlags) {
-    switch (bindFlags) {
-    case DRM_XE_VM_BIND_FLAG_READONLY:
-        return "READ_ONLY";
-    case DRM_XE_VM_BIND_FLAG_IMMEDIATE:
-        return "IMMEDIATE";
-    case DRM_XE_VM_BIND_FLAG_NULL:
-        return "NULL";
+std::string IoctlHelperXe::xeGetBindFlagNames(int bindFlags) {
+    if (bindFlags == 0) {
+        return "";
     }
-    return "Unknown flag";
+
+    std::string flags;
+    if (bindFlags & DRM_XE_VM_BIND_FLAG_READONLY) {
+        bindFlags &= ~DRM_XE_VM_BIND_FLAG_READONLY;
+        flags += "READONLY ";
+    }
+    if (bindFlags & DRM_XE_VM_BIND_FLAG_IMMEDIATE) {
+        bindFlags &= ~DRM_XE_VM_BIND_FLAG_IMMEDIATE;
+        flags += "IMMEDIATE ";
+    }
+    if (bindFlags & DRM_XE_VM_BIND_FLAG_NULL) {
+        bindFlags &= ~DRM_XE_VM_BIND_FLAG_NULL;
+        flags += "NULL ";
+    }
+    if (bindFlags & DRM_XE_VM_BIND_FLAG_DUMPABLE) {
+        bindFlags &= ~DRM_XE_VM_BIND_FLAG_DUMPABLE;
+        flags += "DUMPABLE ";
+    }
+
+    if (bindFlags != 0) {
+        flags += "Unknown flag ";
+    }
+
+    // Remove the trailing space
+    if (!flags.empty() && flags.back() == ' ') {
+        flags.pop_back();
+    }
+
+    return flags;
 }
 
 const char *IoctlHelperXe::xeGetengineClassName(uint32_t engineClass) {
@@ -103,7 +127,7 @@ const char *IoctlHelperXe::xeGetengineClassName(uint32_t engineClass) {
     case DRM_XE_ENGINE_CLASS_COMPUTE:
         return "DRM_XE_ENGINE_CLASS_COMPUTE";
     default:
-        return "?";
+        return "Unknown engine class";
     }
 }
 
@@ -111,8 +135,43 @@ IoctlHelperXe::IoctlHelperXe(Drm &drmArg) : IoctlHelper(drmArg) {
     xeLog("IoctlHelperXe::IoctlHelperXe\n", "");
 }
 
+bool IoctlHelperXe::queryDeviceIdAndRevision(Drm &drm) {
+    auto fileDescriptor = drm.getFileDescriptor();
+
+    drm_xe_device_query queryConfig = {};
+    queryConfig.query = DRM_XE_DEVICE_QUERY_CONFIG;
+
+    int ret = SysCalls::ioctl(fileDescriptor, DRM_IOCTL_XE_DEVICE_QUERY, &queryConfig);
+    if (ret || queryConfig.size == 0) {
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query size for device config!\n");
+        return false;
+    }
+
+    auto data = std::vector<uint64_t>(Math::divideAndRoundUp(sizeof(drm_xe_query_config) + sizeof(uint64_t) * queryConfig.size, sizeof(uint64_t)), 0);
+    struct drm_xe_query_config *config = reinterpret_cast<struct drm_xe_query_config *>(data.data());
+    queryConfig.data = castToUint64(config);
+
+    ret = SysCalls::ioctl(fileDescriptor, DRM_IOCTL_XE_DEVICE_QUERY, &queryConfig);
+
+    if (ret) {
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query device ID and revision!\n");
+        return false;
+    }
+
+    auto hwInfo = drm.getRootDeviceEnvironment().getMutableHardwareInfo();
+    hwInfo->platform.usDeviceID = config->info[DRM_XE_QUERY_CONFIG_REV_AND_DEVICE_ID] & 0xffff;
+    hwInfo->platform.usRevId = static_cast<int>((config->info[DRM_XE_QUERY_CONFIG_REV_AND_DEVICE_ID] >> 16) & 0xff);
+
+    if ((debugManager.flags.EnableSharedSystemUsmSupport.get() != 0) && (config->info[DRM_XE_QUERY_CONFIG_FLAGS] & DRM_XE_QUERY_CONFIG_FLAG_HAS_CPU_ADDR_MIRROR)) {
+        drm.setSharedSystemAllocEnable(true);
+    }
+    return true;
+}
+
 bool IoctlHelperXe::initialize() {
     xeLog("IoctlHelperXe::initialize\n", "");
+
+    euDebugInterface = EuDebugInterface::create(drm.getSysFsPciPath());
 
     drm_xe_device_query queryConfig = {};
     queryConfig.query = DRM_XE_DEVICE_QUERY_CONFIG;
@@ -143,9 +202,10 @@ bool IoctlHelperXe::initialize() {
     xeLog("DRM_XE_QUERY_CONFIG_VA_BITS\t\t%#llx\n",
           config->info[DRM_XE_QUERY_CONFIG_VA_BITS]);
 
-    chipsetId = config->info[DRM_XE_QUERY_CONFIG_REV_AND_DEVICE_ID] & 0xffff;
-    revId = static_cast<int>((config->info[DRM_XE_QUERY_CONFIG_REV_AND_DEVICE_ID] >> 16) & 0xff);
-    hasVram = config->info[DRM_XE_QUERY_CONFIG_FLAGS] & DRM_XE_QUERY_CONFIG_FLAG_HAS_VRAM ? 1 : 0;
+    xeLog("DRM_XE_QUERY_CONFIG_MAX_EXEC_QUEUE_PRIORITY\t\t%#llx\n",
+          config->info[DRM_XE_QUERY_CONFIG_MAX_EXEC_QUEUE_PRIORITY]);
+
+    maxExecQueuePriority = config->info[DRM_XE_QUERY_CONFIG_MAX_EXEC_QUEUE_PRIORITY] & 0xffff;
 
     memset(&queryConfig, 0, sizeof(queryConfig));
     queryConfig.query = DRM_XE_DEVICE_QUERY_HWCONFIG;
@@ -156,9 +216,33 @@ bool IoctlHelperXe::initialize() {
     IoctlHelper::ioctl(DrmIoctl::query, &queryConfig);
 
     auto hwInfo = this->drm.getRootDeviceEnvironment().getMutableHardwareInfo();
-    hwInfo->platform.usDeviceID = chipsetId;
-    hwInfo->platform.usRevId = revId;
+    hwInfo->capabilityTable.gpuAddressSpace = (1ull << config->info[DRM_XE_QUERY_CONFIG_VA_BITS]) - 1;
 
+    hwInfo->capabilityTable.cxlType = 0;
+    if (getCxlType() && config->num_params > *getCxlType()) {
+        hwInfo->capabilityTable.cxlType = static_cast<uint32_t>(config->info[*getCxlType()]);
+    }
+
+    queryGtListData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_GT_LIST);
+
+    if (queryGtListData.empty()) {
+        return false;
+    }
+    xeGtListData = reinterpret_cast<drm_xe_query_gt_list *>(queryGtListData.data());
+
+    gtIdToTileId.resize(xeGtListData->num_gt, invalidIndex);
+    for (auto i = 0u; i < xeGtListData->num_gt; i++) {
+        const auto &gt = xeGtListData->gt_list[i];
+        if (gt.type == DRM_XE_QUERY_GT_TYPE_MAIN) {
+            gtIdToTileId[gt.gt_id] = gt.tile_id;
+            if (tileIdToGtId.size() < gt.tile_id + 1u) {
+                tileIdToGtId.resize(gt.tile_id + 1, invalidIndex);
+            }
+
+            tileIdToGtId[gt.tile_id] = gt.gt_id;
+        }
+    }
+    querySupportedFeatures();
     return true;
 }
 
@@ -196,47 +280,60 @@ std::vector<DataType> IoctlHelperXe::queryData(uint32_t queryId) {
 
     return retVal;
 }
+template std::vector<uint8_t> IoctlHelperXe::queryData(uint32_t queryId);
+template std::vector<uint64_t> IoctlHelperXe::queryData(uint32_t queryId);
+
+uint32_t IoctlHelperXe::getNumEngines(uint64_t *enginesData) const {
+    return reinterpret_cast<struct drm_xe_query_engines *>(enginesData)->num_engines;
+}
 
 std::unique_ptr<EngineInfo> IoctlHelperXe::createEngineInfo(bool isSysmanEnabled) {
-    auto enginesData = queryData<uint16_t>(DRM_XE_DEVICE_QUERY_ENGINES);
-
-    auto numberHwEngines = enginesData.size() * sizeof(uint16_t) /
-                           sizeof(struct drm_xe_engine_class_instance);
-
-    xeLog("numberHwEngines=%d\n", numberHwEngines);
+    auto enginesData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_ENGINES);
 
     if (enginesData.empty()) {
         return {};
     }
 
-    auto queriedEngines = reinterpret_cast<struct drm_xe_engine_class_instance *>(enginesData.data());
+    auto queryEngines = reinterpret_cast<struct drm_xe_query_engines *>(enginesData.data());
 
-    StackVec<std::vector<EngineClassInstance>, 2> enginesPerTile{};
+    auto numberHwEngines = getNumEngines(enginesData.data());
+
+    xeLog("numberHwEngines=%d\n", numberHwEngines);
+
+    StackVec<std::vector<EngineCapabilities>, 2> enginesPerTile{};
     std::bitset<8> multiTileMask{};
 
+    auto hwInfo = drm.getRootDeviceEnvironment().getMutableHardwareInfo();
+    auto defaultEngineClass = getDefaultEngineClass(hwInfo->capabilityTable.defaultEngineType);
+
     for (auto i = 0u; i < numberHwEngines; i++) {
-        auto tile = queriedEngines[i].gt_id;
+        const auto &engine = queryEngines->engines[i].instance;
+        auto tile = engine.gt_id;
         multiTileMask.set(tile);
         EngineClassInstance engineClassInstance{};
-        engineClassInstance.engineClass = queriedEngines[i].engine_class;
-        engineClassInstance.engineInstance = queriedEngines[i].engine_instance;
-        xeLog("\t%s:%d\n", xeGetClassName(engineClassInstance.engineClass), engineClassInstance.engineInstance);
+        engineClassInstance.engineClass = engine.engine_class;
+        engineClassInstance.engineInstance = engine.engine_instance;
+        xeLog("\t%s:%d:%d\n", xeGetClassName(engineClassInstance.engineClass), engineClassInstance.engineInstance, engine.gt_id);
 
-        if (engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassCompute) ||
-            engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassRender) ||
-            engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassCopy) ||
-            (isSysmanEnabled && (engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassVideo) ||
-                                 engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassVideoEnhance)))) {
+        const bool isBaseEngineClass = engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassCompute) ||
+                                       engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassRender) ||
+                                       engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassCopy);
 
+        const bool isSysmanEngineClass = isSysmanEnabled && (engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassVideo) ||
+                                                             engineClassInstance.engineClass == getDrmParamValue(DrmParam::engineClassVideoEnhance));
+
+        if (isBaseEngineClass || isSysmanEngineClass || isExtraEngineClassAllowed(engineClassInstance.engineClass)) {
             if (enginesPerTile.size() <= tile) {
                 enginesPerTile.resize(tile + 1);
             }
-            enginesPerTile[tile].push_back(engineClassInstance);
-            allEngines.push_back(queriedEngines[i]);
+            enginesPerTile[tile].push_back({engineClassInstance, {}});
+            if (!defaultEngine && engineClassInstance.engineClass == defaultEngineClass) {
+                defaultEngine = std::make_unique<drm_xe_engine_class_instance>();
+                *defaultEngine = engine;
+            }
         }
     }
-
-    auto hwInfo = drm.getRootDeviceEnvironment().getMutableHardwareInfo();
+    UNRECOVERABLE_IF(!defaultEngine);
     if (hwInfo->featureTable.flags.ftrMultiTileArch) {
         auto &multiTileArchInfo = hwInfo->gtSystemInfo.MultiTileArchInfo;
         multiTileArchInfo.IsValid = true;
@@ -244,39 +341,55 @@ std::unique_ptr<EngineInfo> IoctlHelperXe::createEngineInfo(bool isSysmanEnabled
         multiTileArchInfo.TileMask = static_cast<uint8_t>(multiTileMask.to_ulong());
     }
 
-    setDefaultEngine();
-
     return std::make_unique<EngineInfo>(&drm, enginesPerTile);
 }
 
-inline MemoryRegion createMemoryRegionFromXeMemRegion(const drm_xe_mem_region &xeMemRegion) {
+inline MemoryRegion createMemoryRegionFromXeMemRegion(const drm_xe_mem_region &xeMemRegion, std::bitset<4> tilesMask) {
     MemoryRegion memoryRegion{};
     memoryRegion.region.memoryInstance = xeMemRegion.instance;
     memoryRegion.region.memoryClass = xeMemRegion.mem_class;
     memoryRegion.probedSize = xeMemRegion.total_size;
     memoryRegion.unallocatedSize = xeMemRegion.total_size - xeMemRegion.used;
+    memoryRegion.tilesMask = tilesMask;
     return memoryRegion;
 }
 
 std::unique_ptr<MemoryInfo> IoctlHelperXe::createMemoryInfo() {
     auto memUsageData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_MEM_REGIONS);
-    auto gtListData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_GT_LIST);
 
-    if (memUsageData.empty() || gtListData.empty()) {
+    if (memUsageData.empty()) {
         return {};
     }
 
+    constexpr auto maxSupportedTilesNumber{4u};
+    std::array<std::bitset<maxSupportedTilesNumber>, 64> regionTilesMask{};
+
+    for (auto i{0u}; i < xeGtListData->num_gt; i++) {
+        const auto &gtEntry = xeGtListData->gt_list[i];
+        if (gtEntry.type != DRM_XE_QUERY_GT_TYPE_MAIN) {
+            continue;
+        }
+
+        uint64_t nearMemRegions{gtEntry.near_mem_regions};
+        auto regionIndex{Math::log2(nearMemRegions)};
+        regionTilesMask[regionIndex].set(gtEntry.tile_id);
+    }
+
     MemoryInfo::RegionContainer regionsContainer{};
+
     auto xeMemRegionsData = reinterpret_cast<drm_xe_query_mem_regions *>(memUsageData.data());
-    auto xeGtListData = reinterpret_cast<drm_xe_query_gt_list *>(gtListData.data());
-
-    std::array<drm_xe_mem_region *, 64> memoryRegionInstances{};
-
     for (auto i = 0u; i < xeMemRegionsData->num_mem_regions; i++) {
-        auto &region = xeMemRegionsData->mem_regions[i];
-        memoryRegionInstances[region.instance] = &region;
-        if (region.mem_class == DRM_XE_MEM_REGION_CLASS_SYSMEM) {
-            regionsContainer.push_back(createMemoryRegionFromXeMemRegion(region));
+        auto &xeMemRegion{xeMemRegionsData->mem_regions[i]};
+
+        if (xeMemRegion.mem_class == DRM_XE_MEM_REGION_CLASS_SYSMEM) {
+            // Make sure sysmem is always put at the first position
+            regionsContainer.insert(regionsContainer.begin(), createMemoryRegionFromXeMemRegion(xeMemRegion, 0u));
+        } else {
+            auto regionIndex = xeMemRegion.instance;
+            UNRECOVERABLE_IF(regionIndex >= regionTilesMask.size());
+            if (auto tilesMask = regionTilesMask[regionIndex]; tilesMask.any()) {
+                regionsContainer.push_back(createMemoryRegionFromXeMemRegion(xeMemRegion, tilesMask));
+            }
         }
     }
 
@@ -284,16 +397,52 @@ std::unique_ptr<MemoryInfo> IoctlHelperXe::createMemoryInfo() {
         return {};
     }
 
-    for (auto i = 0u; i < xeGtListData->num_gt; i++) {
-        if (xeGtListData->gt_list[i].type != DRM_XE_QUERY_GT_TYPE_MEDIA) {
-            uint64_t nearMemRegions = xeGtListData->gt_list[i].near_mem_regions;
-            auto regionIndex = Math::log2(nearMemRegions);
-            UNRECOVERABLE_IF(!memoryRegionInstances[regionIndex]);
-            regionsContainer.push_back(createMemoryRegionFromXeMemRegion(*memoryRegionInstances[regionIndex]));
-            xeTimestampFrequency = xeGtListData->gt_list[i].reference_clock;
+    return std::make_unique<MemoryInfo>(regionsContainer, drm);
+}
+
+size_t IoctlHelperXe::getLocalMemoryRegionsSize(const MemoryInfo *memoryInfo, uint32_t subDevicesCount, uint32_t tileMask) const {
+    size_t size = 0;
+    for (const auto &memoryRegion : memoryInfo->getLocalMemoryRegions()) {
+        if ((memoryRegion.tilesMask & std::bitset<4>{tileMask}).any()) {
+            size += memoryRegion.probedSize;
         }
     }
-    return std::make_unique<MemoryInfo>(regionsContainer, drm);
+    return size;
+}
+
+void IoctlHelperXe::setupIpVersion() {
+    auto &rootDeviceEnvironment = drm.getRootDeviceEnvironment();
+    auto hwInfo = rootDeviceEnvironment.getMutableHardwareInfo();
+
+    if (auto hwIpVersion = GtIpVersion{}; queryHwIpVersion(hwIpVersion)) {
+        hwInfo->ipVersion.architecture = hwIpVersion.major;
+        hwInfo->ipVersion.release = hwIpVersion.minor;
+        hwInfo->ipVersion.revision = hwIpVersion.revision;
+    } else {
+        xeLog("No HW IP version received from drm_xe_gt. Falling back to default value.");
+        IoctlHelper::setupIpVersion();
+    }
+}
+
+bool IoctlHelperXe::queryHwIpVersion(GtIpVersion &gtIpVersion) {
+    auto gtListData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_GT_LIST);
+    if (gtListData.empty()) {
+        return false;
+    }
+
+    auto xeGtListData = reinterpret_cast<drm_xe_query_gt_list *>(gtListData.data());
+    for (auto i = 0u; i < xeGtListData->num_gt; i++) {
+        auto &gtEntry = xeGtListData->gt_list[i];
+
+        if (gtEntry.type == DRM_XE_QUERY_GT_TYPE_MEDIA || gtEntry.ip_ver_major == 0u) {
+            continue;
+        }
+        gtIpVersion.major = gtEntry.ip_ver_major;
+        gtIpVersion.minor = gtEntry.ip_ver_minor;
+        gtIpVersion.revision = gtEntry.ip_ver_rev;
+        return true;
+    }
+    return false;
 }
 
 bool IoctlHelperXe::setGpuCpuTimes(TimeStampData *pGpuCpuTime, OSTime *osTime) {
@@ -321,6 +470,9 @@ bool IoctlHelperXe::setGpuCpuTimes(TimeStampData *pGpuCpuTime, OSTime *osTime) {
     ret = IoctlHelper::ioctl(DrmIoctl::query, &deviceQuery);
 
     auto nValidBits = queryEngineCycles->width;
+    if (osTime->getDeviceTimestampWidth() != 0) {
+        nValidBits = osTime->getDeviceTimestampWidth();
+    }
     auto gpuTimestampValidBits = maxNBitValue(nValidBits);
     auto gpuCycles = queryEngineCycles->engine_cycles & gpuTimestampValidBits;
 
@@ -332,72 +484,6 @@ bool IoctlHelperXe::setGpuCpuTimes(TimeStampData *pGpuCpuTime, OSTime *osTime) {
     pGpuCpuTime->cpuTimeinNS = queryEngineCycles->cpu_timestamp;
 
     return ret == 0;
-}
-
-bool IoctlHelperXe::getTimestampFrequency(uint64_t &frequency) {
-    frequency = xeTimestampFrequency;
-    return frequency != 0;
-}
-
-void IoctlHelperXe::getTopologyData(size_t nTiles, std::vector<std::bitset<8>> *geomDss, std::vector<std::bitset<8>> *computeDss,
-                                    std::vector<std::bitset<8>> *euDss, DrmQueryTopologyData &topologyData, bool &isComputeDssEmpty) {
-    int subSliceCount = 0;
-    int euPerDss = 0;
-
-    for (auto tileId = 0u; tileId < nTiles; tileId++) {
-
-        int subSliceCountPerTile = 0;
-
-        for (auto byte = 0u; byte < computeDss[tileId].size(); byte++) {
-            subSliceCountPerTile += computeDss[tileId][byte].count();
-        }
-
-        if (subSliceCountPerTile == 0) {
-            isComputeDssEmpty = true;
-            for (auto byte = 0u; byte < geomDss[tileId].size(); byte++) {
-                subSliceCountPerTile += geomDss[tileId][byte].count();
-            }
-        }
-
-        int euPerDssPerTile = 0;
-        for (auto byte = 0u; byte < euDss[tileId].size(); byte++) {
-            euPerDssPerTile += euDss[tileId][byte].count();
-        }
-
-        // pick smallest config
-        subSliceCount = (subSliceCount == 0) ? subSliceCountPerTile : std::min(subSliceCount, subSliceCountPerTile);
-        euPerDss = (euPerDss == 0) ? euPerDssPerTile : std::min(euPerDss, euPerDssPerTile);
-
-        // pick max config
-        topologyData.maxSubSliceCount = std::max(topologyData.maxSubSliceCount, subSliceCountPerTile);
-        topologyData.maxEuPerSubSlice = std::max(topologyData.maxEuPerSubSlice, euPerDssPerTile);
-    }
-
-    topologyData.sliceCount = 1;
-    topologyData.subSliceCount = subSliceCount;
-    topologyData.euCount = subSliceCount * euPerDss;
-    topologyData.maxSliceCount = 1;
-}
-
-void IoctlHelperXe::getTopologyMap(size_t nTiles, std::vector<std::bitset<8>> *dssInfo, TopologyMap &topologyMap) {
-    for (auto tileId = 0u; tileId < nTiles; tileId++) {
-        std::vector<int> sliceIndices;
-        std::vector<int> subSliceIndices;
-
-        sliceIndices.push_back(0);
-
-        for (auto byte = 0u; byte < dssInfo[tileId].size(); byte++) {
-            for (auto bit = 0u; bit < 8u; bit++) {
-                if (dssInfo[tileId][byte].test(bit)) {
-                    auto subSliceIndex = byte * 8 + bit;
-                    subSliceIndices.push_back(subSliceIndex);
-                }
-            }
-        }
-
-        topologyMap[tileId].sliceIndices = std::move(sliceIndices);
-        topologyMap[tileId].subsliceIndices = std::move(subSliceIndices);
-    }
 }
 
 bool IoctlHelperXe::getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQueryTopologyData &topologyData, TopologyMap &topologyMap) {
@@ -413,45 +499,43 @@ bool IoctlHelperXe::getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQueryTo
     StackVec<std::vector<std::bitset<8>>, 2> geomDss;
     StackVec<std::vector<std::bitset<8>>, 2> computeDss;
     StackVec<std::vector<std::bitset<8>>, 2> euDss;
-    StackVec<int, 2> gtIdToTile{-1};
+    StackVec<std::vector<std::bitset<8>>, 2> l3Banks;
 
     auto topologySize = queryGtTopology.size();
     auto dataPtr = queryGtTopology.data();
 
-    auto gtsData = queryData<uint64_t>(DRM_XE_DEVICE_QUERY_GT_LIST);
-    auto xeGtListData = reinterpret_cast<drm_xe_query_gt_list *>(gtsData.data());
-    gtIdToTile.resize(xeGtListData->num_gt, -1);
-
-    auto tileIndex = 0u;
-    for (auto gt = 0u; gt < gtIdToTile.size(); gt++) {
-        if (xeGtListData->gt_list[gt].type != DRM_XE_QUERY_GT_TYPE_MEDIA) {
-            gtIdToTile[gt] = tileIndex++;
-        }
-    }
-
-    geomDss.resize(tileIndex);
-    computeDss.resize(tileIndex);
-    euDss.resize(tileIndex);
+    auto numTiles = tileIdToGtId.size();
+    geomDss.resize(numTiles);
+    computeDss.resize(numTiles);
+    euDss.resize(numTiles);
+    l3Banks.resize(numTiles);
+    bool receivedDssInfo = false;
     while (topologySize >= sizeof(drm_xe_query_topology_mask)) {
         drm_xe_query_topology_mask *topo = reinterpret_cast<drm_xe_query_topology_mask *>(dataPtr);
         UNRECOVERABLE_IF(topo == nullptr);
 
         uint32_t gtId = topo->gt_id;
+        auto tileId = gtIdToTileId[gtId];
 
-        if (xeGtListData->gt_list[gtId].type != DRM_XE_QUERY_GT_TYPE_MEDIA) {
+        if (tileId != invalidIndex) {
             switch (topo->type) {
             case DRM_XE_TOPO_DSS_GEOMETRY:
-                fillMask(geomDss[gtIdToTile[gtId]], topo);
+                fillMask(geomDss[tileId], topo);
+                receivedDssInfo = true;
                 break;
             case DRM_XE_TOPO_DSS_COMPUTE:
-                fillMask(computeDss[gtIdToTile[gtId]], topo);
+                fillMask(computeDss[tileId], topo);
+                receivedDssInfo = true;
+                break;
+            case DRM_XE_TOPO_L3_BANK:
+                fillMask(l3Banks[tileId], topo);
                 break;
             case DRM_XE_TOPO_EU_PER_DSS:
-                fillMask(euDss[gtIdToTile[gtId]], topo);
+            case DRM_XE_TOPO_SIMD16_EU_PER_DSS:
+                fillMask(euDss[tileId], topo);
                 break;
             default:
                 xeLog("Unhandle GT Topo type: %d\n", topo->type);
-                return false;
             }
         }
 
@@ -460,38 +544,111 @@ bool IoctlHelperXe::getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQueryTo
         dataPtr = ptrOffset(dataPtr, itemSize);
     }
 
-    bool isComputeDssEmpty = false;
-    getTopologyData(tileIndex, geomDss.begin(), computeDss.begin(), euDss.begin(), topologyData, isComputeDssEmpty);
+    int sliceCount = 0;
+    int subSliceCount = 0;
+    int euPerDss = 0;
+    int l3BankCount = 0;
+    uint32_t hwMaxSubSliceCount = hwInfo.gtSystemInfo.MaxSubSlicesSupported;
+    topologyData.maxSlices = hwInfo.gtSystemInfo.MaxSlicesSupported ? hwInfo.gtSystemInfo.MaxSlicesSupported : 1;
+    topologyData.maxSubSlicesPerSlice = hwMaxSubSliceCount / topologyData.maxSlices;
 
-    auto &dssInfo = isComputeDssEmpty ? geomDss : computeDss;
-    getTopologyMap(tileIndex, dssInfo.begin(), topologyMap);
+    for (auto tileId = 0u; tileId < numTiles; tileId++) {
 
-    return true;
+        int subSliceCountPerTile = 0;
+
+        std::vector<int> sliceIndices;
+        std::vector<int> subSliceIndices;
+
+        int previouslyEnabledSlice = -1;
+
+        auto processSubSliceInfo = [&](const std::vector<std::bitset<8>> &subSliceInfo) -> void {
+            for (auto subSliceId = 0u; subSliceId < std::min(hwMaxSubSliceCount, static_cast<uint32_t>(subSliceInfo.size() * 8)); subSliceId++) {
+                auto byte = subSliceId / 8;
+                auto bit = subSliceId & 0b111;
+                int sliceId = static_cast<int>(subSliceId / topologyData.maxSubSlicesPerSlice);
+                if (subSliceInfo[byte].test(bit)) {
+                    subSliceIndices.push_back(subSliceId);
+                    subSliceCountPerTile++;
+                    if (sliceId != previouslyEnabledSlice) {
+                        previouslyEnabledSlice = sliceId;
+                        sliceIndices.push_back(sliceId);
+                    }
+                }
+            }
+        };
+        processSubSliceInfo(computeDss[tileId]);
+
+        if (subSliceCountPerTile == 0) {
+            processSubSliceInfo(geomDss[tileId]);
+        }
+
+        topologyMap[tileId].sliceIndices = std::move(sliceIndices);
+        if (topologyMap[tileId].sliceIndices.size() < 2u) {
+            topologyMap[tileId].subsliceIndices = std::move(subSliceIndices);
+        }
+        int sliceCountPerTile = static_cast<int>(topologyMap[tileId].sliceIndices.size());
+
+        int euPerDssPerTile = 0;
+        for (auto byte = 0u; byte < euDss[tileId].size(); byte++) {
+            euPerDssPerTile += euDss[tileId][byte].count();
+        }
+
+        int l3BankCountPerTile = 0;
+        for (auto byte = 0u; byte < l3Banks[tileId].size(); byte++) {
+            l3BankCountPerTile += l3Banks[tileId][byte].count();
+        }
+
+        // pick smallest config
+        sliceCount = (sliceCount == 0) ? sliceCountPerTile : std::min(sliceCount, sliceCountPerTile);
+        subSliceCount = (subSliceCount == 0) ? subSliceCountPerTile : std::min(subSliceCount, subSliceCountPerTile);
+        euPerDss = (euPerDss == 0) ? euPerDssPerTile : std::min(euPerDss, euPerDssPerTile);
+        l3BankCount = (l3BankCount == 0) ? l3BankCountPerTile : std::min(l3BankCount, l3BankCountPerTile);
+
+        // pick max config
+        topologyData.maxEusPerSubSlice = std::max(topologyData.maxEusPerSubSlice, euPerDssPerTile);
+    }
+
+    topologyData.sliceCount = sliceCount;
+    topologyData.subSliceCount = subSliceCount;
+    topologyData.euCount = subSliceCount * euPerDss;
+    topologyData.numL3Banks = l3BankCount;
+    return receivedDssInfo;
 }
 
-void IoctlHelperXe::updateBindInfo(uint32_t handle, uint64_t userPtr, uint64_t size) {
+void IoctlHelperXe::updateBindInfo(uint64_t userPtr) {
     std::unique_lock<std::mutex> lock(xeLock);
-    BindInfo b = {handle, userPtr, 0, size};
+    BindInfo b = {userPtr, 0};
     bindInfo.push_back(b);
 }
 
-void IoctlHelperXe::setDefaultEngine() {
-    auto defaultEngineClass = DRM_XE_ENGINE_CLASS_COMPUTE;
-
-    for (auto i = 0u; i < allEngines.size(); i++) {
-        if (allEngines[i].engine_class == defaultEngineClass) {
-            defaultEngine = xeFindMatchingEngine(defaultEngineClass, allEngines[i].engine_instance);
-            break;
-        }
-    }
-
-    if (defaultEngine == nullptr) {
+uint16_t IoctlHelperXe::getDefaultEngineClass(const aub_stream::EngineType &defaultEngineType) {
+    if (defaultEngineType == aub_stream::EngineType::ENGINE_CCS) {
+        return DRM_XE_ENGINE_CLASS_COMPUTE;
+    } else if (defaultEngineType == aub_stream::EngineType::ENGINE_RCS) {
+        return DRM_XE_ENGINE_CLASS_RENDER;
+    } else {
+        /* So far defaultEngineType is either ENGINE_RCS or ENGINE_CCS */
         UNRECOVERABLE_IF(true);
+        return 0;
     }
 }
 
-uint16_t IoctlHelperXe::getCpuCachingMode() {
+/**
+ * @brief returns caching policy for new allocation.
+ * For system memory caching policy is write-back, otherwise it's write-combined.
+ *
+ * @param[in] allocationInSystemMemory flag that indicates if allocation will be allocated in system memory
+ *
+ * @return returns caching policy defined as DRM_XE_GEM_CPU_CACHING_WC or DRM_XE_GEM_CPU_CACHING_WB
+ */
+uint16_t IoctlHelperXe::getCpuCachingMode(std::optional<bool> isCoherent, bool allocationInSystemMemory) const {
     uint16_t cpuCachingMode = DRM_XE_GEM_CPU_CACHING_WC;
+    if (allocationInSystemMemory) {
+        if ((isCoherent.value_or(true) == true)) {
+            cpuCachingMode = DRM_XE_GEM_CPU_CACHING_WB;
+        }
+    }
+
     if (debugManager.flags.OverrideCpuCaching.get() != -1) {
         cpuCachingMode = debugManager.flags.OverrideCpuCaching.get();
     }
@@ -499,7 +656,7 @@ uint16_t IoctlHelperXe::getCpuCachingMode() {
     return cpuCachingMode;
 }
 
-int IoctlHelperXe::createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, std::optional<uint32_t> memPolicyMode, std::optional<std::vector<unsigned long>> memPolicyNodemask) {
+int IoctlHelperXe::createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, std::optional<uint32_t> memPolicyMode, std::optional<std::vector<unsigned long>> memPolicyNodemask, std::optional<bool> isCoherent) {
     struct drm_xe_gem_create create = {};
     uint32_t regionsSize = static_cast<uint32_t>(memClassInstances.size());
 
@@ -508,29 +665,38 @@ int IoctlHelperXe::createGemExt(const MemRegionsVec &memClassInstances, size_t a
         return -1;
     }
 
-    if (vmId != std::nullopt) {
-        create.vm_id = vmId.value();
-    }
-
     create.size = allocSize;
     MemoryClassInstance mem = memClassInstances[regionsSize - 1];
     std::bitset<32> memoryInstances{};
+    bool isSysMemOnly = true;
     for (const auto &memoryClassInstance : memClassInstances) {
         memoryInstances.set(memoryClassInstance.memoryInstance);
+        if (memoryClassInstance.memoryClass != drm_xe_memory_class::DRM_XE_MEM_REGION_CLASS_SYSMEM) {
+            isSysMemOnly = false;
+        }
     }
     create.placement = static_cast<uint32_t>(memoryInstances.to_ulong());
-    create.cpu_caching = this->getCpuCachingMode();
+    create.cpu_caching = this->getCpuCachingMode(isCoherent, isSysMemOnly);
+
+    if (debugManager.flags.EnableDeferBacking.get()) {
+        create.flags |= DRM_XE_GEM_CREATE_FLAG_DEFER_BACKING;
+    }
+
+    printDebugString(debugManager.flags.PrintBOCreateDestroyResult.get(), stdout, "Performing DRM_IOCTL_XE_GEM_CREATE with {vmid=0x%x size=0x%lx flags=0x%x placement=0x%x caching=%hu }",
+                     create.vm_id, create.size, create.flags, create.placement, create.cpu_caching);
+
     auto ret = IoctlHelper::ioctl(DrmIoctl::gemCreate, &create);
     handle = create.handle;
 
-    xeLog(" -> IoctlHelperXe::%s [%d,%d] vmid=0x%x s=0x%lx p=0x%x f=0x%x h=0x%x r=%d\n", __FUNCTION__,
+    printDebugString(debugManager.flags.PrintBOCreateDestroyResult.get(), stdout, "DRM_IOCTL_XE_GEM_CREATE has returned: %d BO-%u with size: %lu\n", ret, handle, create.size);
+
+    xeLog(" -> IoctlHelperXe::%s [%d,%d] vmid=0x%x s=0x%lx f=0x%x p=0x%x h=0x%x c=%hu r=%d\n", __FUNCTION__,
           mem.memoryClass, mem.memoryInstance,
-          create.vm_id, create.size, create.flags, create.placement, handle, ret);
-    updateBindInfo(create.handle, 0u, create.size);
+          create.vm_id, create.size, create.flags, create.placement, handle, create.cpu_caching, ret);
     return ret;
 }
 
-uint32_t IoctlHelperXe::createGem(uint64_t size, uint32_t memoryBanks) {
+uint32_t IoctlHelperXe::createGem(uint64_t size, uint32_t memoryBanks, std::optional<bool> isCoherent) {
     struct drm_xe_gem_create create = {};
     create.size = size;
     auto pHwInfo = drm.getRootDeviceEnvironment().getHardwareInfo();
@@ -539,10 +705,14 @@ uint32_t IoctlHelperXe::createGem(uint64_t size, uint32_t memoryBanks) {
     auto banks = std::bitset<4>(memoryBanks);
     size_t currentBank = 0;
     size_t i = 0;
+    bool isSysMemOnly = true;
     while (i < banks.count()) {
         if (banks.test(currentBank)) {
             auto regionClassAndInstance = memoryInfo->getMemoryRegionClassAndInstance(1u << currentBank, *pHwInfo);
             memoryInstances.set(regionClassAndInstance.memoryInstance);
+            if (regionClassAndInstance.memoryClass != drm_xe_memory_class::DRM_XE_MEM_REGION_CLASS_SYSMEM) {
+                isSysMemOnly = false;
+            }
             i++;
         }
         currentBank++;
@@ -552,14 +722,26 @@ uint32_t IoctlHelperXe::createGem(uint64_t size, uint32_t memoryBanks) {
         memoryInstances.set(regionClassAndInstance.memoryInstance);
     }
     create.placement = static_cast<uint32_t>(memoryInstances.to_ulong());
-    create.cpu_caching = this->getCpuCachingMode();
+    create.cpu_caching = this->getCpuCachingMode(isCoherent, isSysMemOnly);
+
+    if (debugManager.flags.EnableDeferBacking.get()) {
+        create.flags |= DRM_XE_GEM_CREATE_FLAG_DEFER_BACKING;
+    }
+
+    printDebugString(debugManager.flags.PrintBOCreateDestroyResult.get(), stdout, "Performing DRM_IOCTL_XE_GEM_CREATE with {vmid=0x%x size=0x%lx flags=0x%x placement=0x%x caching=%hu }",
+                     create.vm_id, create.size, create.flags, create.placement, create.cpu_caching);
+
     [[maybe_unused]] auto ret = ioctl(DrmIoctl::gemCreate, &create);
+
+    printDebugString(debugManager.flags.PrintBOCreateDestroyResult.get(), stdout, "DRM_IOCTL_XE_GEM_CREATE has returned: %d BO-%u with size: %lu\n", ret, create.handle, create.size);
+
+    xeLog(" -> IoctlHelperXe::%s vmid=0x%x s=0x%lx f=0x%x p=0x%x h=0x%x c=%hu r=%d\n", __FUNCTION__,
+          create.vm_id, create.size, create.flags, create.placement, create.handle, create.cpu_caching, ret);
     DEBUG_BREAK_IF(ret != 0);
-    updateBindInfo(create.handle, 0u, create.size);
     return create.handle;
 }
 
-CacheRegion IoctlHelperXe::closAlloc() {
+CacheRegion IoctlHelperXe::closAlloc(CacheLevel cacheLevel) {
     xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
     return CacheRegion::none;
 }
@@ -574,45 +756,35 @@ CacheRegion IoctlHelperXe::closFree(CacheRegion closIndex) {
     return CacheRegion::none;
 }
 
-int IoctlHelperXe::xeWaitUserFence(uint32_t ctxId, uint64_t mask, uint16_t op, uint64_t addr, uint64_t value,
-                                   int64_t timeout) {
-    struct drm_xe_wait_user_fence wait = {};
-    wait.addr = addr;
-    wait.op = op;
-    wait.value = value;
-    wait.mask = mask;
-    wait.timeout = timeout;
-    wait.exec_queue_id = ctxId;
-    auto retVal = IoctlHelper::ioctl(DrmIoctl::gemWaitUserFence, &wait);
-    xeLog(" -> IoctlHelperXe::%s a=0x%llx v=0x%llx T=0x%llx F=0x%x retVal=0x%x\n", __FUNCTION__, addr, value,
-          timeout, wait.flags, retVal);
+void IoctlHelperXe::setupXeWaitUserFenceStruct(void *arg, uint32_t ctxId, uint16_t op, uint64_t addr, uint64_t value, int64_t timeout) {
+    auto waitUserFence = reinterpret_cast<drm_xe_wait_user_fence *>(arg);
+    waitUserFence->addr = addr;
+    waitUserFence->op = op;
+    waitUserFence->value = value;
+    waitUserFence->mask = std::numeric_limits<uint64_t>::max();
+    waitUserFence->timeout = timeout;
+    waitUserFence->exec_queue_id = ctxId;
+}
+
+int IoctlHelperXe::xeWaitUserFence(uint32_t ctxId, uint16_t op, uint64_t addr, uint64_t value, int64_t timeout, bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
+    UNRECOVERABLE_IF(addr == 0x0)
+    drm_xe_wait_user_fence waitUserFence = {};
+
+    setupXeWaitUserFenceStruct(&waitUserFence, ctxId, op, addr, value, timeout);
+
+    auto retVal = IoctlHelper::ioctl(DrmIoctl::gemWaitUserFence, &waitUserFence);
+    xeLog(" -> IoctlHelperXe::%s a=0x%llx v=0x%llx T=0x%llx F=0x%x ctx=0x%x retVal=0x%x\n", __FUNCTION__,
+          addr, value, timeout, waitUserFence.flags, ctxId, retVal);
     return retVal;
 }
 
 int IoctlHelperXe::waitUserFence(uint32_t ctxId, uint64_t address,
-                                 uint64_t value, uint32_t dataWidth, int64_t timeout, uint16_t flags) {
-    xeLog(" -> IoctlHelperXe::%s a=0x%llx v=0x%llx w=0x%x T=0x%llx F=0x%x\n", __FUNCTION__, address, value, dataWidth, timeout, flags);
-    uint64_t mask;
-    switch (dataWidth) {
-    case static_cast<uint32_t>(Drm::ValueWidth::u64):
-        mask = DRM_XE_UFENCE_WAIT_MASK_U64;
-        break;
-    case static_cast<uint32_t>(Drm::ValueWidth::u32):
-        mask = DRM_XE_UFENCE_WAIT_MASK_U32;
-        break;
-    case static_cast<uint32_t>(Drm::ValueWidth::u16):
-        mask = DRM_XE_UFENCE_WAIT_MASK_U16;
-        break;
-    default:
-        mask = DRM_XE_UFENCE_WAIT_MASK_U8;
-        break;
-    }
-    if (timeout == -1) {
-        /* expected in i915 but not in xe where timeout is an unsigned long */
-        timeout = TimeoutControls::maxTimeout;
-    }
+                                 uint64_t value, uint32_t dataWidth, int64_t timeout, uint16_t flags,
+                                 bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
+    xeLog(" -> IoctlHelperXe::%s a=0x%llx v=0x%llx w=0x%x T=0x%llx F=0x%x ctx=0x%x\n", __FUNCTION__, address, value, dataWidth, timeout, flags, ctxId);
+    UNRECOVERABLE_IF(dataWidth != static_cast<uint32_t>(Drm::ValueWidth::u64));
     if (address) {
-        return xeWaitUserFence(ctxId, mask, DRM_XE_UFENCE_WAIT_OP_GTE, address, value, timeout);
+        return xeWaitUserFence(ctxId, DRM_XE_UFENCE_WAIT_OP_GTE, address, value, timeout, userInterrupt, externalInterruptId, allocForInterruptWait);
     }
     return 0;
 }
@@ -638,16 +810,51 @@ std::optional<MemoryClassInstance> IoctlHelperXe::getPreferredLocationRegion(Pre
 
 bool IoctlHelperXe::setVmBoAdvise(int32_t handle, uint32_t attribute, void *region) {
     xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return false;
+    // There is no vmAdvise attribute in Xe, so return success
+    return true;
 }
 
 bool IoctlHelperXe::setVmBoAdviseForChunking(int32_t handle, uint64_t start, uint64_t length, uint32_t attribute, void *region) {
-    return false;
+    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
+    // There is no vmAdvise attribute in Xe, so return success
+    return true;
 }
 
 bool IoctlHelperXe::setVmPrefetch(uint64_t start, uint64_t length, uint32_t region, uint32_t vmId) {
-    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return false;
+    xeLog(" -> IoctlHelperXe::%s s=0x%llx l=0x%llx vmid=0x%x\n", __FUNCTION__, start, length, vmId);
+    drm_xe_vm_bind bind = {};
+    bind.vm_id = vmId;
+    bind.num_binds = 1;
+
+    bind.bind.range = length;
+    bind.bind.addr = start;
+    bind.bind.op = DRM_XE_VM_BIND_OP_PREFETCH;
+
+    auto pHwInfo = this->drm.getRootDeviceEnvironment().getHardwareInfo();
+    constexpr uint32_t subDeviceMaskSize = DeviceBitfield().size();
+    constexpr uint32_t subDeviceMaskMax = (1u << subDeviceMaskSize) - 1u;
+    uint32_t subDeviceId = region & subDeviceMaskMax;
+    DeviceBitfield subDeviceMask = (1u << subDeviceId);
+    MemoryClassInstance regionInstanceClass = this->drm.getMemoryInfo()->getMemoryRegionClassAndInstance(subDeviceMask, *pHwInfo);
+    bind.bind.prefetch_mem_region_instance = regionInstanceClass.memoryInstance;
+
+    int ret = IoctlHelper::ioctl(DrmIoctl::gemVmBind, &bind);
+
+    xeLog(" vm=%d addr=0x%lx range=0x%lx region=0x%x operation=%d(%s) ret=%d\n",
+          bind.vm_id,
+          bind.bind.addr,
+          bind.bind.range,
+          bind.bind.prefetch_mem_region_instance,
+          bind.bind.op,
+          xeGetBindOperationName(bind.bind.op),
+          ret);
+
+    if (ret != 0) {
+        xeLog("error: %s ret=%d\n", xeGetBindOperationName(bind.bind.op), ret);
+        return false;
+    }
+
+    return true;
 }
 
 uint32_t IoctlHelperXe::getDirectSubmissionFlag() {
@@ -735,24 +942,23 @@ bool IoctlHelperXe::completionFenceExtensionSupported(const bool isVmBindAvailab
     return isVmBindAvailable;
 }
 
-std::unique_ptr<uint8_t[]> IoctlHelperXe::prepareVmBindExt(const StackVec<uint32_t, 2> &bindExtHandles) {
-    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return {};
-}
-
-uint64_t IoctlHelperXe::getFlagsForVmBind(bool bindCapture, bool bindImmediate, bool bindMakeResident) {
-    uint64_t ret = 0;
-    xeLog(" -> IoctlHelperXe::%s %d %d %d\n", __FUNCTION__, bindCapture, bindImmediate, bindMakeResident);
+uint64_t IoctlHelperXe::getFlagsForVmBind(bool bindCapture, bool bindImmediate, bool bindMakeResident, bool bindLock, bool readOnlyResource) {
+    uint64_t flags = 0;
+    xeLog(" -> IoctlHelperXe::%s %d %d %d %d %d\n", __FUNCTION__, bindCapture, bindImmediate, bindMakeResident, bindLock, readOnlyResource);
     if (bindCapture) {
-        ret |= XE_NEO_BIND_CAPTURE_FLAG;
+        flags |= DRM_XE_VM_BIND_FLAG_DUMPABLE;
     }
     if (bindImmediate) {
-        ret |= XE_NEO_BIND_IMMEDIATE_FLAG;
+        flags |= DRM_XE_VM_BIND_FLAG_IMMEDIATE;
+    }
+
+    if (readOnlyResource) {
+        flags |= DRM_XE_VM_BIND_FLAG_READONLY;
     }
     if (bindMakeResident) {
-        ret |= XE_NEO_BIND_MAKERESIDENT_FLAG;
+        flags |= DRM_XE_VM_BIND_FLAG_IMMEDIATE;
     }
-    return ret;
+    return flags;
 }
 
 int IoctlHelperXe::queryDistances(std::vector<QueryItem> &queryItems, std::vector<DistanceInfo> &distanceInfos) {
@@ -760,20 +966,15 @@ int IoctlHelperXe::queryDistances(std::vector<QueryItem> &queryItems, std::vecto
     return 0;
 }
 
-std::optional<DrmParam> IoctlHelperXe::getHasPageFaultParamId() {
-    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return {};
-};
+bool IoctlHelperXe::isPageFaultSupported() {
+    xeLog(" -> IoctlHelperXe::%s %d\n", __FUNCTION__, false);
 
-bool IoctlHelperXe::getEuStallProperties(std::array<uint64_t, 12u> &properties, uint64_t dssBufferSize, uint64_t samplingRate,
-                                         uint64_t pollPeriod, uint64_t engineInstance, uint64_t notifyNReports) {
-    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
     return false;
-}
+};
 
 uint32_t IoctlHelperXe::getEuStallFdParameter() {
     xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return 0;
+    return 0u;
 }
 
 std::unique_ptr<uint8_t[]> IoctlHelperXe::createVmControlExtRegion(const std::optional<MemoryClassInstance> &regionInstanceClass) {
@@ -783,15 +984,12 @@ std::unique_ptr<uint8_t[]> IoctlHelperXe::createVmControlExtRegion(const std::op
 
 uint32_t IoctlHelperXe::getFlagsForVmCreate(bool disableScratch, bool enablePageFault, bool useVmBind) {
     xeLog(" -> IoctlHelperXe::%s %d,%d,%d\n", __FUNCTION__, disableScratch, enablePageFault, useVmBind);
-    uint32_t flags = 0u;
-    if (disableScratch) {
-        flags |= XE_NEO_VMCREATE_DISABLESCRATCH_FLAG;
-    }
+    uint32_t flags = DRM_XE_VM_CREATE_FLAG_LR_MODE;
     if (enablePageFault) {
-        flags |= XE_NEO_VMCREATE_ENABLEPAGEFAULT_FLAG;
+        flags |= DRM_XE_VM_CREATE_FLAG_FAULT_MODE;
     }
-    if (useVmBind) {
-        flags |= XE_NEO_VMCREATE_USEVMBIND_FLAG;
+    if (!disableScratch) {
+        flags |= DRM_XE_VM_CREATE_FLAG_SCRATCH_PAGE;
     }
     return flags;
 }
@@ -819,19 +1017,16 @@ void IoctlHelperXe::fillVmBindExtUserFence(VmBindExtUserFenceT &vmBindExtUserFen
     xeBindExtUserFence->value = fenceValue;
 }
 
-std::optional<uint64_t> IoctlHelperXe::getCopyClassSaturatePCIECapability() {
+void IoctlHelperXe::setVmBindUserFence(VmBindParams &vmBind, VmBindExtUserFenceT vmBindUserFence) {
     xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return {};
+    vmBind.userFence = castToUint64(vmBindUserFence);
+    return;
 }
 
-std::optional<uint64_t> IoctlHelperXe::getCopyClassSaturateLinkCapability() {
+std::optional<uint32_t> IoctlHelperXe::getVmAdviseAtomicAttribute() {
     xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
+    // There is no vmAdvise attribute in Xe
     return {};
-}
-
-uint32_t IoctlHelperXe::getVmAdviseAtomicAttribute() {
-    xeLog(" -> IoctlHelperXe::%s\n", __FUNCTION__);
-    return 0;
 }
 
 int IoctlHelperXe::vmBind(const VmBindParams &vmBindParams) {
@@ -840,6 +1035,10 @@ int IoctlHelperXe::vmBind(const VmBindParams &vmBindParams) {
 
 int IoctlHelperXe::vmUnbind(const VmBindParams &vmBindParams) {
     return xeVmBind(vmBindParams, false);
+}
+
+int IoctlHelperXe::getResetStats(ResetStats &resetStats, uint32_t *status, ResetStatsFault *resetStatsFault) {
+    return ioctl(DrmIoctl::getResetStats, &resetStats);
 }
 
 UuidRegisterResult IoctlHelperXe::registerUuid(const std::string &uuid, uint32_t uuidClass, uint64_t ptr, uint64_t size) {
@@ -866,7 +1065,7 @@ int IoctlHelperXe::setContextDebugFlag(uint32_t drmContextId) {
 }
 
 bool IoctlHelperXe::isDebugAttachAvailable() {
-    return false;
+    return true;
 }
 
 int IoctlHelperXe::getDrmParamValue(DrmParam drmParam) const {
@@ -889,6 +1088,12 @@ int IoctlHelperXe::getDrmParamValue(DrmParam drmParam) const {
         return DRM_XE_ENGINE_CLASS_COMPUTE;
     case DrmParam::engineClassInvalid:
         return -1;
+    case DrmParam::execDefault:
+        return DRM_XE_ENGINE_CLASS_COMPUTE;
+    case DrmParam::execBlt:
+        return DRM_XE_ENGINE_CLASS_COPY;
+    case DrmParam::execRender:
+        return DRM_XE_ENGINE_CLASS_RENDER;
 
     default:
         return getDrmParamValueBase(drmParam);
@@ -904,34 +1109,16 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
     xeLog(" => IoctlHelperXe::%s 0x%x\n", __FUNCTION__, request);
     switch (request) {
     case DrmIoctl::getparam: {
-        struct GetParam *d = (struct GetParam *)arg;
+        auto getParam = reinterpret_cast<GetParam *>(arg);
         ret = 0;
-        switch (d->param) {
-        case static_cast<int>(DrmParam::paramChipsetId):
-            *d->value = chipsetId;
-            break;
-        case static_cast<int>(DrmParam::paramRevision):
-            *d->value = revId;
-            break;
-        case static_cast<int>(DrmParam::paramHasPageFault):
-            *d->value = 0;
-            break;
-        case static_cast<int>(DrmParam::paramHasExecSoftpin):
-            *d->value = 1;
-            break;
-        case static_cast<int>(DrmParam::paramHasScheduler):
-            *d->value = static_cast<int>(0x80000037);
-            break;
+        switch (getParam->param) {
         case static_cast<int>(DrmParam::paramCsTimestampFrequency): {
-            uint64_t frequency = 0;
-            if (getTimestampFrequency(frequency)) {
-                *d->value = static_cast<int>(frequency);
-            }
+            *getParam->value = xeGtListData->gt_list[defaultEngine->gt_id].reference_clock;
         } break;
         default:
             ret = -1;
         }
-        xeLog(" -> IoctlHelperXe::ioctl Getparam 0x%x/0x%x r=%d\n", d->param, *d->value, ret);
+        xeLog(" -> IoctlHelperXe::ioctl Getparam 0x%x/0x%x r=%d\n", getParam->param, *getParam->value, ret);
     } break;
 
     case DrmIoctl::query: {
@@ -961,25 +1148,18 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
     } break;
     case DrmIoctl::gemUserptr: {
         GemUserPtr *d = static_cast<GemUserPtr *>(arg);
-        d->handle = userPtrHandle++ | XE_USERPTR_FAKE_FLAG;
-        updateBindInfo(d->handle, d->userPtr, d->userSize);
+        updateBindInfo(d->userPtr);
         ret = 0;
-        xeLog(" -> IoctlHelperXe::ioctl GemUserptrGemUserptr p=0x%llx s=0x%llx f=0x%x h=0x%x r=%d\n", d->userPtr,
+        xeLog(" -> IoctlHelperXe::ioctl GemUserptr p=0x%llx s=0x%llx f=0x%x h=0x%x r=%d\n", d->userPtr,
               d->userSize, d->flags, d->handle, ret);
         xeShowBindTable();
-    } break;
-    case DrmIoctl::gemContextCreateExt: {
-        UNRECOVERABLE_IF(true);
     } break;
     case DrmIoctl::gemContextDestroy: {
         GemContextDestroy *d = static_cast<GemContextDestroy *>(arg);
         struct drm_xe_exec_queue_destroy destroy = {};
         destroy.exec_queue_id = d->contextId;
-        if (d->contextId != 0xffffffff)
-            ret = IoctlHelper::ioctl(request, &destroy);
-        else
-            ret = 0;
-        xeLog(" -> IoctlHelperXe::ioctl GemContextDestroryExt ctx=0x%x r=%d\n",
+        ret = IoctlHelper::ioctl(request, &destroy);
+        xeLog(" -> IoctlHelperXe::ioctl GemContextDestrory ctx=0x%x r=%d\n",
               d->contextId, ret);
     } break;
     case DrmIoctl::gemContextGetparam: {
@@ -991,12 +1171,6 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
         case static_cast<int>(DrmParam::contextParamGttSize):
             d->value = addressSpace + 1u;
             break;
-        case static_cast<int>(DrmParam::contextParamSseu):
-            d->value = 0x55fdd94d4e40;
-            break;
-        case static_cast<int>(DrmParam::contextParamPersistence):
-            d->value = 0x1;
-            break;
         default:
             ret = -1;
             break;
@@ -1004,32 +1178,18 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
         xeLog(" -> IoctlHelperXe::ioctl GemContextGetparam r=%d\n", ret);
     } break;
     case DrmIoctl::gemContextSetparam: {
-        GemContextParam *d = static_cast<GemContextParam *>(arg);
-        switch (d->param) {
-        case static_cast<int>(DrmParam::contextParamPersistence):
-            if (d->value == 0)
-                ret = 0;
-            break;
+        GemContextParam *gemContextParam = static_cast<GemContextParam *>(arg);
+        switch (gemContextParam->param) {
         case static_cast<int>(DrmParam::contextParamEngines): {
-            auto contextEngine = reinterpret_cast<ContextParamEngines<> *>(d->value);
-            int items = (d->size - sizeof(uint64_t)) / sizeof(uint32_t);
-            contextParamEngine.clear();
-            if (items < 11) {
-                for (int i = 0; i < items; i++) {
-                    drm_xe_engine_class_instance engine = {
-                        contextEngine->engines[i].engineClass,
-                        contextEngine->engines[i].engineInstance,
-                        0};
-                    if (engine.engine_class != 65535)
-                        contextParamEngine.push_back(engine);
-                }
+            auto contextEngine = reinterpret_cast<ContextParamEngines<> *>(gemContextParam->value);
+            if (!contextEngine || contextEngine->numEnginesInContext == 0) {
+                break;
             }
-            if (contextParamEngine.size())
-                ret = 0;
-        } break;
-        case contextPrivateParamBoost:
+            auto numEngines = contextEngine->numEnginesInContext;
+            contextParamEngine.resize(numEngines);
+            memcpy_s(contextParamEngine.data(), numEngines * sizeof(uint64_t), contextEngine->enginesData, numEngines * sizeof(uint64_t));
             ret = 0;
-            break;
+        } break;
         default:
             ret = -1;
             break;
@@ -1037,56 +1197,36 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
         xeLog(" -> IoctlHelperXe::ioctl GemContextSetparam r=%d\n", ret);
     } break;
     case DrmIoctl::gemClose: {
+        std::unique_lock<std::mutex> lock(gemCloseLock);
         struct GemClose *d = static_cast<struct GemClose *>(arg);
-        int found = -1;
         xeShowBindTable();
-        for (unsigned int i = 0; i < bindInfo.size(); i++) {
-            if (d->handle == bindInfo[i].handle) {
-                found = i;
-                break;
+        bool isUserptr = false;
+        if (d->userptr) {
+            std::unique_lock<std::mutex> lock(xeLock);
+            for (unsigned int i = 0; i < bindInfo.size(); i++) {
+                if (d->userptr == bindInfo[i].userptr) {
+                    isUserptr = true;
+                    xeLog(" removing 0x%x 0x%lx\n",
+                          bindInfo[i].userptr,
+                          bindInfo[i].addr);
+                    bindInfo.erase(bindInfo.begin() + i);
+                    ret = 0;
+                    break;
+                }
             }
         }
-        if (found != -1) {
-            xeLog(" removing %d: 0x%x 0x%lx 0x%lx\n",
-                  found,
-                  bindInfo[found].handle,
-                  bindInfo[found].userptr,
-                  bindInfo[found].addr);
-            {
-                std::unique_lock<std::mutex> lock(xeLock);
-                bindInfo.erase(bindInfo.begin() + found);
-            }
-            if (d->handle & XE_USERPTR_FAKE_FLAG) {
-                // nothing to do under XE
-                ret = 0;
-            } else {
-                ret = IoctlHelper::ioctl(request, arg);
-            }
-        } else {
-            ret = 0; // let it pass trough for now
+        if (!isUserptr) {
+            ret = IoctlHelper::ioctl(request, arg);
         }
-        xeLog(" -> IoctlHelperXe::ioctl GemClose found=%d h=0x%x r=%d\n", found, d->handle, ret);
+        xeLog(" -> IoctlHelperXe::ioctl GemClose h=0x%x r=%d\n", d->handle, ret);
     } break;
     case DrmIoctl::gemVmCreate: {
-        GemVmControl *d = static_cast<GemVmControl *>(arg);
+        GemVmControl *vmControl = static_cast<GemVmControl *>(arg);
         struct drm_xe_vm_create args = {};
-        args.flags = DRM_XE_VM_CREATE_FLAG_LR_MODE;
-        if (drm.hasPageFaultSupport()) {
-            args.flags |= DRM_XE_VM_CREATE_FLAG_FAULT_MODE;
-        }
-
-        if (drm.getRootDeviceEnvironment().executionEnvironment.getDebuggingMode() != DebuggingMode::disabled) {
-            args.extensions = reinterpret_cast<unsigned long long>(allocateDebugMetadata());
-        }
+        args.flags = vmControl->flags;
         ret = IoctlHelper::ioctl(request, &args);
-        if (drm.getRootDeviceEnvironment().executionEnvironment.getDebuggingMode() != DebuggingMode::disabled) {
-            args.extensions = reinterpret_cast<unsigned long long>(freeDebugMetadata(reinterpret_cast<void *>(args.extensions)));
-        }
-
-        d->vmId = ret ? 0 : args.vm_id;
-        d->flags = ret ? 0 : args.flags;
-        xeVmId = d->vmId;
-        xeLog(" -> IoctlHelperXe::ioctl gemVmCreate vmid=0x%x r=%d\n", d->vmId, ret);
+        vmControl->vmId = args.vm_id;
+        xeLog(" -> IoctlHelperXe::ioctl gemVmCreate f=0x%x vmid=0x%x r=%d\n", vmControl->flags, vmControl->vmId, ret);
 
     } break;
     case DrmIoctl::gemVmDestroy: {
@@ -1104,20 +1244,23 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
         mmo.handle = d->handle;
         ret = IoctlHelper::ioctl(request, &mmo);
         d->offset = mmo.offset;
-        xeLog(" -> IoctlHelperXe::ioctl GemMmapOffset h=0x%x o=0x%x r=%d\n",
-              d->handle, d->offset, ret);
+        xeLog(" -> IoctlHelperXe::ioctl GemMmapOffset h=0x%x o=0x%x f=0x%x r=%d\n",
+              d->handle, d->offset, d->flags, ret);
     } break;
     case DrmIoctl::getResetStats: {
-        ResetStats *d = static_cast<ResetStats *>(arg);
-        //    d->batchActive = 1; // fake gpu hang
-        ret = 0;
-        xeLog(" -> IoctlHelperXe::ioctl GetResetStats ctx=0x%x r=%d\n",
-              d->contextId, ret);
+        ResetStats *resetStats = static_cast<ResetStats *>(arg);
+        drm_xe_exec_queue_get_property getProperty{};
+        getProperty.exec_queue_id = resetStats->contextId;
+        getProperty.property = DRM_XE_EXEC_QUEUE_GET_PROPERTY_BAN;
+        ret = IoctlHelper::ioctl(request, &getProperty);
+        resetStats->batchPending = static_cast<uint32_t>(getProperty.value);
+        xeLog(" -> IoctlHelperXe::ioctl GetResetStats ctx=0x%x r=%d value=%llu\n",
+              resetStats->contextId, ret, getProperty.value);
     } break;
     case DrmIoctl::primeFdToHandle: {
         PrimeHandle *prime = static_cast<PrimeHandle *>(arg);
         ret = IoctlHelper::ioctl(request, arg);
-        xeLog(" ->PrimeFdToHandle  h=0x%x f=0x%x d=0x%x r=%d\n",
+        xeLog(" ->PrimeFdToHandle h=0x%x f=0x%x d=0x%x r=%d\n",
               prime->handle, prime->flags, prime->fileDescriptor, ret);
     } break;
     case DrmIoctl::primeHandleToFd: {
@@ -1129,9 +1272,22 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
     case DrmIoctl::gemCreate: {
         drm_xe_gem_create *gemCreate = static_cast<drm_xe_gem_create *>(arg);
         ret = IoctlHelper::ioctl(request, arg);
-        xeLog(" -> IoctlHelperXe::ioctl GemCreate h=0x%x s=0x%lx p=0x%x f=0x%x r=%d\n",
-              gemCreate->handle, gemCreate->size, gemCreate->flags, ret);
+        xeLog(" -> IoctlHelperXe::ioctl GemCreate h=0x%x s=0x%lx p=0x%x f=0x%x vmid=0x%x r=%d\n",
+              gemCreate->handle, gemCreate->size, gemCreate->placement, gemCreate->flags, gemCreate->vm_id, ret);
     } break;
+    case DrmIoctl::debuggerOpen: {
+        ret = debuggerOpenIoctl(request, arg);
+    } break;
+    case DrmIoctl::metadataCreate: {
+        ret = debuggerMetadataCreateIoctl(request, arg);
+    } break;
+    case DrmIoctl::metadataDestroy: {
+        ret = debuggerMetadataDestroyIoctl(request, arg);
+    } break;
+    case DrmIoctl::perfOpen: {
+        ret = perfOpenIoctl(request, arg);
+    } break;
+
     default:
         xeLog("Not handled 0x%x\n", request);
         UNRECOVERABLE_IF(true);
@@ -1141,90 +1297,43 @@ int IoctlHelperXe::ioctl(DrmIoctl request, void *arg) {
 }
 
 void IoctlHelperXe::xeShowBindTable() {
-    if (debugManager.flags.PrintDebugMessages.get()) {
+    if (debugManager.flags.PrintXeLogs.get()) {
         std::unique_lock<std::mutex> lock(xeLock);
-        xeLog("show bind: (<index> <handle> <userptr> <addr> <size>)\n", "");
+        xeLog("show bind: (<index> <userptr> <addr>)\n", "");
         for (unsigned int i = 0; i < bindInfo.size(); i++) {
-            xeLog(" %3d x%08x x%016lx x%016lx x%016lx\n", i,
-                  bindInfo[i].handle,
+            xeLog(" %3d x%016lx x%016lx\n", i,
                   bindInfo[i].userptr,
-                  bindInfo[i].addr,
-                  bindInfo[i].size);
+                  bindInfo[i].addr);
         }
     }
 }
 
-int IoctlHelperXe::createDrmContext(Drm &drm, OsContextLinux &osContext, uint32_t drmVmId, uint32_t deviceIndex) {
-    drm_xe_exec_queue_create create = {};
+int IoctlHelperXe::createDrmContext(Drm &drm, OsContextLinux &osContext, uint32_t drmVmId, uint32_t deviceIndex, bool allocateInterrupt) {
     uint32_t drmContextId = 0;
-    drm_xe_engine_class_instance *currentEngine = nullptr;
-    std::vector<drm_xe_engine_class_instance> engine;
-    int requestClass = 0;
 
     xeLog("createDrmContext VM=0x%x\n", drmVmId);
-    auto engineFlag = drm.bindDrmContext(drmContextId, deviceIndex, osContext.getEngineType(), osContext.isEngineInstanced());
-    switch (engineFlag) {
-    case static_cast<int>(DrmParam::execRender):
-        requestClass = DRM_XE_ENGINE_CLASS_RENDER;
-        break;
-    case static_cast<int>(DrmParam::execBlt):
-        requestClass = DRM_XE_ENGINE_CLASS_COPY;
-        break;
-    case static_cast<int>(DrmParam::execDefault):
-        requestClass = DRM_XE_ENGINE_CLASS_COMPUTE;
-        break;
-    default:
-        xeLog("unexpected engineFlag=0x%x\n", engineFlag);
-        UNRECOVERABLE_IF(true);
-    }
-    size_t n = contextParamEngine.size();
-    create.vm_id = drmVmId;
+    drm.bindDrmContext(drmContextId, deviceIndex, osContext.getEngineType());
+
+    UNRECOVERABLE_IF(contextParamEngine.empty());
+
+    std::array<drm_xe_ext_set_property, maxContextSetProperties> extProperties{};
+    uint32_t extPropertyIndex{0U};
+    setOptionalContextProperties(drm, &extProperties, extPropertyIndex);
+    setContextProperties(osContext, &extProperties, extPropertyIndex);
+
+    drm_xe_exec_queue_create create{};
     create.width = 1;
-    if (n == 0) {
-        currentEngine = xeFindMatchingEngine(requestClass, XE_FIND_INVALID_INSTANCE);
-        if (currentEngine == nullptr) {
-            xeLog("Unable to find engine %d\n", requestClass);
-            UNRECOVERABLE_IF(true);
-            return 0;
-        }
-        engine.push_back(*currentEngine);
-    } else {
-        for (size_t i = 0; i < n; i++) {
-            currentEngine = xeFindMatchingEngine(contextParamEngine[i].engine_class,
-                                                 contextParamEngine[i].engine_instance);
-            if (currentEngine == nullptr) {
-                xeLog("Unable to find engine %d:%d\n",
-                      contextParamEngine[i].engine_class,
-                      contextParamEngine[i].engine_instance);
-                UNRECOVERABLE_IF(true);
-                return 0;
-            }
-            engine.push_back(*currentEngine);
-        }
-    }
-    if (engine.size() > 9) {
-        xeLog("Too much instances...\n", "");
-        UNRECOVERABLE_IF(true);
-        return 0;
-    }
-    create.instances = castToUint64(engine.data());
-    create.num_placements = engine.size();
-
-    struct drm_xe_ext_set_property ext {};
-    auto &gfxCoreHelper = drm.getRootDeviceEnvironment().getHelper<GfxCoreHelper>();
-    if (gfxCoreHelper.isRunaloneModeRequired(drm.getRootDeviceEnvironment().executionEnvironment.getDebuggingMode())) {
-        ext.base.next_extension = 0;
-        ext.base.name = DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY;
-        ext.property = getRunaloneExtProperty();
-        ext.value = 1;
-
-        create.extensions = castToUint64(&ext);
-    }
+    create.num_placements = contextParamEngine.size();
+    create.vm_id = drmVmId;
+    create.instances = castToUint64(contextParamEngine.data());
+    create.extensions = (extPropertyIndex > 0U ? castToUint64(extProperties.data()) : 0UL);
+    applyContextFlags(&create, allocateInterrupt);
 
     int ret = IoctlHelper::ioctl(DrmIoctl::gemContextCreateExt, &create);
     drmContextId = create.exec_queue_id;
-    xeLog("%s:%d (%d) vmid=0x%x ctx=0x%x r=0x%x\n", xeGetClassName(engine[0].engine_class),
-          engine[0].engine_instance, create.num_placements, drmVmId, drmContextId, ret);
+
+    xeLog("%s:%d (%d) vmid=0x%x ctx=0x%x r=0x%x\n", xeGetClassName(contextParamEngine[0].engine_class),
+          contextParamEngine[0].engine_instance, create.num_placements, drmVmId, drmContextId, ret);
     if (ret != 0) {
         UNRECOVERABLE_IF(true);
     }
@@ -1232,100 +1341,116 @@ int IoctlHelperXe::createDrmContext(Drm &drm, OsContextLinux &osContext, uint32_
 }
 
 int IoctlHelperXe::xeVmBind(const VmBindParams &vmBindParams, bool isBind) {
-    constexpr int invalidIndex = -1;
     auto gmmHelper = drm.getRootDeviceEnvironment().getGmmHelper();
     int ret = -1;
     const char *operation = isBind ? "bind" : "unbind";
-    int index = invalidIndex;
+
+    uint64_t userptr = 0u;
+    {
+        std::unique_lock<std::mutex> lock(xeLock);
+        if (isBind) {
+            if (vmBindParams.userptr) {
+                for (auto i = 0u; i < bindInfo.size(); i++) {
+                    if (vmBindParams.userptr == bindInfo[i].userptr) {
+                        userptr = bindInfo[i].userptr;
+                        bindInfo[i].addr = gmmHelper->decanonize(vmBindParams.start);
+                        break;
+                    }
+                }
+            }
+        } else // unbind
+        {
+            auto address = gmmHelper->decanonize(vmBindParams.start);
+            for (auto i = 0u; i < bindInfo.size(); i++) {
+                if (address == bindInfo[i].addr) {
+                    userptr = bindInfo[i].userptr;
+                    break;
+                }
+            }
+        }
+    }
+
+    drm_xe_vm_bind bind = {};
+    bind.vm_id = vmBindParams.vmId;
+
+    bind.num_binds = 1;
+
+    bind.bind.range = vmBindParams.length;
+    bind.bind.obj_offset = vmBindParams.offset;
+    bind.bind.pat_index = static_cast<uint16_t>(vmBindParams.patIndex);
+    bind.bind.extensions = vmBindParams.extensions;
+    bind.bind.flags = static_cast<uint32_t>(vmBindParams.flags);
+
+    drm_xe_sync sync[1] = {};
+    if (vmBindParams.sharedSystemUsmBind == true) {
+        bind.bind.addr = 0;
+    } else {
+        bind.bind.addr = gmmHelper->decanonize(vmBindParams.start);
+    }
+    bind.num_syncs = 1;
+    UNRECOVERABLE_IF(vmBindParams.userFence == 0x0);
+    auto xeBindExtUserFence = reinterpret_cast<UserFenceExtension *>(vmBindParams.userFence);
+    UNRECOVERABLE_IF(xeBindExtUserFence->tag != UserFenceExtension::tagValue);
+    sync[0].type = DRM_XE_SYNC_TYPE_USER_FENCE;
+    sync[0].flags = DRM_XE_SYNC_FLAG_SIGNAL;
+    sync[0].addr = xeBindExtUserFence->addr;
+    sync[0].timeline_value = xeBindExtUserFence->value;
+    bind.syncs = reinterpret_cast<uintptr_t>(&sync);
 
     if (isBind) {
-        for (auto i = 0u; i < bindInfo.size(); i++) {
-            if (vmBindParams.handle == bindInfo[i].handle) {
-                index = i;
-                break;
-            }
+        bind.bind.op = DRM_XE_VM_BIND_OP_MAP;
+        bind.bind.obj = vmBindParams.handle;
+        if (userptr) {
+            bind.bind.op = DRM_XE_VM_BIND_OP_MAP_USERPTR;
+            bind.bind.obj = 0;
+            bind.bind.obj_offset = userptr;
         }
-    } else // unbind
-    {
-        auto address = gmmHelper->decanonize(vmBindParams.start);
-        for (auto i = 0u; i < bindInfo.size(); i++) {
-            if (address == bindInfo[i].addr) {
-                index = i;
-                break;
-            }
-        }
-    }
-
-    if (index != invalidIndex) {
-
-        drm_xe_sync sync[1] = {};
-        sync[0].type = DRM_XE_SYNC_TYPE_USER_FENCE;
-        sync[0].flags = DRM_XE_SYNC_FLAG_SIGNAL;
-        auto xeBindExtUserFence = reinterpret_cast<UserFenceExtension *>(vmBindParams.extensions);
-        UNRECOVERABLE_IF(!xeBindExtUserFence);
-        UNRECOVERABLE_IF(xeBindExtUserFence->tag != UserFenceExtension::tagValue);
-        sync[0].addr = xeBindExtUserFence->addr;
-        sync[0].timeline_value = xeBindExtUserFence->value;
-
-        drm_xe_vm_bind bind = {};
-        bind.vm_id = vmBindParams.vmId;
-        bind.num_binds = 1;
-        bind.num_syncs = 1;
-        bind.syncs = reinterpret_cast<uintptr_t>(&sync);
-        bind.bind.range = vmBindParams.length;
-        bind.bind.addr = gmmHelper->decanonize(vmBindParams.start);
-        bind.bind.obj_offset = vmBindParams.offset;
-        bind.bind.pat_index = static_cast<uint16_t>(vmBindParams.patIndex);
-
-        if (isBind) {
+    } else {
+        if (vmBindParams.sharedSystemUsmEnabled) {
+            // Use of MAP on unbind required for restoring the address space to the system allocator
             bind.bind.op = DRM_XE_VM_BIND_OP_MAP;
-            bind.bind.obj = vmBindParams.handle;
-            if (bindInfo[index].handle & XE_USERPTR_FAKE_FLAG) {
-                bind.bind.op = DRM_XE_VM_BIND_OP_MAP_USERPTR;
-                bind.bind.obj = 0;
-                bind.bind.obj_offset = bindInfo[index].userptr;
-            }
+            bind.bind.flags |= DRM_XE_VM_BIND_FLAG_SYSTEM_ALLOCATOR;
         } else {
             bind.bind.op = DRM_XE_VM_BIND_OP_UNMAP;
-            bind.bind.obj = 0;
-            if (bindInfo[index].handle & XE_USERPTR_FAKE_FLAG) {
-                bind.bind.obj_offset = bindInfo[index].userptr;
+            if (userptr) {
+                bind.bind.obj_offset = userptr;
             }
         }
-
-        bindInfo[index].addr = bind.bind.addr;
-
-        ret = IoctlHelper::ioctl(DrmIoctl::gemVmBind, &bind);
-
-        xeLog(" vm=%d obj=0x%x off=0x%llx range=0x%llx addr=0x%llx operation=%d(%s) flags=%d(%s) nsy=%d ret=%d\n",
-              bind.vm_id,
-              bind.bind.obj,
-              bind.bind.obj_offset,
-              bind.bind.range,
-              bind.bind.addr,
-              bind.bind.op,
-              xeGetBindOperationName(bind.bind.op),
-              bind.bind.flags,
-              xeGetBindFlagsName(bind.bind.flags),
-              bind.num_syncs,
-              ret);
-
-        if (ret != 0) {
-            xeLog("error: %s\n", operation);
-            return ret;
-        }
-
-        return xeWaitUserFence(bind.exec_queue_id, DRM_XE_UFENCE_WAIT_MASK_U64, DRM_XE_UFENCE_WAIT_OP_EQ,
-                               sync[0].addr,
-                               sync[0].timeline_value, XE_ONE_SEC);
+        bind.bind.obj = 0;
     }
 
-    xeLog("error:  -> IoctlHelperXe::%s %s index=%d vmid=0x%x h=0x%x s=0x%llx o=0x%llx l=0x%llx f=0x%llx r=%d\n",
-          __FUNCTION__, operation, index, vmBindParams.vmId,
-          vmBindParams.handle, vmBindParams.start, vmBindParams.offset,
-          vmBindParams.length, vmBindParams.flags, ret);
+    ret = IoctlHelper::ioctl(DrmIoctl::gemVmBind, &bind);
 
-    return ret;
+    xeLog(" vm=%d obj=0x%x off=0x%llx range=0x%llx addr=0x%llx operation=%d(%s) flags=%d(%s) nsy=%d pat=%hu ret=%d\n",
+          bind.vm_id,
+          bind.bind.obj,
+          bind.bind.obj_offset,
+          bind.bind.range,
+          bind.bind.addr,
+          bind.bind.op,
+          xeGetBindOperationName(bind.bind.op),
+          bind.bind.flags,
+          xeGetBindFlagNames(bind.bind.flags).c_str(),
+          bind.num_syncs,
+          bind.bind.pat_index,
+          ret);
+
+    if (ret != 0) {
+        xeLog("error: %s\n", operation);
+        return ret;
+    }
+
+    constexpr auto oneSecTimeout = 1000000000ll;
+    constexpr auto infiniteTimeout = -1;
+    bool debuggingEnabled = drm.getRootDeviceEnvironment().executionEnvironment.isDebuggingEnabled();
+    uint64_t timeout = debuggingEnabled ? infiniteTimeout : oneSecTimeout;
+    if (debugManager.flags.VmBindWaitUserFenceTimeout.get() != -1) {
+        timeout = debugManager.flags.VmBindWaitUserFenceTimeout.get();
+    }
+    return xeWaitUserFence(bind.exec_queue_id, DRM_XE_UFENCE_WAIT_OP_EQ,
+                           sync[0].addr,
+                           sync[0].timeline_value, timeout,
+                           false, NEO::InterruptId::notUsed, nullptr);
 }
 
 std::string IoctlHelperXe::getDrmParamString(DrmParam drmParam) const {
@@ -1380,16 +1505,8 @@ std::string IoctlHelperXe::getDrmParamString(DrmParam drmParam) const {
         return "MmapOffsetWb";
     case DrmParam::mmapOffsetWc:
         return "MmapOffsetWc";
-    case DrmParam::paramChipsetId:
-        return "ParamChipsetId";
-    case DrmParam::paramRevision:
-        return "ParamRevision";
-    case DrmParam::paramHasExecSoftpin:
-        return "ParamHasExecSoftpin";
     case DrmParam::paramHasPooledEu:
         return "ParamHasPooledEu";
-    case DrmParam::paramHasScheduler:
-        return "ParamHasScheduler";
     case DrmParam::paramEuTotal:
         return "ParamEuTotal";
     case DrmParam::paramSubsliceTotal:
@@ -1412,8 +1529,6 @@ std::string IoctlHelperXe::getDrmParamString(DrmParam drmParam) const {
         return "QueryMemoryRegions";
     case DrmParam::queryTopologyInfo:
         return "QueryTopologyInfo";
-    case DrmParam::schedulerCapPreemption:
-        return "SchedulerCapPreemption";
     case DrmParam::tilingNone:
         return "TilingNone";
     case DrmParam::tilingY:
@@ -1423,28 +1538,20 @@ std::string IoctlHelperXe::getDrmParamString(DrmParam drmParam) const {
     }
 }
 
+inline std::string getDirectoryWithFrequencyFiles(int tileId, int gtId) {
+    return "/device/tile" + std::to_string(tileId) + "/gt" + std::to_string(gtId) + "/freq0";
+}
+
 std::string IoctlHelperXe::getFileForMaxGpuFrequency() const {
-    return "/device/gt0/freq_max";
+    return getFileForMaxGpuFrequencyOfSubDevice(0 /* tileId */);
 }
 
-std::string IoctlHelperXe::getFileForMaxGpuFrequencyOfSubDevice(int subDeviceId) const {
-    return "/device/gt" + std::to_string(subDeviceId) + "/freq_max";
+std::string IoctlHelperXe::getFileForMaxGpuFrequencyOfSubDevice(int tileId) const {
+    return getDirectoryWithFrequencyFiles(tileId, tileIdToGtId[tileId]) + "/max_freq";
 }
 
-std::string IoctlHelperXe::getFileForMaxMemoryFrequencyOfSubDevice(int subDeviceId) const {
-    return "/device/gt" + std::to_string(subDeviceId) + "/freq_rp0";
-}
-
-drm_xe_engine_class_instance *IoctlHelperXe::xeFindMatchingEngine(uint16_t engineClass, uint16_t engineInstance) {
-    for (auto &engine : allEngines) {
-        if (engine.engine_class == engineClass &&
-            (engineInstance == XE_FIND_INVALID_INSTANCE || engine.engine_instance == engineInstance)) {
-            xeLog("\t select: %s:%d (%d)\n", xeGetClassName(engine.engine_class),
-                  engine.engine_instance, engineInstance);
-            return &engine;
-        }
-    }
-    return nullptr;
+std::string IoctlHelperXe::getFileForMaxMemoryFrequencyOfSubDevice(int tileId) const {
+    return getDirectoryWithFrequencyFiles(tileId, tileIdToGtId[tileId]) + "/rp0_freq";
 }
 
 bool IoctlHelperXe::getFabricLatency(uint32_t fabricId, uint32_t &latency, uint32_t &bandwidth) {
@@ -1463,12 +1570,210 @@ bool IoctlHelperXe::getGemTiling(void *setTiling) {
     return true;
 }
 
-void IoctlHelperXe::fillBindInfoForIpcHandle(uint32_t handle, size_t size) {
-    xeLog(" -> IoctlHelperXe::%s s=0x%lx h=0x%x\n", __FUNCTION__, size, handle);
-    updateBindInfo(handle, 0, size);
-}
-
 bool IoctlHelperXe::isImmediateVmBindRequired() const {
     return true;
 }
+
+bool IoctlHelperXe::makeResidentBeforeLockNeeded() const {
+    auto makeResidentBeforeLockNeeded = false;
+    if (debugManager.flags.EnableDeferBacking.get()) {
+        makeResidentBeforeLockNeeded = true;
+    }
+    return makeResidentBeforeLockNeeded;
+}
+
+void IoctlHelperXe::insertEngineToContextParams(ContextParamEngines<> &contextParamEngines, uint32_t engineId, const EngineClassInstance *engineClassInstance, uint32_t tileId, bool hasVirtualEngines) {
+    auto engines = reinterpret_cast<drm_xe_engine_class_instance *>(contextParamEngines.enginesData);
+    if (engineClassInstance) {
+        engines[engineId].engine_class = engineClassInstance->engineClass;
+        engines[engineId].engine_instance = engineClassInstance->engineInstance;
+        engines[engineId].gt_id = tileIdToGtId[tileId];
+        contextParamEngines.numEnginesInContext = std::max(contextParamEngines.numEnginesInContext, engineId + 1);
+    }
+}
+
+void IoctlHelperXe::registerBOBindHandle(Drm *drm, DrmAllocation *drmAllocation) {
+    DrmResourceClass resourceClass = DrmResourceClass::maxSize;
+
+    switch (drmAllocation->getAllocationType()) {
+    case AllocationType::debugContextSaveArea:
+        resourceClass = DrmResourceClass::contextSaveArea;
+        break;
+    case AllocationType::debugSbaTrackingBuffer:
+        resourceClass = DrmResourceClass::sbaTrackingBuffer;
+        break;
+    case AllocationType::debugModuleArea:
+        resourceClass = DrmResourceClass::moduleHeapDebugArea;
+        break;
+    case AllocationType::kernelIsa:
+        if (drmAllocation->storageInfo.tileInstanced) {
+            auto &bos = drmAllocation->getBOs();
+            for (auto bo : bos) {
+                if (!bo) {
+                    continue;
+                }
+                bo->setRegisteredBindHandleCookie(drmAllocation->storageInfo.subDeviceBitfield.to_ulong());
+            }
+        }
+        return;
+    default:
+        return;
+    }
+
+    uint64_t gpuAddress = drmAllocation->getGpuAddress();
+    auto handle = drm->registerResource(resourceClass, &gpuAddress, sizeof(gpuAddress));
+    drmAllocation->addRegisteredBoBindHandle(handle);
+    auto &bos = drmAllocation->getBOs();
+    for (auto bo : bos) {
+        if (!bo) {
+            continue;
+        }
+        bo->addBindExtHandle(handle);
+        bo->markForCapture();
+        bo->requireImmediateBinding(true);
+    }
+}
+
+bool IoctlHelperXe::getFdFromVmExport(uint32_t vmId, uint32_t flags, int32_t *fd) {
+    return false;
+}
+
+void IoctlHelperXe::setOptionalContextProperties(Drm &drm, void *extProperties, uint32_t &extIndexInOut) {
+
+    auto &ext = *reinterpret_cast<std::array<drm_xe_ext_set_property, maxContextSetProperties> *>(extProperties);
+
+    if ((contextParamEngine[0].engine_class == DRM_XE_ENGINE_CLASS_RENDER) || (contextParamEngine[0].engine_class == DRM_XE_ENGINE_CLASS_COMPUTE)) {
+        if (drm.getRootDeviceEnvironment().executionEnvironment.isDebuggingEnabled()) {
+            ext[extIndexInOut].base.next_extension = 0;
+            ext[extIndexInOut].base.name = DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY;
+            ext[extIndexInOut].property = getEudebugExtProperty();
+            ext[extIndexInOut].value = 1;
+            extIndexInOut++;
+        }
+    }
+}
+
+void IoctlHelperXe::setContextProperties(const OsContextLinux &osContext, void *extProperties, uint32_t &extIndexInOut) {
+
+    auto &ext = *reinterpret_cast<std::array<drm_xe_ext_set_property, maxContextSetProperties> *>(extProperties);
+
+    if (osContext.isLowPriority()) {
+        ext[extIndexInOut].base.name = DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY;
+        ext[extIndexInOut].property = DRM_XE_EXEC_QUEUE_SET_PROPERTY_PRIORITY;
+        ext[extIndexInOut].value = 0;
+        if (extIndexInOut > 0) {
+            ext[extIndexInOut - 1].base.next_extension = castToUint64(&ext[extIndexInOut]);
+        }
+        extIndexInOut++;
+    }
+}
+
+unsigned int IoctlHelperXe::getIoctlRequestValue(DrmIoctl ioctlRequest) const {
+    xeLog(" -> IoctlHelperXe::%s 0x%x\n", __FUNCTION__, ioctlRequest);
+    switch (ioctlRequest) {
+    case DrmIoctl::gemClose:
+        RETURN_ME(DRM_IOCTL_GEM_CLOSE);
+    case DrmIoctl::gemVmCreate:
+        RETURN_ME(DRM_IOCTL_XE_VM_CREATE);
+    case DrmIoctl::gemVmDestroy:
+        RETURN_ME(DRM_IOCTL_XE_VM_DESTROY);
+    case DrmIoctl::gemMmapOffset:
+        RETURN_ME(DRM_IOCTL_XE_GEM_MMAP_OFFSET);
+    case DrmIoctl::gemCreate:
+        RETURN_ME(DRM_IOCTL_XE_GEM_CREATE);
+    case DrmIoctl::gemExecbuffer2:
+        RETURN_ME(DRM_IOCTL_XE_EXEC);
+    case DrmIoctl::gemVmBind:
+        RETURN_ME(DRM_IOCTL_XE_VM_BIND);
+    case DrmIoctl::query:
+        RETURN_ME(DRM_IOCTL_XE_DEVICE_QUERY);
+    case DrmIoctl::gemContextCreateExt:
+        RETURN_ME(DRM_IOCTL_XE_EXEC_QUEUE_CREATE);
+    case DrmIoctl::gemContextDestroy:
+        RETURN_ME(DRM_IOCTL_XE_EXEC_QUEUE_DESTROY);
+    case DrmIoctl::gemWaitUserFence:
+        RETURN_ME(DRM_IOCTL_XE_WAIT_USER_FENCE);
+    case DrmIoctl::primeFdToHandle:
+        RETURN_ME(DRM_IOCTL_PRIME_FD_TO_HANDLE);
+    case DrmIoctl::primeHandleToFd:
+        RETURN_ME(DRM_IOCTL_PRIME_HANDLE_TO_FD);
+    case DrmIoctl::getResetStats:
+        RETURN_ME(DRM_IOCTL_XE_EXEC_QUEUE_GET_PROPERTY);
+    case DrmIoctl::debuggerOpen:
+    case DrmIoctl::metadataCreate:
+    case DrmIoctl::metadataDestroy:
+        return getIoctlRequestValueDebugger(ioctlRequest);
+    case DrmIoctl::perfOpen:
+    case DrmIoctl::perfEnable:
+    case DrmIoctl::perfDisable:
+        return getIoctlRequestValuePerf(ioctlRequest);
+    default:
+        UNRECOVERABLE_IF(true);
+        return 0;
+    }
+}
+
+int IoctlHelperXe::ioctl(int fd, DrmIoctl request, void *arg) {
+    return NEO::SysCalls::ioctl(fd, getIoctlRequestValue(request), arg);
+}
+
+std::string IoctlHelperXe::getIoctlString(DrmIoctl ioctlRequest) const {
+    switch (ioctlRequest) {
+    case DrmIoctl::gemClose:
+        STRINGIFY_ME(DRM_IOCTL_GEM_CLOSE);
+    case DrmIoctl::gemVmCreate:
+        STRINGIFY_ME(DRM_IOCTL_XE_VM_CREATE);
+    case DrmIoctl::gemVmDestroy:
+        STRINGIFY_ME(DRM_IOCTL_XE_VM_DESTROY);
+    case DrmIoctl::gemMmapOffset:
+        STRINGIFY_ME(DRM_IOCTL_XE_GEM_MMAP_OFFSET);
+    case DrmIoctl::gemCreate:
+        STRINGIFY_ME(DRM_IOCTL_XE_GEM_CREATE);
+    case DrmIoctl::gemExecbuffer2:
+        STRINGIFY_ME(DRM_IOCTL_XE_EXEC);
+    case DrmIoctl::gemVmBind:
+        STRINGIFY_ME(DRM_IOCTL_XE_VM_BIND);
+    case DrmIoctl::query:
+        STRINGIFY_ME(DRM_IOCTL_XE_DEVICE_QUERY);
+    case DrmIoctl::gemContextCreateExt:
+        STRINGIFY_ME(DRM_IOCTL_XE_EXEC_QUEUE_CREATE);
+    case DrmIoctl::gemContextDestroy:
+        STRINGIFY_ME(DRM_IOCTL_XE_EXEC_QUEUE_DESTROY);
+    case DrmIoctl::gemWaitUserFence:
+        STRINGIFY_ME(DRM_IOCTL_XE_WAIT_USER_FENCE);
+    case DrmIoctl::primeFdToHandle:
+        STRINGIFY_ME(DRM_IOCTL_PRIME_FD_TO_HANDLE);
+    case DrmIoctl::primeHandleToFd:
+        STRINGIFY_ME(DRM_IOCTL_PRIME_HANDLE_TO_FD);
+    case DrmIoctl::debuggerOpen:
+        STRINGIFY_ME(DRM_IOCTL_XE_EUDEBUG_CONNECT);
+    case DrmIoctl::metadataCreate:
+        STRINGIFY_ME(DRM_IOCTL_XE_DEBUG_METADATA_CREATE);
+    case DrmIoctl::metadataDestroy:
+        STRINGIFY_ME(DRM_IOCTL_XE_DEBUG_METADATA_DESTROY);
+    case DrmIoctl::getResetStats:
+        STRINGIFY_ME(DRM_IOCTL_XE_EXEC_QUEUE_GET_PROPERTY);
+    default:
+        return "???";
+    }
+}
+
+void IoctlHelperXe::querySupportedFeatures() {
+    auto checkVmCreateFlagsSupport = [&](uint32_t flags) -> bool {
+        struct drm_xe_vm_create vmCreate = {};
+        vmCreate.flags = flags;
+
+        auto ret = IoctlHelper::ioctl(DrmIoctl::gemVmCreate, &vmCreate);
+        if (ret == 0) {
+            struct drm_xe_vm_destroy vmDestroy = {};
+            vmDestroy.vm_id = vmCreate.vm_id;
+            ret = IoctlHelper::ioctl(DrmIoctl::gemVmDestroy, &vmDestroy);
+            DEBUG_BREAK_IF(ret != 0);
+            return true;
+        }
+        return false;
+    };
+    supportedFeatures.flags.pageFault = checkVmCreateFlagsSupport(DRM_XE_VM_CREATE_FLAG_LR_MODE | DRM_XE_VM_CREATE_FLAG_FAULT_MODE);
+};
+
 } // namespace NEO

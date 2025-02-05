@@ -1,11 +1,12 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "shared/source/command_container/encode_surface_state.h"
+#include "shared/source/debugger/debugger_l0.h"
 #include "shared/source/gmm_helper/client_context/gmm_client_context.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/helpers/state_base_address.h"
@@ -44,7 +45,7 @@ DG2TEST_F(CmdsProgrammingTestsDg2, givenL3ToL1DebugFlagWhenStatelessMocsIsProgra
 
     auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
 
-    EXPECT_EQ(stateBaseAddress->getL1CachePolicyL1CacheControl(), STATE_BASE_ADDRESS::L1_CACHE_POLICY_WB);
+    EXPECT_EQ(stateBaseAddress->getL1CacheControlCachePolicy(), STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WB);
 }
 
 DG2TEST_F(CmdsProgrammingTestsDg2, givenL3ToL1DebugFlagAndDebuggerInitializedWhenStatelessMocsIsProgrammedThenItHasCorrectL1CachingOn) {
@@ -53,6 +54,7 @@ DG2TEST_F(CmdsProgrammingTestsDg2, givenL3ToL1DebugFlagAndDebuggerInitializedWhe
     DebugManagerStateRestore restore;
     debugManager.flags.ForceL1Caching.set(1u);
     pDevice->executionEnvironment->rootDeviceEnvironments[0]->initDebuggerL0(pDevice);
+    pDevice->getL0Debugger()->initialize();
 
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
     flushTask(commandStreamReceiver);
@@ -64,7 +66,7 @@ DG2TEST_F(CmdsProgrammingTestsDg2, givenL3ToL1DebugFlagAndDebuggerInitializedWhe
 
     auto stateBaseAddress = static_cast<STATE_BASE_ADDRESS *>(hwParserCsr.cmdStateBaseAddress);
 
-    EXPECT_EQ(stateBaseAddress->getL1CachePolicyL1CacheControl(), STATE_BASE_ADDRESS::L1_CACHE_POLICY_WBP);
+    EXPECT_EQ(stateBaseAddress->getL1CacheControlCachePolicy(), STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WBP);
 }
 
 DG2TEST_F(CmdsProgrammingTestsDg2, whenAppendingRssThenProgramWBL1CachePolicyUnlessDebuggerIsActive) {
@@ -93,11 +95,11 @@ DG2TEST_F(CmdsProgrammingTestsDg2, whenAppendingRssThenProgramWBL1CachePolicyUnl
     args.areMultipleSubDevicesInContext = true;
 
     EncodeSurfaceState<FamilyType>::encodeBuffer(args);
-    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB, rssCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB, rssCmd.getL1CacheControlCachePolicy());
 
     args.isDebuggerActive = true;
     EncodeSurfaceState<FamilyType>::encodeBuffer(args);
-    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WBP, rssCmd.getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WBP, rssCmd.getL1CacheControlCachePolicy());
 }
 
 DG2TEST_F(CmdsProgrammingTestsDg2, givenAlignedCacheableReadOnlyBufferThenChoseOclBufferConstPolicy) {
@@ -116,13 +118,13 @@ DG2TEST_F(CmdsProgrammingTestsDg2, givenAlignedCacheableReadOnlyBufferThenChoseO
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     typename FamilyType::RENDER_SURFACE_STATE surfaceState = {};
-    buffer->setArgStateful(&surfaceState, false, false, false, false, context.getDevice(0)->getDevice(), false, false);
+    buffer->setArgStateful(&surfaceState, false, false, false, false, context.getDevice(0)->getDevice(), false);
 
     const auto expectedMocs = context.getDevice(0)->getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CONST);
     const auto actualMocs = surfaceState.getMemoryObjectControlState();
     EXPECT_EQ(expectedMocs, actualMocs);
 
-    EXPECT_EQ(surfaceState.getL1CachePolicyL1CacheControl(), FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB);
+    EXPECT_EQ(surfaceState.getL1CacheControlCachePolicy(), FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB);
 
     alignedFree(ptr);
 }
@@ -146,13 +148,13 @@ DG2TEST_F(CmdsProgrammingTestsDg2, givenAlignedCacheableReadOnlyBufferAndDebugge
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     typename FamilyType::RENDER_SURFACE_STATE surfaceState = {};
-    buffer->setArgStateful(&surfaceState, false, false, false, false, clDevice->getDevice(), false, false);
+    buffer->setArgStateful(&surfaceState, false, false, false, false, clDevice->getDevice(), false);
 
     const auto expectedMocs = clDevice->getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CONST);
     const auto actualMocs = surfaceState.getMemoryObjectControlState();
     EXPECT_EQ(expectedMocs, actualMocs);
 
-    EXPECT_EQ(surfaceState.getL1CachePolicyL1CacheControl(), FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WBP);
+    EXPECT_EQ(surfaceState.getL1CacheControlCachePolicy(), FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WBP);
 
     alignedFree(ptr);
 }

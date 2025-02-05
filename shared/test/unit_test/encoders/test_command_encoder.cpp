@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -55,12 +55,6 @@ HWTEST2_F(CommandEncoderTest, givenDg1NotUsingRcsWhenGettingRequiredSizeForState
     EXPECT_EQ(size, 88ul);
 }
 
-HWTEST2_F(CommandEncoderTest, givenEhlWhenGettingRequiredSizeForStateBaseAddressCommandThenCorrectSizeIsReturned, IsEHL) {
-    auto container = CommandContainer();
-    size_t size = EncodeStateBaseAddress<FamilyType>::getRequiredSizeForStateBaseAddress(*pDevice, container, false);
-    EXPECT_EQ(size, 88ul);
-}
-
 HWTEST2_F(CommandEncoderTest, givenRklUsingRcsWhenGettingRequiredSizeForStateBaseAddressCommandThenCorrectSizeIsReturned, IsRKL) {
     auto container = CommandContainer();
     size_t size = EncodeStateBaseAddress<FamilyType>::getRequiredSizeForStateBaseAddress(*pDevice, container, true);
@@ -68,18 +62,6 @@ HWTEST2_F(CommandEncoderTest, givenRklUsingRcsWhenGettingRequiredSizeForStateBas
 }
 
 HWTEST2_F(CommandEncoderTest, givenRklNotUsingRcsWhenGettingRequiredSizeForStateBaseAddressCommandThenCorrectSizeIsReturned, IsRKL) {
-    auto container = CommandContainer();
-    size_t size = EncodeStateBaseAddress<FamilyType>::getRequiredSizeForStateBaseAddress(*pDevice, container, false);
-    EXPECT_EQ(size, 88ul);
-}
-
-HWTEST2_F(CommandEncoderTest, givenLkfWhenGettingRequiredSizeForStateBaseAddressCommandThenCorrectSizeIsReturned, IsLKF) {
-    auto container = CommandContainer();
-    size_t size = EncodeStateBaseAddress<FamilyType>::getRequiredSizeForStateBaseAddress(*pDevice, container, false);
-    EXPECT_EQ(size, 88ul);
-}
-
-HWTEST2_F(CommandEncoderTest, givenIclLpWhenGettingRequiredSizeForStateBaseAddressCommandThenCorrectSizeIsReturned, IsICLLP) {
     auto container = CommandContainer();
     size_t size = EncodeStateBaseAddress<FamilyType>::getRequiredSizeForStateBaseAddress(*pDevice, container, false);
     EXPECT_EQ(size, 88ul);
@@ -125,14 +107,18 @@ HWTEST_F(CommandEncoderTest, GivenDwordStoreWhenAddingStoreDataImmThenExpectDwor
     uint8_t buffer[bufferSize];
     LinearStream cmdStream(buffer, bufferSize);
 
+    void *outSdiCmd = nullptr;
+
     EncodeStoreMemory<FamilyType>::programStoreDataImm(cmdStream,
                                                        gpuAddress,
                                                        dword0,
                                                        dword1,
                                                        false,
-                                                       false);
+                                                       false,
+                                                       &outSdiCmd);
     size_t usedAfter = cmdStream.getUsed();
     EXPECT_EQ(size, usedAfter);
+    ASSERT_NE(nullptr, outSdiCmd);
 
     auto storeDataImm = genCmdCast<MI_STORE_DATA_IMM *>(buffer);
     ASSERT_NE(nullptr, storeDataImm);
@@ -141,6 +127,8 @@ HWTEST_F(CommandEncoderTest, GivenDwordStoreWhenAddingStoreDataImmThenExpectDwor
     EXPECT_EQ(0u, storeDataImm->getDataDword1());
     EXPECT_FALSE(storeDataImm->getStoreQword());
     EXPECT_EQ(MI_STORE_DATA_IMM::DWORD_LENGTH::DWORD_LENGTH_STORE_DWORD, storeDataImm->getDwordLength());
+
+    EXPECT_EQ(storeDataImm, outSdiCmd);
 }
 
 HWTEST_F(CommandEncoderTest, GivenQwordStoreWhenAddingStoreDataImmThenExpectQwordProgramming) {
@@ -161,7 +149,8 @@ HWTEST_F(CommandEncoderTest, GivenQwordStoreWhenAddingStoreDataImmThenExpectQwor
                                                        dword0,
                                                        dword1,
                                                        true,
-                                                       false);
+                                                       false,
+                                                       nullptr);
     size_t usedAfter = cmdStream.getUsed();
     EXPECT_EQ(size, usedAfter);
 
@@ -203,7 +192,7 @@ HWTEST_F(CommandEncoderTest, givenPlatformSupportingMiMemFenceWhenEncodingThenPr
     }
 }
 
-HWTEST2_F(CommandEncoderTest, whenAdjustCompressionFormatForPlanarImageThenNothingHappens, IsAtMostGen12lp) {
+HWTEST2_F(CommandEncoderTest, whenAdjustCompressionFormatForPlanarImageThenNothingHappens, IsGen12LP) {
     for (auto plane : {GMM_NO_PLANE, GMM_PLANE_Y, GMM_PLANE_U, GMM_PLANE_V}) {
         uint32_t compressionFormat = 0u;
         EncodeWA<FamilyType>::adjustCompressionFormatForPlanarImage(compressionFormat, plane);
@@ -215,7 +204,7 @@ HWTEST2_F(CommandEncoderTest, whenAdjustCompressionFormatForPlanarImageThenNothi
     }
 }
 
-HWTEST2_F(CommandEncoderTest, givenPredicateBitSetWhenProgrammingBbStartThenSetCorrectBit, IsAtLeastGen9) {
+HWTEST2_F(CommandEncoderTest, givenPredicateBitSetWhenProgrammingBbStartThenSetCorrectBit, MatchAny) {
     using MI_BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
 
     MI_BATCH_BUFFER_START cmd = {};

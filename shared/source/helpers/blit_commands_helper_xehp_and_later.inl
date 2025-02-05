@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,6 +10,7 @@
 #include "shared/source/gmm_helper/resource_info.h"
 #include "shared/source/helpers/blit_commands_helper_base.inl"
 #include "shared/source/helpers/local_memory_access_modes.h"
+#include "shared/source/release_helper/release_helper.h"
 
 namespace NEO {
 
@@ -42,7 +43,7 @@ void setCompressionParamsForFillOperation(typename GfxFamily::XY_COLOR_BLT &xyCo
 }
 
 template <typename GfxFamily>
-void BlitCommandsHelper<GfxFamily>::appendBlitCommandsForFillBuffer(NEO::GraphicsAllocation *dstAlloc, typename GfxFamily::XY_COLOR_BLT &blitCmd, const RootDeviceEnvironment &rootDeviceEnvironment) {
+void BlitCommandsHelper<GfxFamily>::appendBlitMemoryOptionsForFillBuffer(NEO::GraphicsAllocation *dstAlloc, typename GfxFamily::XY_COLOR_BLT &blitCmd, const RootDeviceEnvironment &rootDeviceEnvironment) {
     using XY_COLOR_BLT = typename GfxFamily::XY_COLOR_BLT;
 
     uint32_t compressionFormat = rootDeviceEnvironment.getGmmClientContext()->getSurfaceStateCompressionFormat(GMM_RESOURCE_FORMAT::GMM_FORMAT_GENERIC_8BIT);
@@ -60,8 +61,8 @@ void BlitCommandsHelper<GfxFamily>::appendBlitCommandsForFillBuffer(NEO::Graphic
     appendExtraMemoryProperties(blitCmd, rootDeviceEnvironment);
 
     auto mocs = rootDeviceEnvironment.getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED);
-    if (debugManager.flags.OverrideBlitterMocs.get() == 1) {
-        mocs = rootDeviceEnvironment.getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+    if (debugManager.flags.OverrideBlitterMocs.get() != -1) {
+        mocs = static_cast<uint32_t>(debugManager.flags.OverrideBlitterMocs.get());
     }
 
     blitCmd.setDestinationMOCS(mocs);
@@ -72,26 +73,6 @@ void BlitCommandsHelper<GfxFamily>::appendBlitCommandsForFillBuffer(NEO::Graphic
         } else if (debugManager.flags.OverrideBlitterTargetMemory.get() == 1u) {
             blitCmd.setDestinationTargetMemory(XY_COLOR_BLT::DESTINATION_TARGET_MEMORY::DESTINATION_TARGET_MEMORY_LOCAL_MEM);
         }
-    }
-}
-
-template <typename GfxFamily>
-void BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryColorFill(NEO::GraphicsAllocation *dstAlloc, uint64_t offset, uint32_t *pattern, size_t patternSize, LinearStream &linearStream, size_t size, EncodeDummyBlitWaArgs &waArgs) {
-    switch (patternSize) {
-    case 1:
-        NEO::BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryFill<1>(dstAlloc, offset, pattern, linearStream, size, waArgs, COLOR_DEPTH::COLOR_DEPTH_8_BIT_COLOR);
-        break;
-    case 2:
-        NEO::BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryFill<2>(dstAlloc, offset, pattern, linearStream, size, waArgs, COLOR_DEPTH::COLOR_DEPTH_16_BIT_COLOR);
-        break;
-    case 4:
-        NEO::BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryFill<4>(dstAlloc, offset, pattern, linearStream, size, waArgs, COLOR_DEPTH::COLOR_DEPTH_32_BIT_COLOR);
-        break;
-    case 8:
-        NEO::BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryFill<8>(dstAlloc, offset, pattern, linearStream, size, waArgs, COLOR_DEPTH::COLOR_DEPTH_64_BIT_COLOR);
-        break;
-    default:
-        NEO::BlitCommandsHelper<GfxFamily>::dispatchBlitMemoryFill<16>(dstAlloc, offset, pattern, linearStream, size, waArgs, COLOR_DEPTH::COLOR_DEPTH_128_BIT_COLOR);
     }
 }
 
@@ -189,11 +170,9 @@ template <typename GfxFamily>
 void BlitCommandsHelper<GfxFamily>::getBlitAllocationProperties(const GraphicsAllocation &allocation, uint32_t &pitch, uint32_t &qPitch,
                                                                 GMM_TILE_TYPE &tileType, uint32_t &mipTailLod, uint32_t &compressionDetails,
                                                                 const RootDeviceEnvironment &rootDeviceEnvironment, GMM_YUV_PLANE_ENUM plane) {
-    using XY_BLOCK_COPY_BLT = typename GfxFamily::XY_BLOCK_COPY_BLT;
-
     if (allocation.getDefaultGmm()) {
         auto gmmResourceInfo = allocation.getDefaultGmm()->gmmResourceInfo.get();
-        mipTailLod = gmmResourceInfo->getMipTailStartLodSurfaceState();
+        mipTailLod = gmmResourceInfo->getMipTailStartLODSurfaceState();
         auto resInfo = gmmResourceInfo->getResourceFlags()->Info;
         if (resInfo.Tile4) {
             tileType = GMM_TILED_4;
@@ -280,7 +259,7 @@ void BlitCommandsHelper<GfxFamily>::appendSliceOffsets(const BlitProperties &bli
 template <typename GfxFamily>
 void BlitCommandsHelper<GfxFamily>::appendTilingEnable(typename GfxFamily::XY_COLOR_BLT &blitCmd) {
     using XY_COLOR_BLT = typename GfxFamily::XY_COLOR_BLT;
-    blitCmd.setDestinationSurfaceType(XY_COLOR_BLT::DESTINATION_SURFACE_TYPE::DESTINATION_SURFACE_TYPE_2D);
+    blitCmd.setDestinationSurfaceType(XY_COLOR_BLT::DESTINATION_SURFACE_TYPE::DESTINATION_SURFACE_TYPE_SURFTYPE_2D);
 }
 
 template <typename GfxFamily>
@@ -288,12 +267,12 @@ void BlitCommandsHelper<GfxFamily>::programGlobalSequencerFlush(LinearStream &co
     if (debugManager.flags.GlobalSequencerFlushOnCopyEngine.get() != 0) {
         using COMPARE_OPERATION = typename GfxFamily::MI_SEMAPHORE_WAIT::COMPARE_OPERATION;
         constexpr uint32_t globalInvalidationRegister = 0xB404u;
-        LriHelper<GfxFamily>::program(&commandStream, globalInvalidationRegister, 1u, false);
+        LriHelper<GfxFamily>::program(&commandStream, globalInvalidationRegister, 1u, false, true);
         EncodeSemaphore<GfxFamily>::addMiSemaphoreWaitCommand(commandStream,
                                                               globalInvalidationRegister,
                                                               0u,
                                                               COMPARE_OPERATION::COMPARE_OPERATION_SAD_EQUAL_SDD,
-                                                              true, false, false);
+                                                              true, false, false, false, nullptr);
     }
 }
 
@@ -363,8 +342,9 @@ bool BlitCommandsHelper<GfxFamily>::isDummyBlitWaNeeded(const EncodeDummyBlitWaA
         if (debugManager.flags.ForceDummyBlitWa.get() != -1) {
             return debugManager.flags.ForceDummyBlitWa.get();
         }
-        auto &productHelper = waArgs.rootDeviceEnvironment->getProductHelper();
-        return productHelper.isDummyBlitWaRequired();
+        auto releaseHelper = waArgs.rootDeviceEnvironment->getReleaseHelper();
+        UNRECOVERABLE_IF(!releaseHelper);
+        return releaseHelper->isDummyBlitWaRequired();
     }
     return false;
 }
@@ -386,11 +366,14 @@ void BlitCommandsHelper<GfxFamily>::dispatchDummyBlit(LinearStream &linearStream
         blitCmd.setDestinationPitch(static_cast<uint32_t>(MemoryConstants::pageSize));
 
         appendTilingEnable(blitCmd);
-        appendBlitCommandsForFillBuffer(dummyAllocation, blitCmd, *rootDeviceEnvironment);
+        appendBlitMemoryOptionsForFillBuffer(dummyAllocation, blitCmd, *rootDeviceEnvironment);
+
+        BlitProperties blitProperties = {};
+
+        appendBlitFillCommand(blitProperties, blitCmd);
 
         auto cmd = linearStream.getSpaceForCmd<XY_COLOR_BLT>();
         *cmd = blitCmd;
-        waArgs.isWaRequired = false;
     }
 }
 

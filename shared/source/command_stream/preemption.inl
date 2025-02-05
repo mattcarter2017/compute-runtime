@@ -21,8 +21,9 @@ namespace NEO {
 
 template <typename GfxFamily>
 void PreemptionHelper::programCsrBaseAddress(LinearStream &preambleCmdStream, Device &device, const GraphicsAllocation *preemptionCsr) {
-    if (device.getPreemptionMode() == PreemptionMode::MidThread) {
-        UNRECOVERABLE_IF(nullptr == preemptionCsr);
+    bool debuggingEnabled = device.getDebugger() != nullptr;
+    bool isMidThreadPreemption = device.getPreemptionMode() == PreemptionMode::MidThread;
+    if (isMidThreadPreemption && !debuggingEnabled) {
 
         programCsrBaseAddressCmd<GfxFamily>(preambleCmdStream, preemptionCsr);
     }
@@ -40,7 +41,6 @@ void PreemptionHelper::programCsrBaseAddressCmd(LinearStream &preambleCmdStream,
 
 template <typename GfxFamily>
 void PreemptionHelper::programStateSip(LinearStream &preambleCmdStream, Device &device, OsContext *context) {
-    using STATE_SIP = typename GfxFamily::STATE_SIP;
     bool debuggingEnabled = device.getDebugger() != nullptr;
     bool isMidThreadPreemption = device.getPreemptionMode() == PreemptionMode::MidThread;
 
@@ -85,7 +85,7 @@ void PreemptionHelper::programCmdStream(LinearStream &cmdStream, PreemptionMode 
         regVal = PreemptionConfig<GfxFamily>::cmdLevelVal | PreemptionConfig<GfxFamily>::mask;
     }
 
-    LriHelper<GfxFamily>::program(&cmdStream, PreemptionConfig<GfxFamily>::mmioAddress, regVal, true);
+    LriHelper<GfxFamily>::program(&cmdStream, PreemptionConfig<GfxFamily>::mmioAddress, regVal, true, false);
 }
 
 template <typename GfxFamily>
@@ -98,7 +98,9 @@ size_t PreemptionHelper::getRequiredCmdStreamSize(PreemptionMode newPreemptionMo
 
 template <typename GfxFamily>
 size_t PreemptionHelper::getRequiredPreambleSize(const Device &device) {
-    if (device.getPreemptionMode() == PreemptionMode::MidThread) {
+    bool debuggingEnabled = device.getDebugger() != nullptr;
+    bool isMidThreadPreemption = device.getPreemptionMode() == PreemptionMode::MidThread;
+    if (isMidThreadPreemption || debuggingEnabled) {
         return sizeof(typename GfxFamily::GPGPU_CSR_BASE_ADDRESS);
     }
     return 0;
@@ -116,41 +118,22 @@ size_t PreemptionHelper::getRequiredStateSipCmdSize(Device &device, bool isRcs) 
     return size;
 }
 
-template <typename GfxFamily>
-size_t PreemptionHelper::getPreemptionWaCsSize(const Device &device) {
-    return 0u;
-}
-template <typename GfxFamily>
-void PreemptionHelper::applyPreemptionWaCmdsBegin(LinearStream *pCommandStream, const Device &device) {
-}
-
-template <typename GfxFamily>
-void PreemptionHelper::applyPreemptionWaCmdsEnd(LinearStream *pCommandStream, const Device &device) {
-}
-
 template <typename GfxFamily, typename InterfaceDescriptorType>
-void PreemptionHelper::programInterfaceDescriptorDataPreemption(InterfaceDescriptorType *idd, PreemptionMode preemptionMode) {
-    using INTERFACE_DESCRIPTOR_DATA = typename GfxFamily::INTERFACE_DESCRIPTOR_DATA;
-    if (preemptionMode == PreemptionMode::MidThread) {
-        idd->setThreadPreemptionDisable(INTERFACE_DESCRIPTOR_DATA::THREAD_PREEMPTION_DISABLE_DISABLE);
-    } else {
-        idd->setThreadPreemptionDisable(INTERFACE_DESCRIPTOR_DATA::THREAD_PREEMPTION_DISABLE_ENABLE);
-    }
-}
+void PreemptionHelper::programInterfaceDescriptorDataPreemption(InterfaceDescriptorType *idd, PreemptionMode preemptionMode) {}
 
 template <typename GfxFamily>
-constexpr uint32_t PreemptionConfig<GfxFamily>::mmioAddress = 0x2580;
+const uint32_t PreemptionConfig<GfxFamily>::mmioAddress = 0x2580;
 
 template <typename GfxFamily>
-constexpr uint32_t PreemptionConfig<GfxFamily>::mask = ((1 << 1) | (1 << 2)) << 16;
+const uint32_t PreemptionConfig<GfxFamily>::mask = ((1 << 1) | (1 << 2)) << 16;
 
 template <typename GfxFamily>
-constexpr uint32_t PreemptionConfig<GfxFamily>::threadGroupVal = (1 << 1);
+const uint32_t PreemptionConfig<GfxFamily>::threadGroupVal = (1 << 1);
 
 template <typename GfxFamily>
-constexpr uint32_t PreemptionConfig<GfxFamily>::cmdLevelVal = (1 << 2);
+const uint32_t PreemptionConfig<GfxFamily>::cmdLevelVal = (1 << 2);
 
 template <typename GfxFamily>
-constexpr uint32_t PreemptionConfig<GfxFamily>::midThreadVal = 0;
+const uint32_t PreemptionConfig<GfxFamily>::midThreadVal = 0;
 
 } // namespace NEO

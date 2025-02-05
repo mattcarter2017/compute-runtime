@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -179,7 +179,6 @@ HWTEST_F(SoftwareTagsManagerTests, givenSoftwareManagerWithMaxTagsReachedWhenTag
 }
 
 HWTEST_F(SoftwareTagsManagerTests, givenSoftwareManagerWithMaxHeapReachedWhenTagIsInsertedThenItIsNotSuccessful) {
-    using MI_NOOP = typename FamilyType::MI_NOOP;
 
     initializeTestCmdStream<FamilyType>();
 
@@ -224,7 +223,7 @@ struct SoftwareTagsParametrizedTests : public ::testing::TestWithParam<SWTags::O
     std::map<OpCode, std::unique_ptr<BaseTag>> tagMap;
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     SoftwareTags,
     SoftwareTagsParametrizedTests,
     testing::Values(
@@ -240,7 +239,7 @@ TEST_P(SoftwareTagsParametrizedTests, whenGetOpCodeIsCalledThenCorrectValueIsRet
 }
 
 TEST(SoftwareTagsTests, whenGetMarkerNoopIDCalledThenCorectValueIsReturned) {
-    uint32_t id = SWTags::BaseTag::getMarkerNoopID(static_cast<OpCode>(testOpCode));
+    uint32_t id = SWTags::BaseTag::getMarkerNoopID(static_cast<OpCode>(testOpCode)); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
 
     EXPECT_EQ(testOpCode, id);
 }
@@ -274,7 +273,7 @@ TEST(SoftwareTagsBXMLTests, givenDumpSWTagsBXMLWhenConstructingBXMLThenAFileIsDu
     EXPECT_GE(IoFunctions::mockFwriteReturn, bxml1.str.size());
     EXPECT_STREQ(buffer.get(), bxml1.str.c_str());
 
-    VariableBackup<FILE *> backup(&IoFunctions::mockFopenReturned, nullptr);
+    VariableBackup<FILE *> backup(&IoFunctions::mockFopenReturned, static_cast<FILE *>(nullptr));
 
     SWTagBXML bxml2;
 

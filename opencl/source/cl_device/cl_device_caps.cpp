@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,10 +12,14 @@
 #include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
+#include "shared/source/helpers/hw_info_helper.h"
 #include "shared/source/helpers/string.h"
+#include "shared/source/kernel/kernel_properties.h"
+#include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/driver_info.h"
 
 #include "opencl/source/cl_device/cl_device.h"
+#include "opencl/source/context/context.h"
 #include "opencl/source/gtpin/gtpin_gfx_core_helper.h"
 #include "opencl/source/helpers/cl_gfx_core_helper.h"
 #include "opencl/source/sharings/sharing_factory.h"
@@ -29,8 +33,7 @@ namespace NEO {
 static std::string vendor = "Intel(R) Corporation";
 static std::string profile = "FULL_PROFILE";
 static std::string spirVersions = "1.2 ";
-static std::string spirvName = "SPIR-V";
-const char *latestConformanceVersionPassed = "v2023-05-16-00";
+const char *latestConformanceVersionPassed = "v2024-02-27-00";
 #define QTR(a) #a
 #define TOSTR(b) QTR(b)
 static std::string driverVersion = TOSTR(NEO_OCL_DRIVER_VERSION);
@@ -114,13 +117,9 @@ void ClDevice::initializeCaps() {
     deviceInfo.vendor = vendor.c_str();
     deviceInfo.profile = profile.c_str();
     enabledClVersion = hwInfo.capabilityTable.clVersionSupport;
-    ocl21FeaturesEnabled = hwInfo.capabilityTable.supportsOcl21Features;
+    ocl21FeaturesEnabled = HwInfoHelper::checkIfOcl21FeaturesEnabledOrEnforced(hwInfo);
     if (debugManager.flags.ForceOCLVersion.get() != 0) {
         enabledClVersion = debugManager.flags.ForceOCLVersion.get();
-        ocl21FeaturesEnabled = (enabledClVersion == 21);
-    }
-    if (debugManager.flags.ForceOCL21FeaturesSupport.get() != -1) {
-        ocl21FeaturesEnabled = debugManager.flags.ForceOCL21FeaturesSupport.get();
     }
     switch (enabledClVersion) {
     case 30:
@@ -144,8 +143,7 @@ void ClDevice::initializeCaps() {
     initializeOpenclCAllVersions();
     deviceInfo.platformLP = (hwInfo.capabilityTable.supportsOcl21Features == false);
     deviceInfo.spirVersions = spirVersions.c_str();
-    deviceInfo.ilsWithVersion[0].version = CL_MAKE_VERSION(1, 2, 0);
-    strcpy_s(deviceInfo.ilsWithVersion[0].name, CL_NAME_VERSION_MAX_NAME_SIZE, spirvName.c_str());
+    initializeILsWithVersion();
 
     deviceInfo.independentForwardProgress = hwInfo.capabilityTable.supportsIndependentForwardProgress;
     deviceInfo.maxNumOfSubGroups = 0;
@@ -164,10 +162,12 @@ void ClDevice::initializeCaps() {
         deviceInfo.singleFpAtomicCapabilities = defaultFpAtomicCapabilities;
         deviceInfo.halfFpAtomicCapabilities = 0;
         if (ocl21FeaturesEnabled && hwInfo.capabilityTable.supportsFloatAtomics) {
-            deviceInfo.singleFpAtomicCapabilities |= static_cast<cl_device_fp_atomic_capabilities_ext>(
-                CL_DEVICE_GLOBAL_FP_ATOMIC_ADD_EXT | CL_DEVICE_GLOBAL_FP_ATOMIC_MIN_MAX_EXT | CL_DEVICE_LOCAL_FP_ATOMIC_ADD_EXT | CL_DEVICE_LOCAL_FP_ATOMIC_MIN_MAX_EXT);
-            deviceInfo.halfFpAtomicCapabilities |= static_cast<cl_device_fp_atomic_capabilities_ext>(
-                CL_DEVICE_GLOBAL_FP_ATOMIC_LOAD_STORE_EXT | CL_DEVICE_GLOBAL_FP_ATOMIC_MIN_MAX_EXT | CL_DEVICE_LOCAL_FP_ATOMIC_LOAD_STORE_EXT | CL_DEVICE_LOCAL_FP_ATOMIC_MIN_MAX_EXT);
+            uint32_t fp16Caps = 0u;
+            uint32_t fp32Caps = 0u;
+            compilerProductHelper.getKernelFp16AtomicCapabilities(releaseHelper, fp16Caps);
+            compilerProductHelper.getKernelFp32AtomicCapabilities(fp32Caps);
+            deviceInfo.halfFpAtomicCapabilities = fp16Caps;
+            deviceInfo.singleFpAtomicCapabilities = fp32Caps;
         }
 
         const cl_device_fp_atomic_capabilities_ext baseFP64AtomicCapabilities = hwInfo.capabilityTable.ftrSupportsInteger64BitAtomics || hwInfo.capabilityTable.supportsFloatAtomics ? defaultFpAtomicCapabilities : 0;
@@ -177,6 +177,12 @@ void ClDevice::initializeCaps() {
                                                                                                                                                         : 0;
 
         deviceInfo.doubleFpAtomicCapabilities = deviceInfo.doubleFpConfig != 0u ? baseFP64AtomicCapabilities | optionalFP64AtomicCapabilities : 0;
+        static_assert(CL_DEVICE_GLOBAL_FP_ATOMIC_LOAD_STORE_EXT == FpAtomicExtFlags::globalLoadStore, "Mismatch between internal and API - specific capabilities.");
+        static_assert(CL_DEVICE_GLOBAL_FP_ATOMIC_ADD_EXT == FpAtomicExtFlags::globalAdd, "Mismatch between internal and API - specific capabilities.");
+        static_assert(CL_DEVICE_GLOBAL_FP_ATOMIC_MIN_MAX_EXT == FpAtomicExtFlags::globalMinMax, "Mismatch between internal and API - specific capabilities.");
+        static_assert(CL_DEVICE_LOCAL_FP_ATOMIC_LOAD_STORE_EXT == FpAtomicExtFlags::localLoadStore, "Mismatch between internal and API - specific capabilities.");
+        static_assert(CL_DEVICE_LOCAL_FP_ATOMIC_ADD_EXT == FpAtomicExtFlags::localAdd, "Mismatch between internal and API - specific capabilities.");
+        static_assert(CL_DEVICE_LOCAL_FP_ATOMIC_MIN_MAX_EXT == FpAtomicExtFlags::localMinMax, "Mismatch between internal and API - specific capabilities.");
     }
 
     if (debugManager.flags.EnableNV12.get() && hwInfo.capabilityTable.supportsImages) {
@@ -292,9 +298,6 @@ void ClDevice::initializeCaps() {
     deviceInfo.maxWorkItemDimensions = 3;
 
     deviceInfo.maxComputUnits = systemInfo.EUCount * subDevicesCount;
-    if (device.isEngineInstanced()) {
-        deviceInfo.maxComputUnits /= systemInfo.CCSInfo.NumberOfCCSEnabled;
-    }
 
     deviceInfo.maxConstantArgs = 8;
     deviceInfo.maxSliceCount = systemInfo.SliceCount;
@@ -402,7 +405,9 @@ void ClDevice::initializeCaps() {
 
     deviceInfo.hostMemCapabilities = productHelper.getHostMemCapabilities(&hwInfo);
     deviceInfo.deviceMemCapabilities = productHelper.getDeviceMemCapabilities();
-    deviceInfo.singleDeviceSharedMemCapabilities = productHelper.getSingleDeviceSharedMemCapabilities();
+
+    const bool isKmdMigrationAvailable{getMemoryManager()->isKmdMigrationAvailable(getRootDeviceIndex())};
+    deviceInfo.singleDeviceSharedMemCapabilities = productHelper.getSingleDeviceSharedMemCapabilities(isKmdMigrationAvailable);
     deviceInfo.crossDeviceSharedMemCapabilities = productHelper.getCrossDeviceSharedMemCapabilities();
     deviceInfo.sharedSystemMemCapabilities = productHelper.getSharedSystemMemCapabilities(&hwInfo);
 
@@ -425,7 +430,7 @@ void ClDevice::initializeCaps() {
     }
 
     initializeOsSpecificCaps();
-    getOpenclCFeaturesList(hwInfo, deviceInfo.openclCFeatures, getDevice().getCompilerProductHelper());
+    getOpenclCFeaturesList(hwInfo, deviceInfo.openclCFeatures, getDevice().getCompilerProductHelper(), releaseHelper);
 }
 
 void ClDevice::initializeExtensionsWithVersion() {
@@ -450,6 +455,33 @@ void ClDevice::initializeOpenclCAllVersions() {
         openClCVersion.version = CL_MAKE_VERSION(ver.major, ver.minor, 0);
         deviceInfo.openclCAllVersions.push_back(openClCVersion);
     }
+}
+
+void ClDevice::initializeILsWithVersion() {
+    std::stringstream ilsStringStream{device.getDeviceInfo().ilVersion};
+    std::vector<std::string> ilsVector{
+        std::istream_iterator<std::string>{ilsStringStream}, std::istream_iterator<std::string>{}};
+    deviceInfo.ilsWithVersion.reserve(ilsVector.size());
+    for (auto &il : ilsVector) {
+        size_t majorVersionPos = il.find_last_of('_');
+        size_t minorVersionPos = il.find_last_of('.');
+        if (majorVersionPos != std::string::npos && minorVersionPos != std::string::npos) {
+            cl_name_version ilWithVersion;
+            uint32_t majorVersion = static_cast<uint32_t>(std::stoul(il.substr(majorVersionPos + 1)));
+            uint32_t minorVersion = static_cast<uint32_t>(std::stoul(il.substr(minorVersionPos + 1)));
+            strcpy_s(ilWithVersion.name, CL_NAME_VERSION_MAX_NAME_SIZE, il.substr(0, majorVersionPos).c_str());
+            ilWithVersion.version = CL_MAKE_VERSION(majorVersion, minorVersion, 0);
+            deviceInfo.ilsWithVersion.push_back(ilWithVersion);
+        }
+    }
+}
+
+void ClDevice::initializeMaxPoolCount() {
+    auto &device = getDevice();
+    const auto bitfield = device.getDeviceBitfield();
+    const auto deviceMemory = device.getGlobalMemorySize(static_cast<uint32_t>(bitfield.to_ulong()));
+    const auto maxPoolCount = Context::BufferPoolAllocator::calculateMaxPoolCount(deviceMemory, 2);
+    device.updateMaxPoolCount(maxPoolCount);
 }
 
 const std::string ClDevice::getClDeviceName() const {

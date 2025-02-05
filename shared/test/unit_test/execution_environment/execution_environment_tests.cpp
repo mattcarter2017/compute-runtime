@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,9 +18,11 @@
 #include "shared/source/helpers/driver_model_type.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
+#include "shared/source/memory_manager/unified_memory_reuse_cleaner.h"
 #include "shared/source/os_interface/device_factory.h"
 #include "shared/source/os_interface/driver_info.h"
 #include "shared/source/os_interface/os_interface.h"
+#include "shared/source/os_interface/os_thread.h"
 #include "shared/source/os_interface/os_time.h"
 #include "shared/source/release_helper/release_helper.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
@@ -55,6 +57,51 @@ TEST(ExecutionEnvironment, WhenCreatingDevicesThenThoseDevicesAddRefcountsToExec
     EXPECT_EQ(expectedRefCounts, executionEnvironment->getRefInternalCount());
 }
 
+TEST(ExecutionEnvironment, givenDeviceCreatorWhenIsMicrosecondAdjustmendRequiredByAilThenGetMicrosecondResolutionCalled) {
+    auto executionEnvironment = new ExecutionEnvironment();
+    auto devices = DeviceFactory::createDevices(*executionEnvironment);
+    executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.get());
+    mockAIL->adjustMicrosecondResolution = true;
+    auto device = Device::create<RootDevice>(executionEnvironment, 0u);
+    EXPECT_EQ(mockAIL->getMicrosecondResolutionCalledTimes, 1u);
+    delete device;
+}
+
+TEST(ExecutionEnvironment, givenDeviceCreatorWhenIsMicrosecondAdjustmendRequiredByAilThenMicrosecondResolutionIsSameAsInMock) {
+    auto executionEnvironment = new ExecutionEnvironment();
+    auto devices = DeviceFactory::createDevices(*executionEnvironment);
+    executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.get());
+    mockAIL->adjustMicrosecondResolution = true;
+    uint32_t expectedResolution = 3u;
+    mockAIL->mockMicrosecondResolution = expectedResolution;
+    auto device = Device::create<RootDevice>(executionEnvironment, 0u);
+    EXPECT_EQ(device->getMicrosecondResolution(), expectedResolution);
+    delete device;
+}
+TEST(ExecutionEnvironment, givenDeviceCreatorWhenAilHelperIsNullThenDefaultValueReturned) {
+    auto executionEnvironment = new ExecutionEnvironment();
+    auto devices = DeviceFactory::createDevices(*executionEnvironment);
+    executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.reset();
+    uint32_t expectedResolution = 1000u;
+    auto device = Device::create<RootDevice>(executionEnvironment, 0u);
+    EXPECT_EQ(device->getMicrosecondResolution(), expectedResolution);
+    delete device;
+}
+
+TEST(ExecutionEnvironment, givenDeviceCreatorWhenIsMicrosecondAdjustmendIsNotRequiredByAilThenGetMicrosecondResolutionIsNotCalled) {
+    auto executionEnvironment = new ExecutionEnvironment();
+    auto devices = DeviceFactory::createDevices(*executionEnvironment);
+    MockAILConfiguration mockAilConfigurationHelper;
+    executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(executionEnvironment->rootDeviceEnvironments[0u]->ailConfiguration.get());
+    mockAIL->adjustMicrosecondResolution = false;
+    auto device = Device::create<RootDevice>(executionEnvironment, 0u);
+    EXPECT_EQ(mockAIL->getMicrosecondResolutionCalledTimes, 0u);
+    delete device;
+}
+
 TEST(ExecutionEnvironment, givenMemoryManagerIsNotInitializedInExecutionEnvironmentWhenCreatingDevicesThenEmptyDeviceVectorIsReturned) {
     class FailedInitializeMemoryManagerExecutionEnvironment : public MockExecutionEnvironment {
         bool initializeMemoryManager() override { return false; }
@@ -79,16 +126,17 @@ TEST(RootDeviceEnvironment, givenExecutionEnvironmentWhenInitializeAubCenterIsCa
     MockExecutionEnvironment executionEnvironment;
     executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
     auto rootDeviceEnvironment = static_cast<MockRootDeviceEnvironment *>(executionEnvironment.rootDeviceEnvironments[0].get());
-    rootDeviceEnvironment->initAubCenter(true, "test.aub", CommandStreamReceiverType::CSR_AUB);
+    rootDeviceEnvironment->initAubCenter(true, "test.aub", CommandStreamReceiverType::aub);
     EXPECT_TRUE(rootDeviceEnvironment->initAubCenterCalled);
     EXPECT_TRUE(rootDeviceEnvironment->localMemoryEnabledReceived);
     EXPECT_STREQ(rootDeviceEnvironment->aubFileNameReceived.c_str(), "test.aub");
 }
 
 TEST(RootDeviceEnvironment, whenCreatingRootDeviceEnvironmentThenCreateOsAgnosticOsTime) {
+    DebugManagerStateRestore dbgRestore;
     MockExecutionEnvironment executionEnvironment;
     executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
-    auto profilingTimerResolution = defaultHwInfo->capabilityTable.defaultProfilingTimerResolution;
+    auto profilingTimerResolution = CommonConstants::defaultProfilingTimerResolution;
 
     auto rootDeviceEnvironment = static_cast<MockRootDeviceEnvironment *>(executionEnvironment.rootDeviceEnvironments[0].get());
 
@@ -103,12 +151,20 @@ TEST(RootDeviceEnvironment, whenCreatingRootDeviceEnvironmentThenCreateOsAgnosti
     EXPECT_EQ(0u, rootDeviceEnvironment->osTime->getCpuRawTimestamp());
 
     TimeStampData tsData{1, 2};
-    EXPECT_TRUE(rootDeviceEnvironment->osTime->getGpuCpuTime(&tsData));
-    EXPECT_EQ(0u, tsData.cpuTimeinNS);
+    TimeQueryStatus error = rootDeviceEnvironment->osTime->getGpuCpuTime(&tsData);
+    EXPECT_EQ(error, TimeQueryStatus::success);
     EXPECT_EQ(0u, tsData.gpuTimeStamp);
 
-    EXPECT_EQ(profilingTimerResolution, rootDeviceEnvironment->osTime->getDynamicDeviceTimerResolution(*defaultHwInfo));
-    EXPECT_EQ(static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution(*defaultHwInfo)), rootDeviceEnvironment->osTime->getDynamicDeviceTimerClock(*defaultHwInfo));
+    EXPECT_EQ(profilingTimerResolution, rootDeviceEnvironment->osTime->getDynamicDeviceTimerResolution());
+    EXPECT_EQ(static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution()), rootDeviceEnvironment->osTime->getDynamicDeviceTimerClock());
+
+    struct MockOSTime : public OSTime {
+        using OSTime::deviceTime;
+    };
+    auto deviceTime = static_cast<MockOSTime *>(rootDeviceEnvironment->osTime.get())->deviceTime.get();
+    EXPECT_TRUE(deviceTime->isTimestampsRefreshEnabled());
+    debugManager.flags.EnableReusingGpuTimestamps.set(0);
+    EXPECT_FALSE(deviceTime->isTimestampsRefreshEnabled());
 }
 
 TEST(RootDeviceEnvironment, givenUseAubStreamFalseWhenGetAubManagerIsCalledThenReturnNull) {
@@ -117,7 +173,7 @@ TEST(RootDeviceEnvironment, givenUseAubStreamFalseWhenGetAubManagerIsCalledThenR
 
     MockExecutionEnvironment executionEnvironment{defaultHwInfo.get(), false, 1u};
     auto rootDeviceEnvironment = executionEnvironment.rootDeviceEnvironments[0].get();
-    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::CSR_AUB);
+    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::aub);
     auto aubManager = rootDeviceEnvironment->aubCenter->getAubManager();
     EXPECT_EQ(nullptr, aubManager);
 }
@@ -125,14 +181,14 @@ TEST(RootDeviceEnvironment, givenUseAubStreamFalseWhenGetAubManagerIsCalledThenR
 TEST(RootDeviceEnvironment, givenExecutionEnvironmentWhenInitializeAubCenterIsCalledThenItIsInitalizedOnce) {
     MockExecutionEnvironment executionEnvironment{defaultHwInfo.get(), false, 1u};
     auto rootDeviceEnvironment = executionEnvironment.rootDeviceEnvironments[0].get();
-    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::CSR_AUB);
+    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::aub);
     auto currentAubCenter = rootDeviceEnvironment->aubCenter.get();
     EXPECT_NE(nullptr, currentAubCenter);
     auto currentAubStreamProvider = currentAubCenter->getStreamProvider();
     EXPECT_NE(nullptr, currentAubStreamProvider);
     auto currentAubFileStream = currentAubStreamProvider->getStream();
     EXPECT_NE(nullptr, currentAubFileStream);
-    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::CSR_AUB);
+    rootDeviceEnvironment->initAubCenter(false, "", CommandStreamReceiverType::aub);
     EXPECT_EQ(currentAubCenter, rootDeviceEnvironment->aubCenter.get());
     EXPECT_EQ(currentAubStreamProvider, rootDeviceEnvironment->aubCenter->getStreamProvider());
     EXPECT_EQ(currentAubFileStream, rootDeviceEnvironment->aubCenter->getStreamProvider()->getStream());
@@ -215,6 +271,7 @@ TEST(ExecutionEnvironment, givenEnableDirectSubmissionControllerSetWhenInitializ
     DebugManagerStateRestore restorer;
     debugManager.flags.EnableDirectSubmissionController.set(1);
 
+    VariableBackup<decltype(NEO::Thread::createFunc)> funcBackup{&NEO::Thread::createFunc, [](void *(*func)(void *), void *arg) -> std::unique_ptr<Thread> { return nullptr; }};
     MockExecutionEnvironment executionEnvironment{};
     auto controller = executionEnvironment.initializeDirectSubmissionController();
 
@@ -239,6 +296,30 @@ TEST(ExecutionEnvironment, givenEnableDirectSubmissionControllerSetZeroWhenIniti
     auto controller = executionEnvironment.initializeDirectSubmissionController();
 
     EXPECT_EQ(controller, nullptr);
+}
+
+TEST(ExecutionEnvironment, givenExperimentalUSMAllocationReuseCleanerSetWhenInitializeUnifiedMemoryReuseCleanerThenNotNull) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.ExperimentalUSMAllocationReuseCleaner.set(1);
+
+    VariableBackup<decltype(NEO::Thread::createFunc)> funcBackup{&NEO::Thread::createFunc, [](void *(*func)(void *), void *arg) -> std::unique_ptr<Thread> { return nullptr; }};
+    MockExecutionEnvironment executionEnvironment{};
+    executionEnvironment.initializeUnifiedMemoryReuseCleaner();
+    auto cleaner = executionEnvironment.unifiedMemoryReuseCleaner.get();
+
+    EXPECT_NE(cleaner, nullptr);
+    executionEnvironment.initializeUnifiedMemoryReuseCleaner();
+    EXPECT_EQ(cleaner, executionEnvironment.unifiedMemoryReuseCleaner.get());
+}
+
+TEST(ExecutionEnvironment, givenExperimentalUSMAllocationReuseCleanerSetZeroWhenInitializeUnifiedMemoryReuseCleanerThenNull) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.ExperimentalUSMAllocationReuseCleaner.set(0);
+
+    MockExecutionEnvironment executionEnvironment{};
+    executionEnvironment.initializeUnifiedMemoryReuseCleaner();
+
+    EXPECT_EQ(nullptr, executionEnvironment.unifiedMemoryReuseCleaner.get());
 }
 
 TEST(ExecutionEnvironment, givenNeoCalEnabledWhenCreateExecutionEnvironmentThenSetDebugVariables) {
@@ -305,26 +386,35 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWhenInitializeMemoryManagerI
     executionEnvironment.initializeMemoryManager();
     EXPECT_NE(nullptr, executionEnvironment.memoryManager);
 }
-static_assert(sizeof(ExecutionEnvironment) == sizeof(std::unique_ptr<HardwareInfo>) +
-                                                  sizeof(std::vector<RootDeviceEnvironment>) +
-                                                  sizeof(std::unique_ptr<OsEnvironment>) +
+
+static_assert(sizeof(ExecutionEnvironment) == sizeof(std::unique_ptr<MemoryManager>) +
                                                   sizeof(std::unique_ptr<DirectSubmissionController>) +
-                                                  sizeof(std::unordered_map<uint32_t, uint32_t>) +
+                                                  sizeof(std::unique_ptr<UnifiedMemoryReuseCleaner>) +
+                                                  sizeof(std::unique_ptr<OsEnvironment>) +
+                                                  sizeof(std::vector<std::unique_ptr<RootDeviceEnvironment>>) +
+                                                  sizeof(std::unordered_map<uint32_t, std::tuple<uint32_t, uint32_t, uint32_t>>) +
+                                                  sizeof(std::unordered_map<std::thread::id, std::string>) +
+                                                  2 * sizeof(std::mutex) +
                                                   2 * sizeof(bool) +
-                                                  sizeof(NEO::DebuggingMode) +
-                                                  (is64bit ? 18 : 14) +
+                                                  sizeof(DeviceHierarchyMode) +
+                                                  sizeof(DebuggingMode) +
+                                                  sizeof(std::unordered_map<uint32_t, uint32_t>) +
                                                   sizeof(std::mutex) +
-                                                  sizeof(std::unordered_map<uint32_t, std::tuple<uint32_t, uint32_t, uint32_t>>),
+                                                  sizeof(std::vector<std::tuple<std::string, uint32_t>>) +
+                                                  (is64bit ? 22 : 14),
               "New members detected in ExecutionEnvironment, please ensure that destruction sequence of objects is correct");
 
 TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDestroyedThenDeleteSequenceIsSpecified) {
     uint32_t destructorId = 0u;
 
-    struct MemoryMangerMock : public DestructorCounted<MockMemoryManager, 7> {
+    struct MemoryMangerMock : public DestructorCounted<MockMemoryManager, 8> {
         MemoryMangerMock(uint32_t &destructorId, ExecutionEnvironment &executionEnvironment) : DestructorCounted(destructorId, executionEnvironment) {
             callBaseAllocateGraphicsMemoryForNonSvmHostPtr = false;
             callBasePopulateOsHandles = false;
         }
+    };
+    struct UnifiedMemoryReuseCleanerMock : public DestructorCounted<UnifiedMemoryReuseCleaner, 7> {
+        UnifiedMemoryReuseCleanerMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
     };
     struct DirectSubmissionControllerMock : public DestructorCounted<DirectSubmissionController, 6> {
         DirectSubmissionControllerMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
@@ -339,7 +429,7 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDe
         MemoryOperationsHandlerMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
     };
     struct AubCenterMock : public DestructorCounted<AubCenter, 2> {
-        AubCenterMock(uint32_t &destructorId, const RootDeviceEnvironment &rootDeviceEnvironment) : DestructorCounted(destructorId, rootDeviceEnvironment, false, "", CommandStreamReceiverType::CSR_AUB) {}
+        AubCenterMock(uint32_t &destructorId, const RootDeviceEnvironment &rootDeviceEnvironment) : DestructorCounted(destructorId, rootDeviceEnvironment, false, "", CommandStreamReceiverType::aub) {}
     };
     struct CompilerInterfaceMock : public DestructorCounted<CompilerInterface, 1> {
         CompilerInterfaceMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
@@ -357,9 +447,10 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDe
     executionEnvironment->rootDeviceEnvironments[0]->builtins = std::make_unique<BuiltinsMock>(destructorId);
     executionEnvironment->rootDeviceEnvironments[0]->compilerInterface = std::make_unique<CompilerInterfaceMock>(destructorId);
     executionEnvironment->directSubmissionController = std::make_unique<DirectSubmissionControllerMock>(destructorId);
+    executionEnvironment->unifiedMemoryReuseCleaner = std::make_unique<UnifiedMemoryReuseCleanerMock>(destructorId);
 
     executionEnvironment.reset(nullptr);
-    EXPECT_EQ(8u, destructorId);
+    EXPECT_EQ(9u, destructorId);
 }
 
 TEST(ExecutionEnvironment, givenMultipleRootDevicesWhenTheyAreCreatedThenReuseMemoryManager) {
@@ -370,6 +461,8 @@ TEST(ExecutionEnvironment, givenMultipleRootDevicesWhenTheyAreCreatedThenReuseMe
         executionEnvironment.rootDeviceEnvironments[i]->setHwInfoAndInitHelpers(defaultHwInfo.get());
         executionEnvironment.rootDeviceEnvironments[i]->initGmm();
     }
+    executionEnvironment.calculateMaxOsContextCount();
+
     std::unique_ptr<MockDevice> device(Device::create<MockDevice>(&executionEnvironment, 0u));
     auto &commandStreamReceiver = device->getGpgpuCommandStreamReceiver();
     auto memoryManager = device->getMemoryManager();
@@ -441,13 +534,13 @@ TEST(ExecutionEnvironment, givenUnproperSetCsrFlagValueWhenInitializingMemoryMan
 
 TEST(ExecutionEnvironment, whenCalculateMaxOsContexCountThenGlobalVariableHasProperValue) {
     DebugManagerStateRestore restore;
+    debugManager.flags.ContextGroupSize.set(0);
     VariableBackup<uint32_t> osContextCountBackup(&MemoryManager::maxOsContextCount, 0);
     uint32_t numRootDevices = 17u;
     uint32_t expectedOsContextCount = 0u;
     uint32_t expectedOsContextCountForCcs = 0u;
 
     {
-        debugManager.flags.EngineInstancedSubDevices.set(false);
         MockExecutionEnvironment executionEnvironment(nullptr, true, numRootDevices);
 
         for (const auto &rootDeviceEnvironment : executionEnvironment.rootDeviceEnvironments) {
@@ -469,7 +562,6 @@ TEST(ExecutionEnvironment, whenCalculateMaxOsContexCountThenGlobalVariableHasPro
     }
 
     {
-        debugManager.flags.EngineInstancedSubDevices.set(true);
         MockExecutionEnvironment executionEnvironment(nullptr, true, numRootDevices);
 
         EXPECT_EQ(expectedOsContextCount + expectedOsContextCountForCcs, MemoryManager::maxOsContextCount);
@@ -486,6 +578,57 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWhenSettingFP64EmulationEnab
     ASSERT_FALSE(executionEnvironment.isFP64EmulationEnabled());
     executionEnvironment.setFP64EmulationEnabled();
     EXPECT_TRUE(executionEnvironment.isFP64EmulationEnabled());
+}
+
+TEST(ExecutionEnvironment, givenCorrectZeAffinityMaskWithFlatOrCombinedHierarchyThenMapOfSubDeviceIndicesIsSet) {
+    DebugManagerStateRestore restore;
+
+    debugManager.flags.CreateMultipleSubDevices.set(4);
+    debugManager.flags.ZE_AFFINITY_MASK.set("3");
+    debugManager.flags.SetCommandStreamReceiver.set(1);
+
+    auto hwInfo = *defaultHwInfo;
+
+    DeviceHierarchyMode deviceHierarchyModes[] = {DeviceHierarchyMode::flat, DeviceHierarchyMode::combined};
+    for (auto deviceHierarchyMode : deviceHierarchyModes) {
+        MockExecutionEnvironment executionEnvironment(&hwInfo);
+        executionEnvironment.incRefInternal();
+        executionEnvironment.setDeviceHierarchyMode(deviceHierarchyMode);
+
+        DeviceFactory::createDevices(executionEnvironment);
+
+        EXPECT_FALSE(executionEnvironment.mapOfSubDeviceIndices.empty());
+    }
+}
+
+TEST(ExecutionEnvironment, givenIncorrectZeAffinityMaskWithFlatOrCombinedHierarchyThenMapOfSubDeviceIndicesIsEmpty) {
+    DebugManagerStateRestore restore;
+
+    debugManager.flags.CreateMultipleSubDevices.set(4);
+    debugManager.flags.ZE_AFFINITY_MASK.set("4");
+    debugManager.flags.SetCommandStreamReceiver.set(1);
+
+    auto hwInfo = *defaultHwInfo;
+
+    DeviceHierarchyMode deviceHierarchyModes[] = {DeviceHierarchyMode::flat, DeviceHierarchyMode::combined};
+    for (auto deviceHierarchyMode : deviceHierarchyModes) {
+        MockExecutionEnvironment executionEnvironment(&hwInfo);
+        executionEnvironment.incRefInternal();
+        executionEnvironment.setDeviceHierarchyMode(deviceHierarchyMode);
+
+        DeviceFactory::createDevices(executionEnvironment);
+
+        EXPECT_TRUE(executionEnvironment.mapOfSubDeviceIndices.empty());
+    }
+}
+
+TEST(ExecutionEnvironment, givenBuiltinsSetWhenRootDeviceEnvironmentIsReleasedThenBuiltinsIsReset) {
+    auto hwInfo = *defaultHwInfo;
+    MockExecutionEnvironment executionEnvironment(&hwInfo);
+    executionEnvironment.prepareRootDeviceEnvironments(1);
+    executionEnvironment.rootDeviceEnvironments[0]->builtins.reset(new BuiltIns);
+    executionEnvironment.releaseRootDeviceEnvironmentResources(executionEnvironment.rootDeviceEnvironments[0].get());
+    EXPECT_EQ(nullptr, executionEnvironment.rootDeviceEnvironments[0]->builtins);
 }
 
 TEST(ExecutionEnvironmentWithAILTests, whenAILConfigurationIsNullptrAndEnableAILFlagIsTrueWhenInitializingAILThenReturnFalse) {
@@ -525,44 +668,59 @@ TEST(ExecutionEnvironmentWithAILTests, whenAILConfigurationFailsOnInitProcessExe
     EXPECT_FALSE(rootDeviceEnvironment->initAilConfiguration());
 }
 
-TEST(ExecutionEnvironmentDeviceHierarchy, givenExecutionEnvironmentWithDefaultDeviceHierarchyThenExecutionEnvironmentIsInitializedCorrectly) {
-    VariableBackup<uint32_t> mockGetenvCalledBackup(&IoFunctions::mockGetenvCalled, 0);
+TEST(ExecutionEnvironment, givenExecutionEnvironmentWhenSetErrorDescriptionIsCalledThenGetErrorDescriptionGetsStringCorrectly) {
+    std::string errorString = "we manually created error";
+    std::string errorString2 = "here's the next string to pass with arguments: ";
     MockExecutionEnvironment executionEnvironment;
-    executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
-    auto &gfxCoreHelper = executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>();
-    executionEnvironment.setDeviceHierarchy(gfxCoreHelper);
-    EXPECT_EQ((strcmp(gfxCoreHelper.getDefaultDeviceHierarchy(), "COMPOSITE") != 0),
-              executionEnvironment.isExposingSubDevicesAsDevices());
+    executionEnvironment.setErrorDescription(std::string(errorString));
+
+    const char *pStr = nullptr;
+    executionEnvironment.getErrorDescription(&pStr);
+    EXPECT_EQ(0, strcmp(errorString.c_str(), pStr));
+
+    int result = [](MockExecutionEnvironment *exeEnv, const std::string &str) {
+        int res = exeEnv->setErrorDescription(std::string(str));
+        return res;
+    }(&executionEnvironment, errorString2);
+    EXPECT_NE(0, result);
+    executionEnvironment.getErrorDescription(&pStr);
+    std::string expectedString = errorString2;
+    EXPECT_EQ(0, strcmp(expectedString.c_str(), pStr));
 }
 
-TEST(ExecutionEnvironmentDeviceHierarchy, givenExecutionEnvironmentWithCompositeDeviceHierarchyThenExposeSubDevicesAsDevicesIsFalse) {
-    VariableBackup<uint32_t> mockGetenvCalledBackup(&IoFunctions::mockGetenvCalled, 0);
-    std::unordered_map<std::string, std::string> mockableEnvs = {{"ZE_FLAT_DEVICE_HIERARCHY", "COMPOSITE"}};
-    VariableBackup<std::unordered_map<std::string, std::string> *> mockableEnvValuesBackup(&IoFunctions::mockableEnvValues, &mockableEnvs);
+TEST(ExecutionEnvironment, givenValidExecutionEnvironmentWhenClearErrorDescriptionIsCalledThenEmptyStringIsReturned) {
+    std::string errorString = "error string";
+    std::string emptyString = "";
+    const char *pStr = nullptr;
     MockExecutionEnvironment executionEnvironment;
-    executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
-    executionEnvironment.setDeviceHierarchy(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
-    EXPECT_FALSE(executionEnvironment.isExposingSubDevicesAsDevices());
+
+    int result = executionEnvironment.clearErrorDescription();
+    EXPECT_EQ(0, result);
+    executionEnvironment.getErrorDescription(&pStr);
+    EXPECT_EQ(0, strcmp(emptyString.c_str(), pStr));
+    executionEnvironment.setErrorDescription(errorString);
+    executionEnvironment.getErrorDescription(&pStr);
+
+    EXPECT_EQ(0, strcmp(errorString.c_str(), pStr));
+    EXPECT_EQ(0, result);
+
+    result = executionEnvironment.clearErrorDescription();
+    EXPECT_EQ(0, result);
+    executionEnvironment.getErrorDescription(&pStr);
+    EXPECT_EQ(0, strcmp(emptyString.c_str(), pStr));
 }
 
-TEST(ExecutionEnvironmentDeviceHierarchy, givenExecutionEnvironmentWithFlatDeviceHierarchyThenExposeSubDevicesAsDevicesIsTrue) {
-    VariableBackup<uint32_t> mockGetenvCalledBackup(&IoFunctions::mockGetenvCalled, 0);
-    std::unordered_map<std::string, std::string> mockableEnvs = {{"ZE_FLAT_DEVICE_HIERARCHY", "FLAT"}};
-    VariableBackup<std::unordered_map<std::string, std::string> *> mockableEnvValuesBackup(&IoFunctions::mockableEnvValues, &mockableEnvs);
+TEST(ExecutionEnvironment, givenExecutionEnvironmentWhenGetErrorDescriptionIsCalledThenEmptyStringIsReturned) {
+    std::string errorString = "";
     MockExecutionEnvironment executionEnvironment;
-    executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
-    executionEnvironment.setDeviceHierarchy(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
-    EXPECT_TRUE(executionEnvironment.isExposingSubDevicesAsDevices());
-}
 
-TEST(ExecutionEnvironmentDeviceHierarchy, givenExecutionEnvironmentWithCombinedDeviceHierarchyThenExposeSubDevicesAsDevicesIsTrue) {
-    VariableBackup<uint32_t> mockGetenvCalledBackup(&IoFunctions::mockGetenvCalled, 0);
-    std::unordered_map<std::string, std::string> mockableEnvs = {{"ZE_FLAT_DEVICE_HIERARCHY", "COMBINED"}};
-    VariableBackup<std::unordered_map<std::string, std::string> *> mockableEnvValuesBackup(&IoFunctions::mockableEnvValues, &mockableEnvs);
-    MockExecutionEnvironment executionEnvironment;
-    executionEnvironment.rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
-    executionEnvironment.setDeviceHierarchy(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
-    EXPECT_FALSE(executionEnvironment.isExposingSubDevicesAsDevices());
+    const char *pStr = nullptr;
+    executionEnvironment.getErrorDescription(&pStr);
+    EXPECT_EQ(0, strcmp(errorString.c_str(), pStr));
+
+    executionEnvironment.setErrorDescription(errorString);
+    executionEnvironment.getErrorDescription(&pStr);
+    EXPECT_EQ(0, strcmp(errorString.c_str(), pStr));
 }
 
 void ExecutionEnvironmentSortTests::SetUp() {

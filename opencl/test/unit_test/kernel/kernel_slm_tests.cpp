@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -55,7 +55,7 @@ struct KernelSLMAndBarrierTest : public ClDeviceFixture,
 
 static uint32_t slmSizeInKb[] = {1, 4, 8, 16, 32, 64};
 
-HWCMDTEST_P(IGFX_GEN8_CORE, KernelSLMAndBarrierTest, GivenStaticSlmSizeWhenProgrammingSlmThenProgrammingIsCorrect) {
+HWCMDTEST_P(IGFX_GEN12LP_CORE, KernelSLMAndBarrierTest, GivenStaticSlmSizeWhenProgrammingSlmThenProgrammingIsCorrect) {
     ASSERT_NE(nullptr, pClDevice);
     CommandQueueHw<FamilyType> cmdQ(nullptr, pClDevice, 0, false);
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
@@ -99,35 +99,21 @@ HWCMDTEST_P(IGFX_GEN8_CORE, KernelSLMAndBarrierTest, GivenStaticSlmSizeWhenProgr
 
     uint32_t expectedSlmSize = 0;
 
-    if (::renderCoreFamily == IGFX_GEN8_CORE) {
-        if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (4 * 1024)) {
-            expectedSlmSize = 1;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (8 * 1024)) {
-            expectedSlmSize = 2;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (16 * 1024)) {
-            expectedSlmSize = 4;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (32 * 1024)) {
-            expectedSlmSize = 8;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (64 * 1024)) {
-            expectedSlmSize = 16;
-        }
-    } else {
-        if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (1 * 1024)) // its a power of "2" +1 for example 1 is 2^0 ( 0+1); 2 is 2^1 is (1+1) etc.
-        {
-            expectedSlmSize = 1;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (2 * 1024)) {
-            expectedSlmSize = 2;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (4 * 1024)) {
-            expectedSlmSize = 3;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (8 * 1024)) {
-            expectedSlmSize = 4;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (16 * 1024)) {
-            expectedSlmSize = 5;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (32 * 1024)) {
-            expectedSlmSize = 6;
-        } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (64 * 1024)) {
-            expectedSlmSize = 7;
-        }
+    if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (1 * 1024)) // its a power of "2" +1 for example 1 is 2^0 ( 0+1); 2 is 2^1 is (1+1) etc.
+    {
+        expectedSlmSize = 1;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (2 * 1024)) {
+        expectedSlmSize = 2;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (4 * 1024)) {
+        expectedSlmSize = 3;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (8 * 1024)) {
+        expectedSlmSize = 4;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (16 * 1024)) {
+        expectedSlmSize = 5;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (32 * 1024)) {
+        expectedSlmSize = 6;
+    } else if (kernelInfo.kernelDescriptor.kernelAttributes.slmInlineSize <= (64 * 1024)) {
+        expectedSlmSize = 7;
     }
     ASSERT_GT(expectedSlmSize, 0u);
     EXPECT_EQ(expectedSlmSize, pSrcIDData->getSharedLocalMemorySize());
@@ -141,14 +127,17 @@ HWCMDTEST_P(IGFX_GEN8_CORE, KernelSLMAndBarrierTest, GivenStaticSlmSizeWhenProgr
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     SlmSizes,
     KernelSLMAndBarrierTest,
     testing::ValuesIn(slmSizeInKb));
 
 HWTEST_F(KernelSLMAndBarrierTest, GivenInterfaceDescriptorProgrammedWhenOverrideSlmAllocationSizeIsSetThenSlmSizeIsOverwritten) {
-    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+
     using DefaultWalkerType = typename FamilyType::DefaultWalkerType;
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+
+    using InterfaceDescriptorType = typename DefaultWalkerType::InterfaceDescriptorType;
 
     DefaultWalkerType walkerCmd{};
     uint32_t expectedSlmSize = 5;
@@ -165,9 +154,9 @@ HWTEST_F(KernelSLMAndBarrierTest, GivenInterfaceDescriptorProgrammedWhenOverride
 
     const uint32_t threadGroupCount = 1u;
     uint64_t interfaceDescriptorOffset = indirectHeap.getUsed();
-    INTERFACE_DESCRIPTOR_DATA interfaceDescriptorData;
+    InterfaceDescriptorType interfaceDescriptorData;
 
-    HardwareCommandsHelper<FamilyType>::template sendInterfaceDescriptorData<DefaultWalkerType, INTERFACE_DESCRIPTOR_DATA>(
+    HardwareCommandsHelper<FamilyType>::template sendInterfaceDescriptorData<DefaultWalkerType, InterfaceDescriptorType>(
         indirectHeap,
         interfaceDescriptorOffset,
         0,
@@ -185,7 +174,13 @@ HWTEST_F(KernelSLMAndBarrierTest, GivenInterfaceDescriptorProgrammedWhenOverride
         &walkerCmd,
         &interfaceDescriptorData);
 
-    auto pInterfaceDescriptor = HardwareCommandsHelper<FamilyType>::getInterfaceDescriptor(indirectHeap, interfaceDescriptorOffset, &interfaceDescriptorData);
+    InterfaceDescriptorType *pInterfaceDescriptor = nullptr;
+
+    if constexpr (std::is_same_v<InterfaceDescriptorType, INTERFACE_DESCRIPTOR_DATA>) {
+        pInterfaceDescriptor = HardwareCommandsHelper<FamilyType>::getInterfaceDescriptor(indirectHeap, interfaceDescriptorOffset, &interfaceDescriptorData);
+    } else {
+        pInterfaceDescriptor = &interfaceDescriptorData;
+    }
 
     EXPECT_EQ(expectedSlmSize, pInterfaceDescriptor->getSharedLocalMemorySize());
 }

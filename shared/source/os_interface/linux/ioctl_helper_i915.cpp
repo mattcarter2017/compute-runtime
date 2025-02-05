@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
+#include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/ptr_math.h"
@@ -19,6 +20,7 @@
 #include "shared/source/os_interface/linux/ioctl_helper.h"
 #include "shared/source/os_interface/linux/memory_info.h"
 #include "shared/source/os_interface/linux/os_context_linux.h"
+#include "shared/source/os_interface/linux/sys_calls.h"
 #include "shared/source/os_interface/os_time.h"
 
 #include <fcntl.h>
@@ -132,16 +134,8 @@ int IoctlHelperI915::getDrmParamValueBase(DrmParam drmParam) const {
         return I915_MMAP_OFFSET_WB;
     case DrmParam::mmapOffsetWc:
         return I915_MMAP_OFFSET_WC;
-    case DrmParam::paramChipsetId:
-        return I915_PARAM_CHIPSET_ID;
-    case DrmParam::paramRevision:
-        return I915_PARAM_REVISION;
-    case DrmParam::paramHasExecSoftpin:
-        return I915_PARAM_HAS_EXEC_SOFTPIN;
     case DrmParam::paramHasPooledEu:
         return I915_PARAM_HAS_POOLED_EU;
-    case DrmParam::paramHasScheduler:
-        return I915_PARAM_HAS_SCHEDULER;
     case DrmParam::paramEuTotal:
         return I915_PARAM_EU_TOTAL;
     case DrmParam::paramSubsliceTotal:
@@ -156,8 +150,6 @@ int IoctlHelperI915::getDrmParamValueBase(DrmParam drmParam) const {
         return DRM_I915_QUERY_MEMORY_REGIONS;
     case DrmParam::queryTopologyInfo:
         return DRM_I915_QUERY_TOPOLOGY_INFO;
-    case DrmParam::schedulerCapPreemption:
-        return I915_SCHEDULER_CAP_PREEMPTION;
     case DrmParam::tilingNone:
         return I915_TILING_NONE;
     case DrmParam::tilingY:
@@ -170,13 +162,17 @@ int IoctlHelperI915::getDrmParamValueBase(DrmParam drmParam) const {
     }
 }
 
+EngineCapabilities::Flags IoctlHelperI915::getEngineCapabilitiesFlags(uint64_t capabilities) const {
+    return {};
+}
+
 std::vector<EngineCapabilities> IoctlHelperI915::translateToEngineCaps(const std::vector<uint64_t> &data) {
     auto engineInfo = reinterpret_cast<const drm_i915_query_engine_info *>(data.data());
     std::vector<EngineCapabilities> engines;
     engines.reserve(engineInfo->num_engines);
     for (uint32_t i = 0; i < engineInfo->num_engines; i++) {
         EngineCapabilities engine{};
-        engine.capabilities = engineInfo->engines[i].capabilities;
+        engine.capabilities = getEngineCapabilitiesFlags(engineInfo->engines[i].capabilities);
         engine.engine.engineClass = engineInfo->engines[i].engine.engine_class;
         engine.engine.engineInstance = engineInfo->engines[i].engine.engine_instance;
         engines.push_back(engine);
@@ -203,12 +199,13 @@ std::unique_ptr<EngineInfo> IoctlHelperI915::createEngineInfo(bool isSysmanEnabl
         return {};
     }
     auto engines = translateToEngineCaps(enginesQuery);
+    StackVec<std::vector<EngineCapabilities>, 2> engineInfosPerTile{engines};
     auto hwInfo = drm.getRootDeviceEnvironment().getMutableHardwareInfo();
 
     auto memInfo = drm.getMemoryInfo();
 
     if (!memInfo) {
-        return std::make_unique<EngineInfo>(&drm, engines);
+        return std::make_unique<EngineInfo>(&drm, engineInfosPerTile);
     }
 
     auto &memoryRegions = memInfo->getDrmRegionInfos();
@@ -240,7 +237,7 @@ std::unique_ptr<EngineInfo> IoctlHelperI915::createEngineInfo(bool isSysmanEnabl
     }
 
     if (tileCount == 0u) {
-        return std::make_unique<EngineInfo>(&drm, engines);
+        return std::make_unique<EngineInfo>(&drm, engineInfosPerTile);
     }
 
     std::vector<QueryItem> queryItems{distanceInfos.size()};
@@ -253,7 +250,7 @@ std::unique_ptr<EngineInfo> IoctlHelperI915::createEngineInfo(bool isSysmanEnabl
                                               [](const QueryItem &item) { return item.length == -EINVAL; });
     if (queryUnsupported) {
         DEBUG_BREAK_IF(tileCount != 1);
-        return std::make_unique<EngineInfo>(&drm, engines);
+        return std::make_unique<EngineInfo>(&drm, engineInfosPerTile);
     }
 
     memInfo->assignRegionsFromDistances(distanceInfos);
@@ -312,6 +309,12 @@ unsigned int IoctlHelperI915::getIoctlRequestValue(DrmIoctl ioctlRequest) const 
         return DRM_IOCTL_I915_GEM_VM_CREATE;
     case DrmIoctl::gemVmDestroy:
         return DRM_IOCTL_I915_GEM_VM_DESTROY;
+    case DrmIoctl::perfOpen:
+        return DRM_IOCTL_I915_PERF_OPEN;
+    case DrmIoctl::perfEnable:
+        return I915_PERF_IOCTL_ENABLE;
+    case DrmIoctl::perfDisable:
+        return I915_PERF_IOCTL_DISABLE;
     default:
         return getIoctlRequestValueBase(ioctlRequest);
     }
@@ -327,18 +330,23 @@ std::unique_ptr<MemoryInfo> IoctlHelperI915::createMemoryInfo() {
     return {};
 }
 
+size_t IoctlHelperI915::getLocalMemoryRegionsSize(const MemoryInfo *memoryInfo, uint32_t subDevicesCount, uint32_t deviceBitfield) const {
+    size_t size = 0;
+
+    for (uint32_t i = 0; i < subDevicesCount; i++) {
+        auto memoryBank = (1 << i);
+
+        if (deviceBitfield & memoryBank) {
+            size += memoryInfo->getMemoryRegionSize(memoryBank);
+        }
+    }
+    return size;
+}
+
 std::string IoctlHelperI915::getDrmParamString(DrmParam drmParam) const {
     switch (drmParam) {
-    case DrmParam::paramChipsetId:
-        return "I915_PARAM_CHIPSET_ID";
-    case DrmParam::paramRevision:
-        return "I915_PARAM_REVISION";
-    case DrmParam::paramHasExecSoftpin:
-        return "I915_PARAM_HAS_EXEC_SOFTPIN";
     case DrmParam::paramHasPooledEu:
         return "I915_PARAM_HAS_POOLED_EU";
-    case DrmParam::paramHasScheduler:
-        return "I915_PARAM_HAS_SCHEDULER";
     case DrmParam::paramEuTotal:
         return "I915_PARAM_EU_TOTAL";
     case DrmParam::paramSubsliceTotal:
@@ -393,12 +401,18 @@ std::string IoctlHelperI915::getIoctlString(DrmIoctl ioctlRequest) const {
         return "DRM_IOCTL_I915_GEM_VM_CREATE";
     case DrmIoctl::gemVmDestroy:
         return "DRM_IOCTL_I915_GEM_VM_DESTROY";
+    case DrmIoctl::perfOpen:
+        return "DRM_IOCTL_I915_PERF_OPEN";
+    case DrmIoctl::perfEnable:
+        return "I915_PERF_IOCTL_ENABLE";
+    case DrmIoctl::perfDisable:
+        return "I915_PERF_IOCTL_DISABLE";
     default:
         return getIoctlStringBase(ioctlRequest);
     }
 }
 
-int IoctlHelperI915::createDrmContext(Drm &drm, OsContextLinux &osContext, uint32_t drmVmId, uint32_t deviceIndex) {
+int IoctlHelperI915::createDrmContext(Drm &drm, OsContextLinux &osContext, uint32_t drmVmId, uint32_t deviceIndex, bool allocateInterrupt) {
 
     const auto numberOfCCS = drm.getRootDeviceEnvironment().getHardwareInfo()->gtSystemInfo.CCSInfo.NumberOfCCSEnabled;
     const bool debuggableContext = drm.isContextDebugSupported() && drm.getRootDeviceEnvironment().executionEnvironment.isDebuggingEnabled() && !osContext.isInternalEngine();
@@ -421,7 +435,7 @@ int IoctlHelperI915::createDrmContext(Drm &drm, OsContextLinux &osContext, uint3
     if (drm.isPreemptionSupported() && osContext.isLowPriority()) {
         drm.setLowPriorityContextParam(drmContextId);
     }
-    auto engineFlag = drm.bindDrmContext(drmContextId, deviceIndex, osContext.getEngineType(), osContext.isEngineInstanced());
+    auto engineFlag = drm.bindDrmContext(drmContextId, deviceIndex, osContext.getEngineType());
     osContext.setEngineFlag(engineFlag);
     return drmContextId;
 }
@@ -430,13 +444,14 @@ std::string IoctlHelperI915::getFileForMaxGpuFrequency() const {
     return "/gt_max_freq_mhz";
 }
 
-std::string IoctlHelperI915::getFileForMaxGpuFrequencyOfSubDevice(int subDeviceId) const {
-    return "/gt/gt" + std::to_string(subDeviceId) + "/rps_max_freq_mhz";
+std::string IoctlHelperI915::getFileForMaxGpuFrequencyOfSubDevice(int tileId) const {
+    return "/gt/gt" + std::to_string(tileId) + "/rps_max_freq_mhz";
 }
 
-std::string IoctlHelperI915::getFileForMaxMemoryFrequencyOfSubDevice(int subDeviceId) const {
-    return "/gt/gt" + std::to_string(subDeviceId) + "/mem_RP0_freq_mhz";
+std::string IoctlHelperI915::getFileForMaxMemoryFrequencyOfSubDevice(int tileId) const {
+    return "/gt/gt" + std::to_string(tileId) + "/mem_RP0_freq_mhz";
 }
+
 bool IoctlHelperI915::getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQueryTopologyData &topologyData, TopologyMap &topologyMap) {
 
     auto request = this->getDrmParamValue(DrmParam::queryTopologyInfo);
@@ -448,15 +463,21 @@ bool IoctlHelperI915::getTopologyDataAndMap(const HardwareInfo &hwInfo, DrmQuery
 
     TopologyMapping mapping;
     auto retVal = this->translateTopologyInfo(topologyInfo, topologyData, mapping);
-    topologyData.maxEuPerSubSlice = topologyInfo->maxEusPerSubslice;
 
     topologyMap.clear();
-    topologyMap[0] = mapping;
+    if (!mapping.sliceIndices.empty()) {
+        topologyMap[0] = mapping;
+    }
 
     return retVal;
 }
 
 bool IoctlHelperI915::translateTopologyInfo(const QueryTopologyInfo *queryTopologyInfo, DrmQueryTopologyData &topologyData, TopologyMapping &mapping) {
+    UNRECOVERABLE_IF(queryTopologyInfo->subsliceOffset != static_cast<uint16_t>(Math::divideAndRoundUp(queryTopologyInfo->maxSlices, 8u)));
+    UNRECOVERABLE_IF(queryTopologyInfo->subsliceStride != static_cast<uint16_t>(Math::divideAndRoundUp(queryTopologyInfo->maxSubslices, 8u)));
+    UNRECOVERABLE_IF(queryTopologyInfo->euOffset != queryTopologyInfo->subsliceOffset + queryTopologyInfo->maxSlices * queryTopologyInfo->subsliceStride);
+    UNRECOVERABLE_IF(queryTopologyInfo->euStride != static_cast<uint16_t>(Math::divideAndRoundUp(queryTopologyInfo->maxEusPerSubslice, 8u)));
+
     int sliceCount = 0;
     int subSliceCount = 0;
     int euCount = 0;
@@ -517,19 +538,18 @@ bool IoctlHelperI915::translateTopologyInfo(const QueryTopologyInfo *queryTopolo
     topologyData.sliceCount = sliceCount;
     topologyData.subSliceCount = subSliceCount;
     topologyData.euCount = euCount;
-    topologyData.maxSliceCount = maxSliceCount;
-    topologyData.maxSubSliceCount = maxSubSliceCountPerSlice;
+    topologyData.maxSlices = maxSliceCount;
+    topologyData.maxSubSlicesPerSlice = maxSubSliceCountPerSlice;
+    topologyData.maxEusPerSubSlice = queryTopologyInfo->maxEusPerSubslice;
 
     return (sliceCount && subSliceCount && euCount);
 }
-
-void IoctlHelperI915::fillBindInfoForIpcHandle(uint32_t handle, size_t size) {}
 
 bool IoctlHelperI915::getFdFromVmExport(uint32_t vmId, uint32_t flags, int32_t *fd) {
     return false;
 }
 
-uint32_t IoctlHelperI915::createGem(uint64_t size, uint32_t memoryBanks) {
+uint32_t IoctlHelperI915::createGem(uint64_t size, uint32_t memoryBanks, std::optional<bool> isCoherent) {
     GemCreate gemCreate = {};
     gemCreate.size = size;
     [[maybe_unused]] auto ret = ioctl(DrmIoctl::gemCreate, &gemCreate);
@@ -628,4 +648,64 @@ bool IoctlHelperI915::setGpuCpuTimes(TimeStampData *pGpuCpuTime, OSTime *osTime)
 
     return true;
 }
+
+void IoctlHelperI915::insertEngineToContextParams(ContextParamEngines<> &contextParamEngines, uint32_t engineId, const EngineClassInstance *engineClassInstance, uint32_t tileId, bool hasVirtualEngines) {
+    auto engines = reinterpret_cast<EngineClassInstance *>(contextParamEngines.enginesData);
+    if (!engineClassInstance) {
+        engines[engineId].engineClass = getDrmParamValue(DrmParam::engineClassInvalid);
+        engines[engineId].engineInstance = getDrmParamValue(DrmParam::engineClassInvalidNone);
+    } else {
+        auto index = engineId;
+        if (hasVirtualEngines) {
+            index++;
+        }
+        engines[index] = *engineClassInstance;
+    }
+}
+
+bool IoctlHelperI915::isPreemptionSupported() {
+    int schedulerCap{};
+    GetParam getParam{};
+    getParam.param = I915_PARAM_HAS_SCHEDULER;
+    getParam.value = &schedulerCap;
+
+    int retVal = ioctl(DrmIoctl::getparam, &getParam);
+    if (debugManager.flags.PrintIoctlEntries.get()) {
+        printf("DRM_IOCTL_I915_GETPARAM: param: I915_PARAM_HAS_SCHEDULER, output value: %d, retCode:% d\n",
+               *getParam.value,
+               retVal);
+    }
+    return retVal == 0 && (schedulerCap & I915_SCHEDULER_CAP_PREEMPTION);
+}
+
+bool IoctlHelperI915::queryDeviceIdAndRevision(Drm &drm) {
+
+    HardwareInfo *hwInfo = drm.getRootDeviceEnvironment().getMutableHardwareInfo();
+    auto fileDescriptor = drm.getFileDescriptor();
+    int param{};
+
+    GetParam getParam{};
+    getParam.param = I915_PARAM_CHIPSET_ID;
+    getParam.value = &param;
+
+    int ret = SysCalls::ioctl(fileDescriptor, DRM_IOCTL_I915_GETPARAM, &getParam);
+    if (ret) {
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query device ID parameter!\n");
+        return false;
+    }
+
+    hwInfo->platform.usDeviceID = param;
+
+    getParam.param = I915_PARAM_REVISION;
+    ret = SysCalls::ioctl(fileDescriptor, DRM_IOCTL_I915_GETPARAM, &getParam);
+
+    if (ret != 0) {
+        printDebugString(debugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Cannot query device Rev ID parameter!\n");
+        return false;
+    }
+
+    hwInfo->platform.usRevId = param;
+    return true;
+}
+
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,8 +16,6 @@
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/source/os_interface/product_helper.inl"
-#include "shared/source/os_interface/product_helper_dg2_and_later.inl"
-#include "shared/source/os_interface/product_helper_xehp_and_later.inl"
 #include "shared/source/xe_hpg_core/hw_cmds_dg2.h"
 
 constexpr static auto gfxProduct = IGFX_DG2;
@@ -32,7 +30,6 @@ int ProductHelperHw<gfxProduct>::configureHardwareCustom(HardwareInfo *hwInfo, O
         enableCompression(hwInfo);
     }
 
-    DG2::adjustHardwareInfo(hwInfo);
     enableBlitterOperationsSupport(hwInfo);
 
     hwInfo->workaroundTable.flags.wa_15010089951 = true;
@@ -71,7 +68,7 @@ bool ProductHelperHw<gfxProduct>::getUuid(NEO::DriverModel *driverModel, const u
 }
 
 template <>
-bool ProductHelperHw<gfxProduct>::isTlbFlushRequired() const {
+bool ProductHelperHw<gfxProduct>::isDisableScratchPagesRequiredForDebugger() const {
     return false;
 }
 

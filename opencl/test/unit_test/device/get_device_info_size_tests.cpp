@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/source/helpers/get_info.h"
 #include "shared/source/helpers/string.h"
+#include "shared/test/common/helpers/debug_manager_state_restore.h"
 
 #include "opencl/source/cl_device/cl_device_info_map.h"
 #include "opencl/test/unit_test/fixtures/cl_device_fixture.h"
@@ -26,8 +27,10 @@ using namespace NEO;
 
 struct GetDeviceInfoSize : public ::testing::TestWithParam<std::pair<uint32_t /*cl_device_info*/, size_t>> {
     void SetUp() override {
+        debugManager.flags.ContextGroupSize.set(0);
         param = GetParam();
     }
+    DebugManagerStateRestore restorer;
 
     std::pair<uint32_t, size_t> param;
 };
@@ -64,8 +67,8 @@ std::pair<uint32_t, size_t> deviceInfoParams2[] = {
     {CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE, sizeof(cl_uint)},
     {CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(cl_ulong)},
     {CL_DEVICE_GLOBAL_VARIABLE_PREFERRED_TOTAL_SIZE, sizeof(size_t)},
-    {CL_DEVICE_ILS_WITH_VERSION, sizeof(cl_name_version[1])},
-    {CL_DEVICE_IL_VERSION, sizeof(char[12])},
+    //    {CL_DEVICE_ILS_WITH_VERSION, sizeof(cl_name_version[])},
+    //    {CL_DEVICE_IL_VERSION, sizeof(char[])},
     {CL_DEVICE_IMAGE_SUPPORT, sizeof(cl_bool)},
     {CL_DEVICE_LATEST_CONFORMANCE_VERSION_PASSED, strlen(latestConformanceVersionPassed) + 1},
     {CL_DEVICE_LINKER_AVAILABLE, sizeof(cl_bool)},
@@ -137,7 +140,7 @@ std::pair<uint32_t, size_t> deviceInfoParams2[] = {
     //    {CL_DRIVER_VERSION, sizeof(char[])},
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     Device_,
     GetDeviceInfoSize,
     testing::ValuesIn(deviceInfoParams2));
@@ -226,7 +229,7 @@ std::pair<uint32_t, size_t> deviceInfoImageParams[] = {
     {CL_DEVICE_MAX_WRITE_IMAGE_ARGS, sizeof(cl_uint)},
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     Device_,
     GetDeviceInfoForImage,
     testing::ValuesIn(deviceInfoImageParams));

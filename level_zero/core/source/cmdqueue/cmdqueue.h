@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,27 +7,38 @@
 
 #pragma once
 #include "shared/source/command_stream/task_count_helper.h"
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/definitions/engine_group_types.h"
 #include "shared/source/helpers/heap_base_address_model.h"
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 
 #include <atomic>
 #include <mutex>
 #include <vector>
 
-struct _ze_command_queue_handle_t {};
+struct _ze_command_queue_handle_t {
+};
 
 namespace NEO {
 class CommandStreamReceiver;
 class GraphicsAllocation;
+class LinearStream;
 using ResidencyContainer = std::vector<GraphicsAllocation *>;
+
 } // namespace NEO
 
 struct UnifiedMemoryControls;
 
 namespace L0 {
 struct Device;
+
+struct QueueProperties {
+    NEO::SynchronizedDispatchMode synchronizedDispatchMode = NEO::SynchronizedDispatchMode::disabled;
+    bool interruptHint = false;
+    bool copyOffloadHint = false;
+};
 
 struct CommandQueue : _ze_command_queue_handle_t {
     template <typename Type>
@@ -43,11 +54,11 @@ struct CommandQueue : _ze_command_queue_handle_t {
     virtual ze_result_t destroy() = 0;
     virtual ze_result_t executeCommandLists(uint32_t numCommandLists,
                                             ze_command_list_handle_t *phCommandLists,
-                                            ze_fence_handle_t hFence, bool performMigration) = 0;
-    virtual ze_result_t executeCommands(uint32_t numCommands,
-                                        void *phCommands,
-                                        ze_fence_handle_t hFence) = 0;
+                                            ze_fence_handle_t hFence, bool performMigration,
+                                            NEO::LinearStream *parentImmediateCommandlistLinearStream) = 0;
     virtual ze_result_t synchronize(uint64_t timeout) = 0;
+    virtual ze_result_t getOrdinal(uint32_t *pOrdinal) = 0;
+    virtual ze_result_t getIndex(uint32_t *pIndex) = 0;
 
     static CommandQueue *create(uint32_t productFamily, Device *device, NEO::CommandStreamReceiver *csr,
                                 const ze_command_queue_desc_t *desc, bool isCopyOnly, bool isInternal, bool immediateCmdListQueue, ze_result_t &resultValue);
@@ -55,6 +66,8 @@ struct CommandQueue : _ze_command_queue_handle_t {
     static CommandQueue *fromHandle(ze_command_queue_handle_t handle) {
         return static_cast<CommandQueue *>(handle);
     }
+
+    static QueueProperties extractQueueProperties(const ze_command_queue_desc_t &desc);
 
     virtual void handleIndirectAllocationResidency(UnifiedMemoryControls unifiedMemoryControls, std::unique_lock<std::mutex> &lockForIndirect, bool performMigration) = 0;
     virtual void makeResidentAndMigrate(bool performMigration, const NEO::ResidencyContainer &residencyContainer) = 0;
@@ -87,8 +100,8 @@ struct CommandQueue : _ze_command_queue_handle_t {
     bool stateBaseAddressTracking = false;
     bool doubleSbaWa = false;
     bool dispatchCmdListBatchBufferAsPrimary = false;
-    bool internalQueueForImmediateCommandList = false;
     bool heaplessModeEnabled = false;
+    bool heaplessStateInitEnabled = false;
 };
 
 using CommandQueueAllocatorFn = CommandQueue *(*)(Device *device, NEO::CommandStreamReceiver *csr,

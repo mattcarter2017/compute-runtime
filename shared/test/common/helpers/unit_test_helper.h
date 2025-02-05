@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,6 +12,14 @@
 #include <cstddef>
 #include <vector>
 
+class DebugManagerStateRestore;
+
+namespace WalkerPartition {
+
+struct WalkerPartitionArgs;
+
+} // namespace WalkerPartition
+
 namespace NEO {
 
 class CommandStreamReceiver;
@@ -20,6 +28,13 @@ struct DeviceInfo;
 struct KernelDescriptor;
 struct HardwareInfo;
 struct RootDeviceEnvironment;
+
+struct UnitTestSetter {
+    static void disableHeapless(const DebugManagerStateRestore &restorer);
+    static void disableHeaplessStateInit(const DebugManagerStateRestore &restorer);
+    static void setCcsExposure(RootDeviceEnvironment &rootDeviceEnvironment);
+    static void setRcsExposure(RootDeviceEnvironment &rootDeviceEnvironment);
+};
 
 template <typename GfxFamily>
 struct UnitTestHelper {
@@ -55,8 +70,6 @@ struct UnitTestHelper {
 
     static bool requiresTimestampPacketsInSystemMemory(HardwareInfo &hwInfo);
 
-    static void setExtraMidThreadPreemptionFlag(HardwareInfo &hwInfo, bool value);
-
     static uint32_t getDebugModeRegisterOffset();
     static uint32_t getDebugModeRegisterValue();
     static uint32_t getTdCtlRegisterOffset();
@@ -88,17 +101,27 @@ struct UnitTestHelper {
 
     static void validateSbaMocs(uint32_t expectedMocs, CommandStreamReceiver &csr);
 
-    static GenCmdList::iterator findMidThreadPreemptionAllocationCommand(GenCmdList::iterator begin, GenCmdList::iterator end);
+    static GenCmdList::iterator findCsrBaseAddressCommand(GenCmdList::iterator begin, GenCmdList::iterator end);
 
     static std::vector<GenCmdList::iterator> findAllMidThreadPreemptionAllocationCommand(GenCmdList::iterator begin, GenCmdList::iterator end);
-
+    static uint32_t getInlineDataSize(bool isHeaplessEnabled);
     static bool getDisableFusionStateFromFrontEndCommand(const typename GfxFamily::FrontEndStateCommand &feCmd);
     static bool getComputeDispatchAllWalkerFromFrontEndCommand(const typename GfxFamily::FrontEndStateCommand &feCmd);
     static bool getSystolicFlagValueFromPipelineSelectCommand(const typename GfxFamily::PIPELINE_SELECT &pipelineSelectCmd);
     static size_t getAdditionalDshSize(uint32_t iddCount);
     static bool expectNullDsh(const DeviceInfo &deviceInfo);
 
-    static bool findStateCacheFlushPipeControl(LinearStream &csrStream);
+    static bool findStateCacheFlushPipeControl(CommandStreamReceiver &csr, LinearStream &csrStream);
+    static void verifyDummyBlitWa(const RootDeviceEnvironment *rootDeviceEnvironment, GenCmdList::iterator &cmdIterator);
+    static uint64_t getWalkerPartitionEstimateSpaceRequiredInCommandBuffer(bool isHeaplessEnabled, WalkerPartition::WalkerPartitionArgs &testArgs);
+    static GenCmdList::iterator findWalkerTypeCmd(GenCmdList::iterator begin, GenCmdList::iterator end);
+    static std::vector<GenCmdList::iterator> findAllWalkerTypeCmds(GenCmdList::iterator begin, GenCmdList::iterator end);
+    static typename GfxFamily::WalkerVariant getWalkerVariant(void *walkerItor);
+    static void getSpaceAndInitWalkerCmd(LinearStream &stream, bool heapless);
+    static void *getInitWalkerCmd(bool heapless);
+    static size_t getWalkerSize(bool isHeaplessEnabled);
+
+    static bool isHeaplessAllowed();
 };
 
 } // namespace NEO

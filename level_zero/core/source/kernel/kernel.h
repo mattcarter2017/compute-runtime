@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,13 +13,17 @@
 #include "shared/source/memory_manager/unified_memory_manager.h"
 #include "shared/source/unified_memory/unified_memory.h"
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zet_api.h>
 
 #include <memory>
 #include <vector>
 
-struct _ze_kernel_handle_t {};
+struct _ze_kernel_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_KERNEL;
+};
 
 namespace NEO {
 class Device;
@@ -119,6 +123,7 @@ struct Kernel : _ze_kernel_handle_t, virtual NEO::DispatchKernelEncoderI {
 
     virtual ze_result_t destroy() = 0;
     virtual ze_result_t getBaseAddress(uint64_t *baseAddress) = 0;
+    virtual ze_result_t getKernelProgramBinary(size_t *kernelSize, char *pKernelBinary) = 0;
     virtual ze_result_t setIndirectAccess(ze_kernel_indirect_access_flags_t flags) = 0;
     virtual ze_result_t getIndirectAccess(ze_kernel_indirect_access_flags_t *flags) = 0;
     virtual ze_result_t getSourceAttributes(uint32_t *pSize, char **pString) = 0;
@@ -140,15 +145,15 @@ struct Kernel : _ze_kernel_handle_t, virtual NEO::DispatchKernelEncoderI {
     virtual void patchGlobalOffset() = 0;
     virtual void patchRegionParams(const CmdListKernelLaunchParams &launchParams) = 0;
 
-    virtual ze_result_t suggestMaxCooperativeGroupCount(uint32_t *totalGroupCount, NEO::EngineGroupType engineGroupType,
-                                                        bool isEngineInstanced) = 0;
+    virtual uint32_t suggestMaxCooperativeGroupCount(NEO::EngineGroupType engineGroupType, bool forceSingleTileQuery) = 0;
     virtual ze_result_t setCacheConfig(ze_cache_config_flags_t flags) = 0;
 
     virtual ze_result_t getProfileInfo(zet_profile_properties_t *pProfileProperties) = 0;
 
     virtual const KernelImmutableData *getImmutableData() const = 0;
 
-    virtual const std::vector<NEO::GraphicsAllocation *> &getResidencyContainer() const = 0;
+    virtual const std::vector<NEO::GraphicsAllocation *> &getArgumentsResidencyContainer() const = 0;
+    virtual const std::vector<NEO::GraphicsAllocation *> &getInternalResidencyContainer() const = 0;
 
     virtual UnifiedMemoryControls getUnifiedMemoryControls() const = 0;
     virtual bool hasIndirectAllocationsAllowed() const = 0;
@@ -158,7 +163,9 @@ struct Kernel : _ze_kernel_handle_t, virtual NEO::DispatchKernelEncoderI {
     virtual void printPrintfOutput(bool hangDetected) = 0;
 
     virtual bool usesSyncBuffer() = 0;
+    virtual bool usesRegionGroupBarrier() const = 0;
     virtual void patchSyncBuffer(NEO::GraphicsAllocation *gfxAllocation, size_t bufferOffset) = 0;
+    virtual void patchRegionGroupBarrier(NEO::GraphicsAllocation *gfxAllocation, size_t bufferOffset) = 0;
 
     virtual NEO::GraphicsAllocation *allocatePrivateMemoryGraphicsAllocation() = 0;
     virtual void patchCrossthreadDataWithPrivateAllocation(NEO::GraphicsAllocation *privateAllocation) = 0;
@@ -177,12 +184,25 @@ struct Kernel : _ze_kernel_handle_t, virtual NEO::DispatchKernelEncoderI {
 
     inline ze_kernel_handle_t toHandle() { return this; }
 
-    bool isMidThreadPreemptionDisallowedForRayTracingKernels() const {
-        return midThreadPreemptionDisallowedForRayTracingKernels;
+    uint32_t getMaxWgCountPerTile(NEO::EngineGroupType engineGroupType) const {
+        auto value = maxWgCountPerTileCcs;
+        if (engineGroupType == NEO::EngineGroupType::renderCompute) {
+            value = maxWgCountPerTileRcs;
+        } else if (engineGroupType == NEO::EngineGroupType::cooperativeCompute) {
+            value = maxWgCountPerTileCooperative;
+        }
+        return value;
     }
 
   protected:
-    bool midThreadPreemptionDisallowedForRayTracingKernels = false;
+    uint32_t maxWgCountPerTileCcs = 0;
+    uint32_t maxWgCountPerTileRcs = 0;
+    uint32_t maxWgCountPerTileCooperative = 0;
+    bool heaplessEnabled = false;
+    bool implicitScalingEnabled = false;
+    bool localDispatchSupport = false;
+    bool rcsAvailable = false;
+    bool cooperativeSupport = false;
 };
 
 using KernelAllocatorFn = Kernel *(*)(Module *module);

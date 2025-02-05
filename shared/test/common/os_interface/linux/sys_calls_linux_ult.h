@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,7 +29,7 @@ extern int (*sysCallsReadlink)(const char *path, char *buf, size_t bufsize);
 extern int (*sysCallsIoctl)(int fileDescriptor, unsigned long int request, void *arg);
 extern int (*sysCallsPoll)(struct pollfd *pollFd, unsigned long int numberOfFds, int timeout);
 extern ssize_t (*sysCallsRead)(int fd, void *buf, size_t count);
-extern ssize_t (*sysCallsWrite)(int fd, void *buf, size_t count);
+extern ssize_t (*sysCallsWrite)(int fd, const void *buf, size_t count);
 extern int (*sysCallsPipe)(int pipeFd[2]);
 extern int (*sysCallsFstat)(int fd, struct stat *buf);
 extern char *(*sysCallsRealpath)(const char *path, char *buf);
@@ -50,6 +50,7 @@ extern int (*sysCallsClosedir)(DIR *dir);
 extern int (*sysCallsGetDevicePath)(int deviceFd, char *buf, size_t &bufSize);
 extern int (*sysCallsClose)(int fileDescriptor);
 
+extern bool allowFakeDevicePath;
 extern int flockRetVal;
 extern int openFuncRetVal;
 extern uint32_t openFuncCalled;
@@ -69,6 +70,10 @@ extern int mkstempCalled;
 extern int renameCalled;
 extern int pathFileExistsCalled;
 extern int flockCalled;
+extern int fsyncCalled;
+extern int fsyncArgPassed;
+extern int fsyncRetVal;
+extern uint32_t writeFuncCalled;
 
 extern std::vector<void *> mmapVector;
 extern std::vector<void *> mmapCapturedExtendedPointers;
@@ -79,5 +84,9 @@ extern uint32_t munmapFuncCalled;
 
 extern off_t lseekReturn;
 extern std::atomic<int> lseekCalledCount;
+extern bool captureDlOpenFilePath;
+extern std::string dlOpenFilePathPassed;
+
+extern long sysconfReturn;
 } // namespace SysCalls
 } // namespace NEO

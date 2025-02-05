@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,8 +32,12 @@ extern size_t setProcessPowerThrottlingStateCalled;
 extern SysCalls::ProcessPowerThrottlingState setProcessPowerThrottlingStateLastValue;
 extern size_t setThreadPriorityCalled;
 extern SysCalls::ThreadPriority setThreadPriorityLastValue;
+extern MEMORY_BASIC_INFORMATION virtualQueryMemoryBasicInformation;
 } // namespace SysCalls
 extern uint32_t numRootDevicesToEnum;
+extern bool gCreateAllocation2FailOnReadOnlyAllocation;
+extern bool gCreateAllocation2ReadOnlyFlagWasPassed;
+extern uint32_t gCreateAllocation2NumCalled;
 std::unique_ptr<HwDeviceIdWddm> createHwDeviceIdFromAdapterLuid(OsEnvironmentWin &osEnvironment, LUID adapterLuid, uint32_t adapterNodeOrdinalIn);
 } // namespace NEO
 
@@ -81,7 +85,6 @@ TEST(Wddm20EnumAdaptersTest, givenEmptyHardwareInfoWhenEnumAdapterIsCalledThenCa
 
     EXPECT_EQ(outHwInfo.platform.eDisplayCoreFamily, hwInfo->platform.eDisplayCoreFamily);
 
-    EXPECT_EQ(outHwInfo.capabilityTable.defaultProfilingTimerResolution, hwInfo->capabilityTable.defaultProfilingTimerResolution);
     EXPECT_EQ(outHwInfo.capabilityTable.clVersionSupport, hwInfo->capabilityTable.clVersionSupport);
     EXPECT_EQ(outHwInfo.capabilityTable.kmdNotifyProperties.enableKmdNotify, hwInfo->capabilityTable.kmdNotifyProperties.enableKmdNotify);
     EXPECT_EQ(outHwInfo.capabilityTable.kmdNotifyProperties.delayKmdNotifyMicroseconds, hwInfo->capabilityTable.kmdNotifyProperties.delayKmdNotifyMicroseconds);
@@ -144,7 +147,7 @@ TEST_F(Wddm20Tests, givenGraphicsAllocationWhenItIsMappedInHeap0ThenItHasGpuAddr
     auto heapBase = wddm->getGfxPartition().Heap32[static_cast<uint32_t>(HeapIndex::heapInternalDeviceMemory)].Base;
     auto heapLimit = wddm->getGfxPartition().Heap32[static_cast<uint32_t>(HeapIndex::heapInternalDeviceMemory)].Limit;
 
-    bool ret = wddm->mapGpuVirtualAddress(gmm.get(), ALLOCATION_HANDLE, heapBase, heapLimit, 0u, gpuAddress);
+    bool ret = wddm->mapGpuVirtualAddress(gmm.get(), ALLOCATION_HANDLE, heapBase, heapLimit, 0u, gpuAddress, AllocationType::unknown);
     EXPECT_TRUE(ret);
 
     auto gmmHelper = rootDeviceEnvironment->getGmmHelper();
@@ -401,4 +404,11 @@ TEST_F(WddmTestWithMockGdiDll, givenSetThreadPriorityStateEnabledWhenInitWddmThe
     wddm->init();
     EXPECT_EQ(1u, SysCalls::setThreadPriorityCalled);
     EXPECT_EQ(SysCalls::ThreadPriority::AboveNormal, SysCalls::setThreadPriorityLastValue);
+}
+
+TEST_F(WddmTestWithMockGdiDll, whenGettingReadOnlyFlagThenReturnTrueOnlyForCpuPointer) {
+    void *ptr = reinterpret_cast<void *>(0x1000);
+    EXPECT_TRUE(wddm->getReadOnlyFlagValue(ptr));
+
+    EXPECT_FALSE(wddm->getReadOnlyFlagValue(nullptr));
 }

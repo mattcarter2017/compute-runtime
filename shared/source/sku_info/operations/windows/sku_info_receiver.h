@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,10 +19,11 @@ class SkuInfoReceiver {
 
   protected:
     static void receiveFtrTableFromAdapterInfoBase(FeatureTable *ftrTable, ADAPTER_INFO_KMD *adapterInfo) {
+        ftrTable->flags.ftrWddmHwQueues = adapterInfo->SkuTable.FtrHwScheduling;
+
 #define RECEIVE_FTR(VAL_NAME) ftrTable->flags.ftr##VAL_NAME = adapterInfo->SkuTable.Ftr##VAL_NAME
         RECEIVE_FTR(GpGpuMidBatchPreempt);
         RECEIVE_FTR(GpGpuThreadGroupLevelPreempt);
-        RECEIVE_FTR(GpGpuMidThreadLevelPreempt);
 
         RECEIVE_FTR(Wddm2Svm);
         RECEIVE_FTR(PooledEuEnabled);
@@ -68,6 +69,11 @@ class SkuInfoReceiver {
         RECEIVE_FTR(Unified3DMediaCompressionFormats);
         RECEIVE_FTR(57bGPUAddressing);
         RECEIVE_FTR(Tile64Optimization);
+        RECEIVE_FTR(WalkerMTP);
+        RECEIVE_FTR(Xe2Compression);
+        RECEIVE_FTR(Xe2PlusTiling);
+        RECEIVE_FTR(Pml5Support);
+        RECEIVE_FTR(L3TransientDataFlush);
 
 #undef RECEIVE_FTR
     }

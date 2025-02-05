@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2022 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,23 +7,26 @@
 
 #pragma once
 
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/os_interface/linux/clos_cache.h"
 #include "shared/source/utilities/spinlock.h"
 
-#include <stddef.h>
-#include <stdint.h>
-#include <unordered_map>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 
 namespace NEO {
 
-class Drm;
+class IoctlHelper;
 
 struct CacheInfo {
-    CacheInfo(Drm &drm, size_t maxReservationCacheSize, uint32_t maxReservationNumCacheRegions, uint16_t maxReservationNumWays)
+    CacheInfo(IoctlHelper &ioctlHelper, size_t maxReservationCacheSize, uint32_t maxReservationNumCacheRegions, uint16_t maxReservationNumWays)
         : maxReservationCacheSize(maxReservationCacheSize),
           maxReservationNumCacheRegions(maxReservationNumCacheRegions),
           maxReservationNumWays(maxReservationNumWays),
-          cacheReserve(drm) {
+          cacheReserve{ioctlHelper} {
+
+        reservedCacheRegionsSize.fill(0UL);
     }
 
     MOCKABLE_VIRTUAL ~CacheInfo();
@@ -69,7 +72,7 @@ struct CacheInfo {
     uint32_t maxReservationNumCacheRegions;
     uint16_t maxReservationNumWays;
     ClosCacheReservation cacheReserve;
-    std::unordered_map<CacheRegion, size_t> cacheRegionsReserved;
+    std::array<size_t, toUnderlying(CacheRegion::count)> reservedCacheRegionsSize;
     SpinLock mtx;
 };
 

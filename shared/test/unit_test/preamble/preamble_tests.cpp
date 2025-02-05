@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,7 +23,6 @@
 #include "shared/test/common/mocks/mock_graphics_allocation.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
-#include "reg_configs_common.h"
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -41,7 +40,7 @@ HWTEST_F(PreambleTest, givenDisabledPreemptioWhenPreambleAdditionalCommandsSizeI
     EXPECT_EQ(0u, cmdSize);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, givenMidthreadPreemptionWhenPreambleAdditionalCommandsSizeIsQueriedThenSizeForPreemptionPreambleIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, PreambleTest, givenMidthreadPreemptionWhenPreambleAdditionalCommandsSizeIsQueriedThenSizeForPreemptionPreambleIsReturned) {
     using GPGPU_CSR_BASE_ADDRESS = typename FamilyType::GPGPU_CSR_BASE_ADDRESS;
     auto mockDevice = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
@@ -54,7 +53,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, givenMidthreadPreemptionWhenPreambleAd
     }
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, givenMidThreadPreemptionWhenPreambleIsProgrammedThenStateSipAndCsrBaseAddressCmdsAreAdded) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, PreambleTest, givenMidThreadPreemptionWhenPreambleIsProgrammedThenStateSipAndCsrBaseAddressCmdsAreAdded) {
     using STATE_SIP = typename FamilyType::STATE_SIP;
     using GPGPU_CSR_BASE_ADDRESS = typename FamilyType::GPGPU_CSR_BASE_ADDRESS;
 
@@ -79,7 +78,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, givenMidThreadPreemptionWhenPreambleIs
         uintptr_t minCsrAlignment = 2 * 256 * MemoryConstants::kiloByte;
         MockGraphicsAllocation csrSurface(reinterpret_cast<void *>(minCsrAlignment), 1024);
 
-        PreambleHelper<FamilyType>::programPreamble(&preambleStream, *mockDevice, 0U, &csrSurface);
+        PreambleHelper<FamilyType>::programPreamble(&preambleStream, *mockDevice, 0U, &csrSurface, false);
 
         PreemptionHelper::programStateSip<FamilyType>(preemptionStream, *mockDevice, nullptr);
 
@@ -112,7 +111,7 @@ HWTEST_F(PreambleTest, givenInactiveKernelDebuggingWhenPreambleKernelDebuggingCo
     EXPECT_EQ(0u, size);
 }
 
-HWTEST_F(PreambleTest, givenDebuggerInitializedAndMidThreadPreemptionWhenGetAdditionalCommandsSizeIsCalledThen2MiLoadRegisterImmCmdsAreAdded) {
+HWTEST_F(PreambleTest, givenDebuggerInitializedAndMidThreadPreemptionWhenGetAdditionalCommandsSizeIsCalledThen2MiLoadRegisterImmCmdsAreAddedInsteadOfBasePreambleProgramming) {
     auto mockDevice = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     mockDevice->setPreemptionMode(PreemptionMode::MidThread);
 
@@ -122,10 +121,9 @@ HWTEST_F(PreambleTest, givenDebuggerInitializedAndMidThreadPreemptionWhenGetAddi
     size_t withDebugging = PreambleHelper<FamilyType>::getAdditionalCommandsSize(*mockDevice);
     EXPECT_LT(withoutDebugging, withDebugging);
 
-    size_t diff = withDebugging - withoutDebugging;
     auto expectedProgrammedCmdsCount = UnitTestHelper<FamilyType>::getMiLoadRegisterImmProgrammedCmdsCount(true);
     size_t sizeExpected = expectedProgrammedCmdsCount * sizeof(typename FamilyType::MI_LOAD_REGISTER_IMM);
-    EXPECT_EQ(sizeExpected, diff);
+    EXPECT_EQ(sizeExpected, withDebugging);
 }
 
 HWTEST_F(PreambleTest, givenDefaultPreambleWhenGetThreadsMaxNumberIsCalledThenMaximumNumberOfThreadsIsReturned) {
@@ -159,7 +157,7 @@ HWTEST_F(PreambleTest, givenMinHwThreadsUnoccupiedDebugVariableWhenGetThreadsMax
     EXPECT_EQ(expected, value);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, WhenProgramVFEStateIsCalledThenCorrectVfeStateAddressIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, PreambleTest, WhenProgramVFEStateIsCalledThenCorrectVfeStateAddressIsReturned) {
     using MEDIA_VFE_STATE = typename FamilyType::MEDIA_VFE_STATE;
 
     char buffer[64];
@@ -182,7 +180,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, WhenProgramVFEStateIsCalledThenCorrect
     EXPECT_EQ(0u, vfeCmd.getScratchSpaceBasePointerHigh());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, WhenGetScratchSpaceAddressOffsetForVfeStateIsCalledThenCorrectOffsetIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, PreambleTest, WhenGetScratchSpaceAddressOffsetForVfeStateIsCalledThenCorrectOffsetIsReturned) {
     using MEDIA_VFE_STATE = typename FamilyType::MEDIA_VFE_STATE;
 
     char buffer[64];
@@ -202,7 +200,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, WhenGetScratchSpaceAddressOffsetForVfe
               offset + reinterpret_cast<uintptr_t>(preambleStream.getCpuBase()));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, PreambleTest, WhenIsSystolicModeConfigurableThenReturnFalse) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, PreambleTest, WhenIsSystolicModeConfigurableThenReturnFalse) {
     MockExecutionEnvironment mockExecutionEnvironment{};
     auto &rootDeviceEnvironment = *mockExecutionEnvironment.rootDeviceEnvironments[0];
     auto result = PreambleHelper<FamilyType>::isSystolicModeConfigurable(rootDeviceEnvironment);
@@ -220,7 +218,7 @@ HWTEST_F(PreambleTest, givenSetForceSemaphoreDelayBetweenWaitsWhenProgramSemapho
     auto buffer = std::unique_ptr<char[]>(new char[bufferSize]);
 
     LinearStream stream(buffer.get(), bufferSize);
-    PreambleHelper<FamilyType>::programSemaphoreDelay(&stream);
+    PreambleHelper<FamilyType>::programSemaphoreDelay(&stream, false);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(stream);
@@ -244,7 +242,7 @@ HWTEST_F(PreambleTest, givenNotSetForceSemaphoreDelayBetweenWaitsWhenProgramSema
     auto buffer = std::unique_ptr<char[]>(new char[bufferSize]);
 
     LinearStream stream(buffer.get(), bufferSize);
-    PreambleHelper<FamilyType>::programSemaphoreDelay(&stream);
+    PreambleHelper<FamilyType>::programSemaphoreDelay(&stream, false);
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(stream);

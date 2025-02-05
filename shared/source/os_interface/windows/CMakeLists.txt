@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019-2023 Intel Corporation
+# Copyright (C) 2019-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -18,7 +18,9 @@ set(NEO_CORE_OS_INTERFACE_WINDOWS
     ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}driver_info_windows_impl.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/driver_info_windows.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/driver_info_windows.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/environment_variables.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/external_semaphore_windows.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external_semaphore_windows.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/gmm_helper_win.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_drm_stub.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/kmd_notify_properties_windows.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_inc.h
@@ -46,6 +48,7 @@ set(NEO_CORE_OS_INTERFACE_WINDOWS
     ${CMAKE_CURRENT_SOURCE_DIR}/wddm/adapter_factory_dxgi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/wddm/read_preemption_regkey.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/windows_inc.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/wddm/${BRANCH_DIR_SUFFIX}/perf_wddm.cpp
 )
 
 set(NEO_CORE_OS_INTERFACE_WDDM
@@ -63,11 +66,11 @@ set(NEO_CORE_OS_INTERFACE_WDDM
     ${CMAKE_CURRENT_SOURCE_DIR}/device_time_wddm.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/device_time_wddm.h
     ${CMAKE_CURRENT_SOURCE_DIR}/driver_info_windows.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/environment_variables.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gdi_interface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gdi_interface.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gdi_interface_logging.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gdi_interface_logging.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/gdi_profiling.h
     ${CMAKE_CURRENT_SOURCE_DIR}/hw_device_id_win.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/hw_device_id.h
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_wddm.cpp
@@ -81,6 +84,7 @@ set(NEO_CORE_OS_INTERFACE_WDDM
     ${CMAKE_CURRENT_SOURCE_DIR}/os_environment_win.h
     ${CMAKE_CURRENT_SOURCE_DIR}/sharedata_wrapper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/sys_calls.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/sys_calls_winmm.h
     ${CMAKE_CURRENT_SOURCE_DIR}/thk_wrapper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/wddm/adapter_info.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/wddm/adapter_info.h
@@ -128,11 +132,11 @@ set(NEO_CORE_OS_INTERFACE_WDDM
 
 if(NOT WIN32 AND NOT DISABLE_WDDM_LINUX)
   list(APPEND NEO_CORE_OS_INTERFACE_WDDM
-       ${NEO_SHARED_DIRECTORY}/dll/wddm/wddm_create.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/wddm/adapter_factory_create_dxcore.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/power_settings_stub.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/trim_callback_stub.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/sys_calls_wrapper_drm_or_wddm.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/wddm/perf_wddm.cpp
   )
 endif()
 

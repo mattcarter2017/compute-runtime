@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,6 +17,7 @@ struct WalkerPartitionArgs;
 
 namespace NEO {
 struct HardwareInfo;
+class Device;
 class LinearStream;
 struct PipeControlArgs;
 struct RootDeviceEnvironment;
@@ -37,6 +38,25 @@ struct ImplicitScalingHelper {
     static bool pipeControlBeforeCleanupAtomicSyncRequired();
 };
 
+struct ImplicitScalingDispatchCommandArgs {
+    uint64_t workPartitionAllocationGpuVa = 0;
+    const NEO::Device *device = nullptr;
+    void **outWalkerPtr = nullptr;
+
+    RequiredPartitionDim requiredPartitionDim = RequiredPartitionDim::none;
+    uint32_t partitionCount = 0;
+    uint32_t workgroupSize = 0;
+    uint32_t threadGroupCount = 0;
+    uint32_t maxWgCountPerTile = 0;
+
+    bool useSecondaryBatchBuffer = false;
+    bool apiSelfCleanup = false;
+    bool dcFlush = false;
+    bool forceExecutionOnSingleTile = false;
+    bool blockDispatchToCommandBuffer = false;
+    bool isRequiredDispatchWorkGroupOrder = false;
+};
+
 template <typename GfxFamily>
 struct ImplicitScalingDispatch {
     using DefaultWalkerType = typename GfxFamily::DefaultWalkerType;
@@ -51,16 +71,8 @@ struct ImplicitScalingDispatch {
     template <typename WalkerType>
     static void dispatchCommands(LinearStream &commandStream,
                                  WalkerType &walkerCmd,
-                                 void **outWalkerPtr,
                                  const DeviceBitfield &devices,
-                                 RequiredPartitionDim requiredPartitionDim,
-                                 uint32_t &partitionCount,
-                                 bool useSecondaryBatchBuffer,
-                                 bool apiSelfCleanup,
-                                 bool dcFlush,
-                                 bool forceExecutionOnSingleTile,
-                                 uint64_t workPartitionAllocationGpuVa,
-                                 const HardwareInfo &hwInfo);
+                                 ImplicitScalingDispatchCommandArgs &dispatchCommandArgs);
 
     static bool &getPipeControlStallRequired();
 
@@ -79,19 +91,17 @@ struct ImplicitScalingDispatch {
     static size_t getRegisterConfigurationSize();
     static void dispatchRegisterConfiguration(LinearStream &commandStream,
                                               uint64_t workPartitionSurfaceAddress,
-                                              uint32_t addressOffset);
+                                              uint32_t addressOffset,
+                                              bool isBcs);
 
     static size_t getOffsetRegisterSize();
     static void dispatchOffsetRegister(LinearStream &commandStream,
-                                       uint32_t addressOffset);
+                                       uint32_t addressOffset, bool isBcs);
 
     static uint32_t getImmediateWritePostSyncOffset();
     static uint32_t getTimeStampPostSyncOffset();
 
     static bool platformSupportsImplicitScaling(const RootDeviceEnvironment &rootDeviceEnvironment);
-
-    template <typename WalkerType>
-    static void appendWalkerFields(WalkerType &walkerCmd, uint32_t tileCount);
 
   private:
     static bool pipeControlStallRequired;

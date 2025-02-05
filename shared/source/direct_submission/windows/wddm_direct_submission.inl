@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -70,10 +70,10 @@ inline void WddmDirectSubmission<GfxFamily, Dispatcher>::flushMonitorFence() {
 
     TagData currentTagData = {};
     this->getTagAddressValue(currentTagData);
-    Dispatcher::dispatchMonitorFence(this->ringCommandStream, currentTagData.tagAddress, currentTagData.tagValue, this->rootDeviceEnvironment, this->useNotifyForPostSync, this->partitionedMode, this->dcFlushRequired);
+    Dispatcher::dispatchMonitorFence(this->ringCommandStream, currentTagData.tagAddress, currentTagData.tagValue, this->rootDeviceEnvironment, this->partitionedMode, this->dcFlushRequired);
 
     this->dispatchSemaphoreSection(this->currentQueueWorkCount + 1);
-    this->submitCommandBufferToGpu(needStart, startVA, requiredMinimalSize);
+    this->submitCommandBufferToGpu(needStart, startVA, requiredMinimalSize, true);
     this->currentQueueWorkCount++;
 
     this->updateTagValueImpl(this->currentRingBuffer);
@@ -86,11 +86,7 @@ void WddmDirectSubmission<GfxFamily, Dispatcher>::ensureRingCompletion() {
 
 template <typename GfxFamily, typename Dispatcher>
 bool WddmDirectSubmission<GfxFamily, Dispatcher>::allocateOsResources() {
-    // for now only WDDM2.0
-    UNRECOVERABLE_IF(wddm->getWddmVersion() != WddmVersion::wddm20);
-
-    bool ret = wddm->getWddmInterface()->createMonitoredFence(ringFence);
-    ringFence.currentFenceValue = 1;
+    bool ret = wddm->getWddmInterface()->createMonitoredFenceForDirectSubmission(ringFence, *this->osContextWin);
     perfLogResidencyVariadicLog(wddm->getResidencyLogger(), "ULLS resource allocation finished with: %d\n", ret);
     return ret;
 }
@@ -208,6 +204,27 @@ void WddmDirectSubmission<GfxFamily, Dispatcher>::updateMonitorFenceValueForResi
         WddmAllocation *allocation = static_cast<WddmAllocation *>((*allocationsForResidency)[i]);
         // Update fence value not to early destroy / evict allocation
         allocation->updateCompletionDataForAllocationAndFragments(currentFence, contextId);
+    }
+}
+
+/**
+ * @brief Unblocks pipeline by waiting for paging fence value and signals semaphore with latest value.
+ * Signals semaphore with latest fence value instead of passed one to unblock immediately subsequent semaphores.
+ *
+ * @param[in] pagingFenceValue paging fence submitted from user thread to wait for.
+ */
+template <typename GfxFamily, typename Dispatcher>
+inline void WddmDirectSubmission<GfxFamily, Dispatcher>::unblockPagingFenceSemaphore(uint64_t pagingFenceValue) {
+    this->wddm->waitOnPagingFenceFromCpu(pagingFenceValue, true);
+    this->semaphoreData->pagingFenceCounter = static_cast<uint32_t>(*this->wddm->getPagingFenceAddress());
+}
+
+template <typename GfxFamily, typename Dispatcher>
+inline void WddmDirectSubmission<GfxFamily, Dispatcher>::makeGlobalFenceAlwaysResident() {
+    if (this->globalFenceAllocation != nullptr) {
+        DirectSubmissionAllocations allocations;
+        allocations.push_back(this->globalFenceAllocation);
+        UNRECOVERABLE_IF(!this->makeResourcesResident(allocations));
     }
 }
 

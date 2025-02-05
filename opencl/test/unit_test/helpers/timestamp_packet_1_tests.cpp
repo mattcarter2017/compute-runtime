@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,7 +29,7 @@
 
 using namespace NEO;
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TimestampPacketTests, givenTimestampPacketWriteEnabledWhenEstimatingStreamSizeThenAddPipeControl) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, TimestampPacketTests, givenTimestampPacketWriteEnabledWhenEstimatingStreamSizeThenAddPipeControl) {
     MockKernelWithInternals kernel2(*device);
     MockMultiDispatchInfo multiDispatchInfo(device.get(), std::vector<Kernel *>({kernel->mockKernel, kernel2.mockKernel}));
     auto mockCmdQHw = std::make_unique<MockCommandQueueHw<FamilyType>>(context, device.get(), nullptr);
@@ -130,8 +130,47 @@ HWTEST_F(TimestampPacketTests, givenCrossCsrDependenciesWhenFillCsrDepsThenFlush
     } else {
         EXPECT_FALSE(mockCmdQ2->getUltCommandStreamReceiver().flushBatchedSubmissionsCalled);
     }
-    EXPECT_FALSE(mockCmdQHw->getUltCommandStreamReceiver().flushBatchedSubmissionsCalled);
 
+    mockCmdQHw->getUltCommandStreamReceiver().latestFlushedTaskCount = 1;
+    *mockCmdQHw->getUltCommandStreamReceiver().tagAddress = 1;
+    mockCmdQ2->getUltCommandStreamReceiver().latestFlushedTaskCount = 1;
+    *mockCmdQ2->getUltCommandStreamReceiver().tagAddress = 1;
+}
+
+HWTEST_F(TimestampPacketTests, givenCrossCsrDependenciesWhenFillCsrDepsThendependentCsrIsStoredInSet) {
+    auto mockCmdQHw = std::make_unique<MockCommandQueueHw<FamilyType>>(context, device.get(), nullptr);
+    mockCmdQHw->getUltCommandStreamReceiver().timestampPacketWriteEnabled = true;
+    mockCmdQHw->getUltCommandStreamReceiver().taskCount = 1;
+    mockCmdQHw->getUltCommandStreamReceiver().latestFlushedTaskCount = 0;
+
+    cl_queue_properties props[] = {CL_QUEUE_PRIORITY_KHR, CL_QUEUE_PRIORITY_LOW_KHR, 0};
+    auto mockCmdQ2 = std::make_unique<MockCommandQueueHw<FamilyType>>(context, device.get(), props);
+    mockCmdQ2->getUltCommandStreamReceiver().timestampPacketWriteEnabled = true;
+    mockCmdQ2->getUltCommandStreamReceiver().taskCount = 1;
+    mockCmdQ2->getUltCommandStreamReceiver().latestFlushedTaskCount = 0;
+
+    const cl_uint eventsOnWaitlist = 2;
+    MockTimestampPacketContainer timestamp(*device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator(), 1);
+    MockTimestampPacketContainer timestamp2(*device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator(), 1);
+
+    Event event(mockCmdQ, 0, 0, 0);
+    event.addTimestampPacketNodes(timestamp);
+    Event event2(mockCmdQ2.get(), 0, 0, 0);
+    event2.addTimestampPacketNodes(timestamp2);
+
+    cl_event waitlist[] = {&event, &event2};
+    EventsRequest eventsRequest(eventsOnWaitlist, waitlist, nullptr);
+    CsrDependencies csrDeps;
+
+    eventsRequest.fillCsrDependenciesForTimestampPacketContainer(csrDeps, mockCmdQ->getGpgpuCommandStreamReceiver(), CsrDependencies::DependenciesType::all);
+
+    const auto &productHelper = device->getProductHelper();
+    if (productHelper.isDcFlushAllowed()) {
+        EXPECT_NE(csrDeps.csrWithMultiEngineDependencies.size(), 0u);
+    } else {
+        EXPECT_EQ(csrDeps.csrWithMultiEngineDependencies.size(), 0u);
+    }
+    EXPECT_TRUE(csrDeps.containsCrossEngineDependency);
     mockCmdQHw->getUltCommandStreamReceiver().latestFlushedTaskCount = 1;
     *mockCmdQHw->getUltCommandStreamReceiver().tagAddress = 1;
     mockCmdQ2->getUltCommandStreamReceiver().latestFlushedTaskCount = 1;
@@ -254,7 +293,7 @@ HWTEST_F(TimestampPacketTests, givenEventsRequestWithEventsWithoutTimestampsWhen
     EXPECT_EQ(expectedSize, TimestampPacketHelper::getRequiredCmdStreamSize<FamilyType>(csrDepsSize3, false));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TimestampPacketTests, givenTimestampPacketWhenDispatchingGpuWalkerThenAddTwoPcForLastWalker) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, TimestampPacketTests, givenTimestampPacketWhenDispatchingGpuWalkerThenAddTwoPcForLastWalker) {
     using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     MockTimestampPacketContainer timestampPacket(*device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator(), 2);
@@ -299,7 +338,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TimestampPacketTests, givenTimestampPacketWhenDispat
     EXPECT_EQ(2u, walkersFound);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TimestampPacketTests, givenTimestampPacketDisabledWhenDispatchingGpuWalkerThenDontAddPipeControls) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, TimestampPacketTests, givenTimestampPacketDisabledWhenDispatchingGpuWalkerThenDontAddPipeControls) {
     MockTimestampPacketContainer timestampPacket(*device->getGpgpuCommandStreamReceiver().getTimestampPacketAllocator(), 1);
     MockMultiDispatchInfo multiDispatchInfo(device.get(), kernel->mockKernel);
     auto &cmdStream = mockCmdQ->getCS(0);
@@ -376,7 +415,8 @@ HWTEST_F(TimestampPacketTests, givenTimestampPacketWriteEnabledWhenEnqueueingThe
 }
 
 HWTEST_F(TimestampPacketTests, givenTimestampPacketWriteEnabledWhenEnqueueingThenWriteWalkerStamp) {
-    using GPGPU_WALKER = typename FamilyType::DefaultWalkerType;
+
+    using WalkerVariant = typename FamilyType::WalkerVariant;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     device->getUltCommandStreamReceiver<FamilyType>().timestampPacketWriteEnabled = true;
@@ -387,23 +427,24 @@ HWTEST_F(TimestampPacketTests, givenTimestampPacketWriteEnabledWhenEnqueueingThe
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(cmdQ->getCS(0), 0);
+    hwParser.findHardwareCommands<FamilyType>();
 
-    bool walkerFound = false;
-    for (auto it = hwParser.cmdList.begin(); it != hwParser.cmdList.end(); it++) {
-        if (genCmdCast<GPGPU_WALKER *>(*it)) {
-            if (MemorySynchronizationCommands<FamilyType>::isBarrierWaRequired(device->getRootDeviceEnvironment())) {
-                auto pipeControl = genCmdCast<PIPE_CONTROL *>(*++it);
-                EXPECT_NE(nullptr, pipeControl);
-            }
-            walkerFound = true;
-            it = find<PIPE_CONTROL *>(++it, hwParser.cmdList.end());
-            ASSERT_NE(hwParser.cmdList.end(), it);
-            auto pipeControl = genCmdCast<PIPE_CONTROL *>(*it);
-            ASSERT_NE(nullptr, pipeControl);
-            EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, pipeControl->getPostSyncOperation());
+    auto it = hwParser.itorWalker;
+    WalkerVariant walkerVariant = NEO::UnitTestHelper<FamilyType>::getWalkerVariant(*it);
+
+    std::visit([&it, &hwParser, this](auto &&walker) {
+        ASSERT_NE(nullptr, walker);
+        if (MemorySynchronizationCommands<FamilyType>::isBarrierWaRequired(device->getRootDeviceEnvironment())) {
+            auto pipeControl = genCmdCast<PIPE_CONTROL *>(*++it);
+            EXPECT_NE(nullptr, pipeControl);
         }
-    }
-    EXPECT_TRUE(walkerFound);
+        it = find<PIPE_CONTROL *>(++it, hwParser.cmdList.end());
+        ASSERT_NE(hwParser.cmdList.end(), it);
+        auto pipeControl = genCmdCast<PIPE_CONTROL *>(*it);
+        ASSERT_NE(nullptr, pipeControl);
+        EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, pipeControl->getPostSyncOperation());
+    },
+               walkerVariant);
 }
 
 HWTEST_F(TimestampPacketTests, givenEventsRequestWhenEstimatingStreamSizeForCsrThenAddSizeForSemaphores) {
@@ -690,7 +731,7 @@ HWTEST_F(TimestampPacketTests, givenTimestampWaitEnabledWhenEnqueueWithEventThen
     EXPECT_TRUE(event1.isCompleted());
     EXPECT_TRUE(event2.isCompleted());
     EXPECT_EQ(csr.waitForCompletionWithTimeoutTaskCountCalled, 0u);
-    EXPECT_EQ(1u, csr.downloadAllocationsCalledCount);
+    EXPECT_EQ(3u, csr.downloadAllocationsCalledCount);
 
     for (CopyEngineState &state : cmdQ->bcsStates) {
         if (state.isValid()) {
@@ -879,17 +920,17 @@ HWTEST_F(TimestampPacketTests, givenEventWhenReleasingThenCheckQueueResources) {
     cmdQ->flush();
 
     auto tagAddress = csr.getTagAddress();
-    *tagAddress = 1;
+    *tagAddress = csr.heaplessStateInitialized ? 2 : 1;
 
-    EXPECT_EQ(2u, csr.taskCount);
-    EXPECT_EQ(2u, cmdQ->taskCount);
+    EXPECT_EQ(csr.heaplessStateInitialized ? 3u : 2u, csr.taskCount);
+    EXPECT_EQ(csr.heaplessStateInitialized ? 3u : 2u, cmdQ->taskCount);
 
     clWaitForEvents(1, &clEvent);
 
     EXPECT_EQ(1u, deferredTimestampPackets->peekNodes().size());
     EXPECT_EQ(1u, timestampPacketContainer->peekNodes().size());
 
-    *tagAddress = 2;
+    *tagAddress = csr.heaplessStateInitialized ? 3 : 2;
 
     clReleaseEvent(clEvent);
 
@@ -923,10 +964,10 @@ HWTEST_F(TimestampPacketTests, givenAllEnginesReadyWhenWaitingForEventThenClearD
 
     cmdQ->flush();
 
-    EXPECT_EQ(2u, csr.taskCount);
+    EXPECT_EQ(cmdQ->heaplessStateInitEnabled ? 3u : 2u, csr.taskCount);
 
     auto tagAddress = csr.getTagAddress();
-    *tagAddress = 1;
+    *tagAddress = cmdQ->heaplessStateInitEnabled ? 2 : 1;
 
     auto eventObj1 = castToObjectOrAbort<Event>(event1);
     auto eventObj2 = castToObjectOrAbort<Event>(event2);
@@ -944,7 +985,7 @@ HWTEST_F(TimestampPacketTests, givenAllEnginesReadyWhenWaitingForEventThenClearD
     EXPECT_EQ(1u, deferredTimestampPackets->peekNodes().size());
     EXPECT_EQ(1u, timestampPacketContainer->peekNodes().size());
 
-    *tagAddress = 2;
+    *tagAddress = cmdQ->heaplessStateInitEnabled ? 3 : 2;
 
     eventObj1->wait(false, false);
     EXPECT_EQ(0u, deferredTimestampPackets->peekNodes().size());
@@ -968,7 +1009,7 @@ HWTEST_F(TimestampPacketTests, givenNewSubmissionWhileWaitingThenDontReleaseDefe
         WaitStatus waitUntilComplete(TaskCountType gpgpuTaskCountToWait, Range<CopyEngineState> copyEnginesToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool cleanTemporaryAllocationList, bool skipWait) override {
             this->taskCount++;
 
-            return MockCommandQueueHw<FamilyType>::waitUntilComplete(gpgpuTaskCountToWait, copyEnginesToWait, flushStampToWait, useQuickKmdSleep, cleanTemporaryAllocationList, skipWait);
+            return this->MockCommandQueueHw<FamilyType>::waitUntilComplete(gpgpuTaskCountToWait, copyEnginesToWait, flushStampToWait, useQuickKmdSleep, cleanTemporaryAllocationList, skipWait);
         }
     };
 
@@ -990,11 +1031,11 @@ HWTEST_F(TimestampPacketTests, givenNewSubmissionWhileWaitingThenDontReleaseDefe
 
     cmdQ->flush();
 
-    EXPECT_EQ(2u, csr.taskCount);
-    EXPECT_EQ(2u, cmdQ->taskCount);
+    EXPECT_EQ(cmdQ->getHeaplessStateInitEnabled() ? 3u : 2u, csr.taskCount);
+    EXPECT_EQ(cmdQ->getHeaplessStateInitEnabled() ? 3u : 2u, cmdQ->taskCount);
 
     auto tagAddress = csr.getTagAddress();
-    *tagAddress = 2;
+    *tagAddress = cmdQ->getHeaplessStateInitEnabled() ? 3 : 2;
 
     cmdQ->finish();
 
@@ -1014,7 +1055,7 @@ HWTEST_F(TimestampPacketTests, givenNewBcsSubmissionWhileWaitingThenDontReleaseD
         WaitStatus waitUntilComplete(TaskCountType gpgpuTaskCountToWait, Range<CopyEngineState> copyEnginesToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool cleanTemporaryAllocationList, bool skipWait) override {
             this->bcsStates[0].taskCount++;
 
-            return MockCommandQueueHw<FamilyType>::waitUntilComplete(gpgpuTaskCountToWait, copyEnginesToWait, flushStampToWait, useQuickKmdSleep, cleanTemporaryAllocationList, skipWait);
+            return this->MockCommandQueueHw<FamilyType>::waitUntilComplete(gpgpuTaskCountToWait, copyEnginesToWait, flushStampToWait, useQuickKmdSleep, cleanTemporaryAllocationList, skipWait);
         }
     };
 
@@ -1042,20 +1083,20 @@ HWTEST_F(TimestampPacketTests, givenNewBcsSubmissionWhileWaitingThenDontReleaseD
 
     cmdQ->flush();
 
-    EXPECT_EQ(2u, csr.taskCount);
-    cmdQ->bcsStates[0].taskCount = 2;
+    EXPECT_EQ(cmdQ->getHeaplessStateInitEnabled() ? 3u : 2u, csr.taskCount);
+    cmdQ->bcsStates[0].taskCount = cmdQ->getHeaplessStateInitEnabled() ? 3 : 2;
 
     auto tagAddress = csr.getTagAddress();
-    *tagAddress = 2;
+    *tagAddress = cmdQ->getHeaplessStateInitEnabled() ? 3 : 2;
 
     cmdQ->finish();
 
-    EXPECT_EQ(3u, cmdQ->bcsStates[0].taskCount);
+    EXPECT_EQ(cmdQ->getHeaplessStateInitEnabled() ? 4u : 3u, cmdQ->bcsStates[0].taskCount);
 
     EXPECT_EQ(1u, deferredTimestampPackets->peekNodes().size());
     EXPECT_EQ(1u, timestampPacketContainer->peekNodes().size());
 
-    *tagAddress = 3;
+    *tagAddress = cmdQ->getHeaplessStateInitEnabled() ? 4 : 3;
 
     cmdQ->bcsEngines[0] = nullptr;
     cmdQ->bcsStates[0].engineType = aub_stream::EngineType::NUM_ENGINES;
@@ -1099,10 +1140,10 @@ HWTEST_F(TimestampPacketTests, givenEnableTimestampWaitForQueuesWhenFinishThenCa
     VariableBackup<std::function<void()>> backupSetupPauseAddress(&CpuIntrinsicsTests::setupPauseAddress);
 
     auto &csr = cmdQ->getGpgpuCommandStreamReceiver();
-    *csr.getTagAddress() = 0;
+    *csr.getTagAddress() = cmdQ->getHeaplessStateInitEnabled() ? 1 : 0;
 
     CpuIntrinsicsTests::pauseAddress = csr.getTagAddress();
-    CpuIntrinsicsTests::pauseValue = 3u;
+    CpuIntrinsicsTests::pauseValue = cmdQ->getHeaplessStateInitEnabled() ? 4u : 3u;
     CpuIntrinsicsTests::setupPauseAddress = [&]() {
         CpuIntrinsicsTests::pauseAddress = csr.getTagAddress();
     };
@@ -1702,13 +1743,14 @@ HWTEST2_F(TimestampPacketTests, givenTimestampPacketWriteEnabledAndDependenciesR
         PIPE_CONTROL *pipeControlCmd = genCmdCast<PIPE_CONTROL *>(*it);
         MI_BATCH_BUFFER_END *miBatchBufferEnd = genCmdCast<MI_BATCH_BUFFER_END *>(*it);
         if (pipeControlCmd != nullptr) {
-            EXPECT_TRUE(pipeControlCmd->getHdcPipelineFlush());
-            EXPECT_TRUE(pipeControlCmd->getUnTypedDataPortCacheFlush());
-            EXPECT_TRUE(pipeControlCmd->getCommandStreamerStallEnable());
             if (currentEnqueue == 1) {
                 ++pipeControlCountFirstEnqueue;
             } else if (currentEnqueue == 2) {
-                ++pipeControlCountSecondEnqueue;
+                if (++pipeControlCountSecondEnqueue == 1) {
+                    EXPECT_FALSE(pipeControlCmd->getHdcPipelineFlush());
+                    EXPECT_FALSE(pipeControlCmd->getUnTypedDataPortCacheFlush());
+                    EXPECT_TRUE(pipeControlCmd->getCommandStreamerStallEnable());
+                }
             }
         } else if (semaphoreWaitCmd != nullptr) {
             ++semaphoreWaitCount;
@@ -1745,6 +1787,31 @@ HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingNonBlockedT
 
     EXPECT_NE(firstNode->getBaseGraphicsAllocation(), secondNode->getBaseGraphicsAllocation());
     EXPECT_TRUE(csr.isMadeResident(firstNode->getBaseGraphicsAllocation()->getDefaultGraphicsAllocation(), csr.taskCount));
+}
+
+HWTEST_F(TimestampPacketTests, givenNonHwCsrWhenGettingNewTagThenSetupPageTables) {
+    auto mockTagAllocator = new MockTagAllocator<>(device->getRootDeviceIndex(), executionEnvironment->memoryManager.get(), 1);
+
+    auto &csr = device->getUltCommandStreamReceiver<FamilyType>();
+    csr.timestampPacketAllocator.reset(mockTagAllocator);
+    csr.timestampPacketWriteEnabled = true;
+
+    csr.commandStreamReceiverType = CommandStreamReceiverType::tbx;
+
+    constexpr uint32_t allBanks = std::numeric_limits<uint32_t>::max();
+
+    auto allocation = mockTagAllocator->freeTags.peekHead()->getBaseGraphicsAllocation()->getGraphicsAllocation(csr.getRootDeviceIndex());
+    EXPECT_TRUE(allocation->isTbxWritable(allBanks));
+    EXPECT_EQ(0u, csr.writeMemoryParams.totalCallCount);
+
+    auto cmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context, device.get(), nullptr);
+    TimestampPacketContainer previousNodes;
+    cmdQ->obtainNewTimestampPacketNodes(1, previousNodes, false, cmdQ->getGpgpuCommandStreamReceiver());
+    EXPECT_GT(cmdQ->timestampPacketContainer->peekNodes().size(), 0u);
+
+    EXPECT_EQ(1u, csr.writeMemoryParams.totalCallCount);
+    EXPECT_EQ(0u, csr.writeMemoryParams.chunkWriteCallCount);
+    EXPECT_EQ(allocation, csr.writeMemoryParams.latestGfxAllocation);
 }
 
 HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingBlockedThenMakeItResident) {
@@ -1813,7 +1880,6 @@ HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingThenKeepDep
 }
 
 HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingToOoqThenDontKeepDependencyOnPreviousNodeIfItsNotReady) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     device->getUltCommandStreamReceiver<FamilyType>().timestampPacketWriteEnabled = true;
 
     cl_queue_properties properties[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, 0};
@@ -1837,7 +1903,6 @@ HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingToOoqThenDo
 }
 
 HWTEST_F(TimestampPacketTests, givenAlreadyAssignedNodeWhenEnqueueingWithOmitTimestampPacketDependenciesThenDontKeepDependencyOnPreviousNodeIfItsNotReady) {
-    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     device->getUltCommandStreamReceiver<FamilyType>().timestampPacketWriteEnabled = true;
 
     DebugManagerStateRestore restore;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -36,7 +36,7 @@ void createImmediateCommandList(ze_device_handle_t &device,
     cmdQueueDesc.pNext = nullptr;
     cmdQueueDesc.flags = 0;
     cmdQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_NORMAL;
-    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device);
+    cmdQueueDesc.ordinal = LevelZeroBlackBoxTests::getCommandQueueOrdinal(device, false);
     cmdQueueDesc.index = 0;
     LevelZeroBlackBoxTests::selectQueueMode(cmdQueueDesc, syncMode);
     SUCCESS_OR_TERMINATE(zeCommandListCreateImmediate(context, device, &cmdQueueDesc, &cmdList));
@@ -50,7 +50,7 @@ void createCmdQueueAndCmdList(ze_context_handle_t &context,
     uint32_t numQueueGroups = 0;
     SUCCESS_OR_TERMINATE(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
     if (numQueueGroups == 0) {
-        std::cout << "No queue groups found!\n";
+        std::cerr << "No queue groups found!\n";
         std::terminate();
     }
     std::vector<ze_command_queue_group_properties_t> queueProperties(numQueueGroups);
@@ -228,7 +228,7 @@ bool testKernelTimestampHostQuery(int argc, char *argv[],
 
     ze_event_pool_handle_t eventPool;
     ze_event_handle_t kernelTsEvent;
-    LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
+    LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, false, nullptr, nullptr, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
 
     SUCCESS_OR_TERMINATE(zeCommandListAppendLaunchKernel(cmdList, kernel, &dispatchTraits, kernelTsEvent, 0, nullptr));
     SUCCESS_OR_TERMINATE(zeCommandListClose(cmdList));
@@ -336,7 +336,7 @@ bool testKernelTimestampAppendQuery(ze_context_handle_t &context,
 
     ze_event_pool_handle_t eventPool;
     ze_event_handle_t kernelTsEvent;
-    LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
+    LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, false, nullptr, nullptr, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
 
     SUCCESS_OR_TERMINATE(zeCommandListAppendLaunchKernel(cmdList, kernel, &dispatchTraits, kernelTsEvent, 0, nullptr));
     SUCCESS_OR_TERMINATE(zeCommandListAppendBarrier(cmdList, nullptr, 0u, nullptr));
@@ -485,7 +485,7 @@ bool testKernelTimestampMapToHostTimescale(int argc, char *argv[],
         dispatchTraits.groupCountY = 1u;
         dispatchTraits.groupCountZ = 1u;
 
-        LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
+        LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool, ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP, false, nullptr, nullptr, 1, &kernelTsEvent, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST);
         SUCCESS_OR_TERMINATE(zeCommandListAppendLaunchKernel(cmdList, kernel, &dispatchTraits, kernelTsEvent, 0, nullptr));
 
         return true;
@@ -620,7 +620,8 @@ bool testKernelMappedTimestampMap(int argc, char *argv[],
 
     ze_event_handle_t kernelTsEvent[maxEventUsageCount];
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE | ZE_EVENT_POOL_FLAG_KERNEL_MAPPED_TIMESTAMP), maxEventUsageCount, kernelTsEvent,
+                                                     (ZE_EVENT_POOL_FLAG_HOST_VISIBLE | ZE_EVENT_POOL_FLAG_KERNEL_MAPPED_TIMESTAMP), false, nullptr, nullptr,
+                                                     maxEventUsageCount, kernelTsEvent,
                                                      ZE_EVENT_SCOPE_FLAG_DEVICE, ZE_EVENT_SCOPE_FLAG_HOST);
 
     // Create commandQueue and cmdList
@@ -697,6 +698,11 @@ bool testKernelMappedTimestampMap(int argc, char *argv[],
         SUCCESS_OR_TERMINATE(zeCommandListClose(cmdList));
     }
 
+    uint64_t referenceHostTs, referenceDeviceTs = 0;
+    SUCCESS_OR_TERMINATE(zeDeviceGetGlobalTimestamps(device, &referenceHostTs, &referenceDeviceTs));
+    std::cout << "ReferenceDeviceTs: " << referenceDeviceTs << "| ReferenceHostTs: " << referenceHostTs << "\n";
+    previousMaximumSyncTs = referenceHostTs;
+
     for (uint32_t i = 0; i < 10; i++) {
 
         if (!useImmediate) {
@@ -721,7 +727,6 @@ bool testKernelMappedTimestampMap(int argc, char *argv[],
             if (verboseLevel == 1) {
                 std::cout << "[iter(" << i << ")][event(" << j << ")]====>\n";
             }
-            SUCCESS_OR_TERMINATE(zeEventQueryStatus(kernelTsEvent[j]));
             SUCCESS_OR_TERMINATE(zeEventQueryKernelTimestampsExt(kernelTsEvent[j], device, &count, nullptr));
             if (count == 0) {
                 return false;
@@ -753,12 +758,21 @@ bool testKernelMappedTimestampMap(int argc, char *argv[],
                               << "[global-ts(" << ts.global.kernelStart << " , " << ts.global.kernelEnd << " ) "
                               << "| syncTs( " << syncTs.global.kernelStart << " , " << syncTs.global.kernelEnd << " )] "
                               << "# [context-ts( " << ts.context.kernelStart << " , " << ts.context.kernelEnd << " ) "
-                              << "| syncTs ( " << syncTs.context.kernelStart << " , " << syncTs.context.kernelEnd << " )]\n";
+                              << "| syncTs ( " << syncTs.context.kernelStart << " , " << syncTs.context.kernelEnd << " )]"
+                              << "| timeTaken (" << currentMinimumSyncTs - previousMaximumSyncTs << " ns)"
+                              << "\n";
                 }
 
                 if (verboseLevel == 2) {
                     std::cout << "KernelSyncTs: " << syncTs.global.kernelStart << " , " << syncTs.global.kernelEnd
-                              << " | ContextSyncTs: " << syncTs.context.kernelStart << " , " << syncTs.context.kernelEnd << "\n";
+                              << " | ContextSyncTs: " << syncTs.context.kernelStart << " , " << syncTs.context.kernelEnd
+                              << "| timeTaken (" << currentMinimumSyncTs - previousMaximumSyncTs << " ns)"
+                              << "\n";
+                }
+
+                if ((currentMinimumSyncTs - previousMaximumSyncTs) > 10 * 1E9) {
+                    std::cout << "\n\n!!FAILED: Time Taken Too long! (Current Minimum Ts : " << currentMinimumSyncTs << " |  Previous Maximum Ts : " << previousMaximumSyncTs << ")\n\n";
+                    return false;
                 }
             }
             SUCCESS_OR_TERMINATE(zeEventHostReset(kernelTsEvent[j]));

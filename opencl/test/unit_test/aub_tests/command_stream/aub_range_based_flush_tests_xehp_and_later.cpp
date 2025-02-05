@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -54,7 +54,6 @@ struct L3ControlSupportedMatcher {
 HWTEST2_F(RangeBasedFlushTest, givenNoDcFlushInPipeControlWhenL3ControlFlushesCachesThenExpectFlushedCaches, L3ControlSupportedMatcher) {
     using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    using WALKER = typename FamilyType::DefaultWalkerType;
     using L3_CONTROL = typename FamilyType::L3_CONTROL;
     using L3_FLUSH_ADDRESS_RANGE = typename FamilyType::L3_FLUSH_ADDRESS_RANGE;
 
@@ -91,7 +90,7 @@ HWTEST2_F(RangeBasedFlushTest, givenNoDcFlushInPipeControlWhenL3ControlFlushesCa
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     L3RangesVec ranges;
-    ranges.push_back(L3Range::fromAddressSizeWithPolicy(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), MemoryConstants::pageSize,
+    ranges.push_back(L3Range::fromAddressSizeWithPolicy(ptrOffset(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), dstBuffer->getOffset()), MemoryConstants::pageSize,
                                                         L3_FLUSH_ADDRESS_RANGE::L3_FLUSH_EVICTION_POLICY_FLUSH_L3_WITH_EVICTION));
     size_t requiredSize = getSizeNeededToFlushGpuCache<FamilyType>(ranges, false) + 2 * sizeof(PIPE_CONTROL);
     LinearStream &l3FlushCmdStream = pCmdQ->getCS(requiredSize);
@@ -134,13 +133,12 @@ HWTEST2_F(RangeBasedFlushTest, givenNoDcFlushInPipeControlWhenL3ControlFlushesCa
     auto cmdBuffOk = expectCmdBuff<FamilyType>(l3FlushCmdStream, 0, std::move(expectedCommands), &err);
     EXPECT_TRUE(cmdBuffOk) << err;
 
-    expectMemory<FamilyType>(reinterpret_cast<void *>(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress()),
+    expectMemory<FamilyType>(addrToPtr(ptrOffset(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), dstBuffer->getOffset())),
                              bufferAMemory, bufferSize);
 }
 
 HWTEST2_F(RangeBasedFlushTest, givenL3ControlWhenPostSyncIsSetThenExpectPostSyncWrite, L3ControlSupportedMatcher) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    using WALKER = typename FamilyType::DefaultWalkerType;
     using L3_CONTROL = typename FamilyType::L3_CONTROL;
     using L3_FLUSH_ADDRESS_RANGE = typename FamilyType::L3_FLUSH_ADDRESS_RANGE;
 
@@ -186,7 +184,7 @@ HWTEST2_F(RangeBasedFlushTest, givenL3ControlWhenPostSyncIsSetThenExpectPostSync
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     L3RangesVec ranges;
-    ranges.push_back(L3Range::fromAddressSizeWithPolicy(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(),
+    ranges.push_back(L3Range::fromAddressSizeWithPolicy(ptrOffset(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), dstBuffer->getOffset()),
                                                         MemoryConstants::pageSize, L3_FLUSH_ADDRESS_RANGE::L3_FLUSH_EVICTION_POLICY_FLUSH_L3_WITH_EVICTION));
     size_t requiredSize = getSizeNeededToFlushGpuCache<FamilyType>(ranges, true) + 2 * sizeof(PIPE_CONTROL);
     LinearStream &l3FlushCmdStream = pCmdQ->getCS(requiredSize);
@@ -194,7 +192,7 @@ HWTEST2_F(RangeBasedFlushTest, givenL3ControlWhenPostSyncIsSetThenExpectPostSync
     auto pcBeforeFlush = l3FlushCmdStream.getSpaceForCmd<PIPE_CONTROL>();
     *pcBeforeFlush = FamilyType::cmdInitPipeControl;
 
-    flushGpuCache<FamilyType>(&l3FlushCmdStream, ranges, postSyncBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), device->getHardwareInfo());
+    flushGpuCache<FamilyType>(&l3FlushCmdStream, ranges, ptrOffset(postSyncBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), postSyncBuffer->getOffset()), device->getHardwareInfo());
 
     auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     auto flags = DispatchFlagsHelper::createDefaultDispatchFlags();
@@ -223,9 +221,9 @@ HWTEST2_F(RangeBasedFlushTest, givenL3ControlWhenPostSyncIsSetThenExpectPostSync
                                                &err);
     EXPECT_TRUE(cmdBuffOk) << err;
 
-    expectMemory<FamilyType>(reinterpret_cast<void *>(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress()),
+    expectMemory<FamilyType>(addrToPtr(ptrOffset(dstBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), dstBuffer->getOffset())),
                              bufferAMemory, bufferSize);
 
-    expectMemory<FamilyType>(reinterpret_cast<void *>(postSyncBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress()),
+    expectMemory<FamilyType>(addrToPtr(ptrOffset(postSyncBuffer->getGraphicsAllocation(rootDeviceIndex)->getGpuAddress(), postSyncBuffer->getOffset())),
                              &expectedPostSyncData, sizeof(expectedPostSyncData));
 }

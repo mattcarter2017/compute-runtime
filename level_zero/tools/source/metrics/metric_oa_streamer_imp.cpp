@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -86,8 +86,10 @@ ze_result_t OaMetricStreamerImp::readData(uint32_t maxReportCount, size_t *pRawD
 
         // Read streamer data.
         result = metricGroup->readIoStream(reportCount, *pRawData);
-        if (result == ZE_RESULT_SUCCESS) {
+        if (result == ZE_RESULT_SUCCESS || result == ZE_RESULT_WARNING_DROPPED_DATA) {
             *pRawDataSize = reportCount * rawReportSize;
+        } else {
+            *pRawDataSize = 0;
         }
     }
 
@@ -148,6 +150,12 @@ ze_result_t OaMetricStreamerImp::initialize(ze_device_handle_t hDevice,
     rawReportSize = metricGroup->getRawReportSize();
 
     return ZE_RESULT_SUCCESS;
+}
+
+uint32_t OaMetricStreamerImp::getOaBufferSize(const uint32_t notifyEveryNReports) const {
+
+    // Notification is on half full buffer, hence multiplication by 2.
+    return notifyEveryNReports * rawReportSize * 2;
 }
 
 ze_result_t OaMetricStreamerImp::startMeasurements(uint32_t &notifyEveryNReports,
@@ -331,13 +339,10 @@ ze_result_t OaMetricStreamerImp::appendStreamerMarker(CommandList &commandList, 
     OaMetricSourceImp &metricSource = pDeviceImp->metricContext->getMetricSource<OaMetricSourceImp>();
     auto &metricsLibrary = metricSource.getMetricsLibrary();
 
-    const uint32_t streamerMarkerHighBitsShift = 25;
-
     // Obtain gpu commands.
     CommandBufferData_1_0 commandBuffer = {};
     commandBuffer.CommandsType = ObjectType::MarkerStreamUser;
     commandBuffer.MarkerStreamUser.Value = value;
-    commandBuffer.MarkerStreamUser.Reserved = (value >> streamerMarkerHighBitsShift);
     commandBuffer.Type = metricSource.isComputeUsed()
                              ? GpuCommandBufferType::Compute
                              : GpuCommandBufferType::Render;

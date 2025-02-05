@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,7 +22,6 @@ struct PreferredSlmTestValues {
 template <typename FamilyType>
 void verifyPreferredSlmValues(std::vector<PreferredSlmTestValues<FamilyType>> valuesToTest, const NEO::RootDeviceEnvironment &rootDeviceEnvironment) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
-    using PREFERRED_SLM_ALLOCATION_SIZE = typename INTERFACE_DESCRIPTOR_DATA::PREFERRED_SLM_ALLOCATION_SIZE;
 
     auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
     auto threadsPerDssCount = hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.SubSliceCount;
@@ -44,11 +43,11 @@ void verifyPreferredSlmValues(std::vector<PreferredSlmTestValues<FamilyType>> va
                                         ? valueToTest.preferredSlmAllocationSizePerDss
                                         : valueToTest.preferredSlmAllocationSizePerDss / localWorkGroupsPerDssCount;
 
-                NEO::EncodeDispatchKernel<FamilyType>::appendAdditionalIDDFields(&idd,
-                                                                                 rootDeviceEnvironment,
-                                                                                 threadsPerThreadGroup,
-                                                                                 slmTotalSize,
-                                                                                 slmPolicy);
+                NEO::EncodeDispatchKernel<FamilyType>::setupPreferredSlmSize(&idd,
+                                                                             rootDeviceEnvironment,
+                                                                             threadsPerThreadGroup,
+                                                                             slmTotalSize,
+                                                                             slmPolicy);
 
                 EXPECT_EQ(valueToTest.expectedValueInIdd, idd.getPreferredSlmAllocationSize());
             }

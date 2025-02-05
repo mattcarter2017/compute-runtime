@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018-2022 Intel Corporation
+# Copyright (C) 2018-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -54,29 +54,37 @@ else()
   endif()
 endif()
 
-if(NOT DEFINED NEO_VERSION_BUILD)
-  set(NEO_VERSION_BUILD 0)
-  set(NEO_REVISION 0)
-else()
-  find_program(GIT NAMES git)
-  if(NOT "${GIT}" STREQUAL "GIT-NOTFOUND")
-    if(IS_DIRECTORY ${NEO_SOURCE_DIR}/.git)
-      set(GIT_arg --git-dir=${NEO_SOURCE_DIR}/.git rev-parse HEAD)
-      execute_process(
-                      COMMAND ${GIT} ${GIT_arg}
-                      OUTPUT_VARIABLE NEO_REVISION
-                      OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
-    endif()
+find_program(GIT NAMES git)
+if(NOT "${GIT}" STREQUAL "GIT-NOTFOUND")
+  if(IS_DIRECTORY ${NEO_SOURCE_DIR}/.git)
+    set(GIT_arg --git-dir=${NEO_SOURCE_DIR}/.git rev-parse HEAD)
+    execute_process(
+                    COMMAND ${GIT} ${GIT_arg}
+                    OUTPUT_VARIABLE NEO_REVISION
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
   endif()
 endif()
+
 if(NOT DEFINED NEO_REVISION)
-  set(NEO_REVISION 0)
+  set(NEO_REVISION "No git SHA found, compiled outside git folder")
 endif()
 
-# OpenCL pacakge version
+if(NOT DEFINED NEO_VERSION_BUILD)
+  set(NEO_VERSION_BUILD 0)
+endif()
+
+if(NOT DEFINED NEO_VERSION_HOTFIX)
+  set(NEO_VERSION_HOTFIX 0)
+endif()
+
+# OpenCL package version
 set(NEO_OCL_DRIVER_VERSION "${NEO_OCL_VERSION_MAJOR}.${NEO_OCL_VERSION_MINOR}.${NEO_VERSION_BUILD}")
 
 # Level-Zero package version
 set(NEO_L0_VERSION_MAJOR 1)
-set(NEO_L0_VERSION_MINOR 3)
+set(NEO_L0_VERSION_MINOR 6)
+
+# Remove leading zeros
+string(REGEX REPLACE "^0+([0-9]+)" "\\1" NEO_VERSION_BUILD "${NEO_VERSION_BUILD}")
+string(REGEX REPLACE "^0+([0-9]+)" "\\1" NEO_VERSION_HOTFIX "${NEO_VERSION_HOTFIX}")

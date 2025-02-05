@@ -1,11 +1,10 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
-#include "level_zero/core/source/get_extension_function_lookup_map.h"
 #include "level_zero/sysman/test/unit_tests/sources/windows/mock_sysman_driver.h"
 
 #include "gtest/gtest.h"
@@ -41,6 +40,17 @@ TEST(zesInit, whenCallingZesInitWithoutGpuOnlyFlagThenInitializeOnDriverIsNotCal
     EXPECT_EQ(0u, driver.initCalledCount);
 }
 
+TEST(zesInit, whenCallingZesInitWhenDriverInitFailsThenUninitializedIsReturned) {
+    MockSysmanDriver driver;
+    driver.useBaseInit = false;
+    driver.useBaseDriverInit = true;
+    driver.sysmanInitFail = true;
+
+    auto result = zesInit(0);
+    EXPECT_EQ(ZE_RESULT_ERROR_UNINITIALIZED, result);
+    EXPECT_EQ(1u, driver.initCalledCount);
+}
+
 TEST_F(SysmanDriverHandleTest,
        givenInitializedDriverWhenZesDriverGetPropertiesIsCalledThenUnsupportedIsReturned) {
     uint32_t pCount = 0;
@@ -49,7 +59,6 @@ TEST_F(SysmanDriverHandleTest,
 
 TEST_F(SysmanDriverHandleTest,
        givenDriverWhenGetExtensionFunctionAddressIsCalledWithValidAndInvalidFunctionNamesThenCorrectResultIsReturned) {
-    driverHandle->extensionFunctionsLookupMap = getExtensionFunctionsLookupMap();
     void *funPtr = nullptr;
 
     auto result = zesDriverGetExtensionFunctionAddress(driverHandle->toHandle(), "zexDriverImportUnKnownPointer", &funPtr);

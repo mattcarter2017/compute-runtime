@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -31,7 +31,7 @@ class HeapAllocator {
     HeapAllocator(uint64_t address, uint64_t size, size_t allocationAlignment) : HeapAllocator(address, size, allocationAlignment, 4 * MemoryConstants::megaByte) {
     }
 
-    HeapAllocator(uint64_t address, uint64_t size, size_t allocationAlignment, size_t threshold) : size(size), availableSize(size), allocationAlignment(allocationAlignment), sizeThreshold(threshold) {
+    HeapAllocator(uint64_t address, uint64_t size, size_t allocationAlignment, size_t threshold) : baseAddress(address), size(size), availableSize(size), allocationAlignment(allocationAlignment), sizeThreshold(threshold) {
         pLeftBound = address;
         pRightBound = address + size;
         freedChunksBig.reserve(10);
@@ -58,7 +58,12 @@ class HeapAllocator {
 
     double getUsage() const;
 
+    uint64_t getBaseAddress() const {
+        return this->baseAddress;
+    }
+
   protected:
+    const uint64_t baseAddress;
     const uint64_t size;
     uint64_t availableSize;
     uint64_t pLeftBound;
@@ -82,13 +87,6 @@ class HeapAllocator {
             if (freedChunk.ptr + freedChunk.size == ptr) {
                 freedChunk.size += size;
                 return;
-            }
-            if ((freedChunk.ptr + freedChunk.size) == (ptr + size)) {
-                if (ptr < freedChunk.ptr) {
-                    freedChunk.ptr = ptr;
-                    freedChunk.size = size;
-                    return;
-                }
             }
         }
 

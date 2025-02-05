@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,6 +18,7 @@
 #include "shared/test/common/mocks/mock_graphics_allocation.h"
 #include "shared/test/common/mocks/mock_memory_manager.h"
 #include "shared/test/common/mocks/mock_os_context.h"
+#include "shared/test/common/mocks/mock_product_helper.h"
 #include "shared/test/common/mocks/ult_device_factory.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
@@ -237,9 +238,9 @@ static const AllocationType allocationTypesWith32BitAnd64KbPagesAllowed[] = {All
                                                                              AllocationType::writeCombined,
                                                                              AllocationType::assertBuffer};
 
-INSTANTIATE_TEST_CASE_P(Allow32BitAnd64kbPagesTypes,
-                        MemoryManagerGetAlloctionData32BitAnd64kbPagesAllowedTest,
-                        ::testing::ValuesIn(allocationTypesWith32BitAnd64KbPagesAllowed));
+INSTANTIATE_TEST_SUITE_P(Allow32BitAnd64kbPagesTypes,
+                         MemoryManagerGetAlloctionData32BitAnd64kbPagesAllowedTest,
+                         ::testing::ValuesIn(allocationTypesWith32BitAnd64KbPagesAllowed));
 
 static const AllocationType allocationTypesWith32BitAnd64KbPagesNotAllowed[] = {AllocationType::commandBuffer,
                                                                                 AllocationType::timestampPacketTagBuffer,
@@ -248,9 +249,9 @@ static const AllocationType allocationTypesWith32BitAnd64KbPagesNotAllowed[] = {
                                                                                 AllocationType::instructionHeap,
                                                                                 AllocationType::sharedResourceCopy};
 
-INSTANTIATE_TEST_CASE_P(Disallow32BitAnd64kbPagesTypes,
-                        MemoryManagerGetAlloctionData32BitAnd64kbPagesNotAllowedTest,
-                        ::testing::ValuesIn(allocationTypesWith32BitAnd64KbPagesNotAllowed));
+INSTANTIATE_TEST_SUITE_P(Disallow32BitAnd64kbPagesTypes,
+                         MemoryManagerGetAlloctionData32BitAnd64kbPagesNotAllowedTest,
+                         ::testing::ValuesIn(allocationTypesWith32BitAnd64KbPagesNotAllowed));
 
 TEST(MemoryManagerTest, givenForced32BitSetWhenGraphicsMemoryFor32BitAllowedTypeIsAllocatedThen32BitAllocationIsReturned) {
     MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
@@ -515,6 +516,15 @@ TEST(MemoryManagerTest, givenPreemptionTypeWhenGetAllocationDataIsCalledThenSyst
     EXPECT_FALSE(allocData.flags.useSystemMemory);
 }
 
+TEST(MemoryManagerTest, givenSyncTokenTypeWhenGetAllocationDataIsCalledThenSystemMemoryIsNotRequestedAndAllow64kPages) {
+    AllocationData allocData;
+    MockMemoryManager mockMemoryManager;
+    AllocationProperties properties{mockRootDeviceIndex, 1, AllocationType::syncDispatchToken, mockDeviceBitfield};
+    mockMemoryManager.getAllocationData(allocData, properties, nullptr, mockMemoryManager.createStorageInfoFromProperties(properties));
+    EXPECT_FALSE(allocData.flags.useSystemMemory);
+    EXPECT_TRUE(allocData.flags.allow64kbPages);
+}
+
 TEST(MemoryManagerTest, givenPreemptionTypeWhenGetAllocationDataIsCalledThen64kbPagesAllowed) {
     AllocationData allocData;
     MockMemoryManager mockMemoryManager;
@@ -523,20 +533,15 @@ TEST(MemoryManagerTest, givenPreemptionTypeWhenGetAllocationDataIsCalledThen64kb
     EXPECT_TRUE(allocData.flags.allow64kbPages);
 }
 
-TEST(MemoryManagerTest, givenPreemptionTypeWhenGetAllocationDataIsCalledThen48BitResourceIsTrue) {
-    AllocationData allocData;
+TEST(MemoryManagerTest, givenAllocationTypeWhenGetAllocationDataIsCalledThen48BitResourceIsTrue) {
     MockMemoryManager mockMemoryManager;
-    AllocationProperties properties{mockRootDeviceIndex, 1, AllocationType::preemption, mockDeviceBitfield};
-    mockMemoryManager.getAllocationData(allocData, properties, nullptr, mockMemoryManager.createStorageInfoFromProperties(properties));
-    EXPECT_TRUE(allocData.flags.resource48Bit);
-}
 
-TEST(MemoryManagerTest, givenDeferredTasksListTypeWhenGetAllocationDataIsCalledThen48BitResourceIsTrue) {
-    AllocationData allocData;
-    MockMemoryManager mockMemoryManager;
-    AllocationProperties properties{mockRootDeviceIndex, 1, AllocationType::deferredTasksList, mockDeviceBitfield};
-    mockMemoryManager.getAllocationData(allocData, properties, nullptr, mockMemoryManager.createStorageInfoFromProperties(properties));
-    EXPECT_TRUE(allocData.flags.resource48Bit);
+    for (auto &type : {AllocationType::preemption, AllocationType::deferredTasksList, AllocationType::syncDispatchToken}) {
+        AllocationData allocData;
+        AllocationProperties properties{mockRootDeviceIndex, 1, type, mockDeviceBitfield};
+        mockMemoryManager.getAllocationData(allocData, properties, nullptr, mockMemoryManager.createStorageInfoFromProperties(properties));
+        EXPECT_TRUE(allocData.flags.resource48Bit);
+    }
 }
 
 TEST(MemoryManagerTest, givenMCSTypeWhenGetAllocationDataIsCalledThenSystemMemoryIsRequested) {
@@ -598,12 +603,14 @@ HWTEST_F(GetAllocationDataTestHw, givenLinearStreamTypeWhenGetAllocationDataIsCa
     EXPECT_TRUE(allocData.flags.requiresCpuAccess);
 }
 
-HWTEST_F(GetAllocationDataTestHw, givenTimestampPacketTagBufferTypeWhenGetAllocationDataIsCalledThenSystemMemoryIsRequestedAndRequireCpuAccess) {
+HWTEST_F(GetAllocationDataTestHw, givenTimestampPacketTagBufferTypeWhenGetAllocationDataIsCalledThenLocalMemoryIsRequestedAndRequireCpuAccess) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.ForceLocalMemoryAccessMode.set(0u);
     AllocationData allocData;
     MockMemoryManager mockMemoryManager;
     AllocationProperties properties{mockRootDeviceIndex, 1, AllocationType::timestampPacketTagBuffer, mockDeviceBitfield};
     mockMemoryManager.getAllocationData(allocData, properties, nullptr, mockMemoryManager.createStorageInfoFromProperties(properties));
-    EXPECT_EQ(UnitTestHelper<FamilyType>::requiresTimestampPacketsInSystemMemory(*defaultHwInfo), allocData.flags.useSystemMemory);
+    EXPECT_FALSE(allocData.flags.useSystemMemory);
     EXPECT_TRUE(allocData.flags.requiresCpuAccess);
 }
 
@@ -1007,6 +1014,167 @@ TEST(MemoryManagerTest, givenPropertiesWithGpuAddressWhenGetAllocationDataIsCall
     EXPECT_EQ(properties.gpuAddress, allocData.gpuAddress);
 }
 
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationTypeAndPlatrormSupportReadOnlyAllocationAndBliterTransferNotRequiredThenAllocationIsSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool({mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield},
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 1u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationTypeAndSupportReadOnlyButPlatformDoesNotAndBliterTransferNotRequiredThenAllocationIsNotSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = false;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool({mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield},
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 0u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationTypeAndPlatrormSupportReadOnlyAllocationAndBliterTransferRequiredThenAllocationIsNotSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = true;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool({mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield},
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 0u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationTypeDoesNotSupportReadOnlyButPlatformDoesAndBliterTransferNotRequiredThenAllocationIsNotSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+
+    mockGa.hasAllocationReadOnlyTypeResult = false;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool({mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield},
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 0u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationIsCommandBufferAndItIsSetAsNotReadOnlyThenAllocationIsNotSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+    mockGa.setAllocationType(AllocationType::commandBuffer);
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+    AllocationProperties properties(mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield);
+    properties.flags.cantBeReadOnly = true;
+    properties.flags.multiOsContextCapable = false;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool(properties,
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 0u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationIsCommandBufferAndMultiContextCapableIsTrueThenAllocationIsNotSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+    mockGa.setAllocationType(AllocationType::commandBuffer);
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    AllocationProperties properties(mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield);
+    properties.flags.cantBeReadOnly = false;
+    properties.flags.multiOsContextCapable = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool(properties,
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 0u);
+}
+
+TEST(MemoryManagerTest, givenMemoryManagerWhenAllocationTypeAndPlatrormSupportReadOnlyAllocationBliterAndAllocationTypeOtherThanCmdBufferTransferNotRequiredThenAllocationIsSetAsReadOnly) {
+    MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
+    auto mockProductHelper = std::make_unique<MockProductHelper>();
+    mockProductHelper->isBlitCopyRequiredForLocalMemoryResult = false;
+    mockProductHelper->supportReadOnlyAllocationsResult = true;
+    std::unique_ptr<ProductHelper> productHelper = std::move(mockProductHelper);
+    std::swap(executionEnvironment.rootDeviceEnvironments[0]->productHelper, productHelper);
+    MockMemoryManager memoryManager(false, true, executionEnvironment);
+    MockGraphicsAllocation mockGa;
+    mockGa.setAllocationType(AllocationType::buffer);
+
+    mockGa.hasAllocationReadOnlyTypeResult = true;
+
+    memoryManager.mockGa = &mockGa;
+    memoryManager.returnMockGAFromDevicePool = true;
+
+    AllocationProperties properties(mockRootDeviceIndex, MemoryConstants::pageSize, AllocationType::buffer, mockDeviceBitfield);
+    properties.flags.cantBeReadOnly = true;
+    properties.flags.multiOsContextCapable = true;
+
+    auto allocation = memoryManager.allocateGraphicsMemoryInPreferredPool(properties,
+                                                                          nullptr);
+    EXPECT_EQ(allocation, &mockGa);
+    EXPECT_EQ(mockGa.setAsReadOnlyCalled, 1u);
+}
+
 TEST(MemoryManagerTest, givenEnableLocalMemoryAndMemoryManagerWhenBufferTypeIsPassedThenAllocateGraphicsMemoryInPreferredPool) {
     MockExecutionEnvironment executionEnvironment(defaultHwInfo.get());
     MockMemoryManager memoryManager(false, true, executionEnvironment);
@@ -1088,6 +1256,7 @@ static const AllocationType allocationHaveToBeForcedTo48Bit[] = {
     AllocationType::timestampPacketTagBuffer,
     AllocationType::semaphoreBuffer,
     AllocationType::deferredTasksList,
+    AllocationType::syncDispatchToken,
 };
 
 static const AllocationType allocationsOptionallyForcedTo48Bit[] = {
@@ -1112,26 +1281,27 @@ static const AllocationType allocationHaveNotToBeForcedTo48Bit[] = {
     AllocationType::svmCpu,
     AllocationType::svmGpu,
     AllocationType::svmZeroCopy,
+    AllocationType::syncBuffer,
     AllocationType::tagBuffer,
     AllocationType::globalFence,
     AllocationType::writeCombined,
     AllocationType::debugContextSaveArea,
 };
 
-INSTANTIATE_TEST_CASE_P(ForceTo48Bit,
-                        MemoryManagerGetAlloctionDataHaveToBeForcedTo48BitTest,
-                        ::testing::Combine(
-                            ::testing::ValuesIn(allocationHaveToBeForcedTo48Bit),
-                            ::testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(ForceTo48Bit,
+                         MemoryManagerGetAlloctionDataHaveToBeForcedTo48BitTest,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(allocationHaveToBeForcedTo48Bit),
+                             ::testing::Bool()));
 
-INSTANTIATE_TEST_CASE_P(NotForceTo48Bit,
-                        MemoryManagerGetAlloctionDataHaveNotToBeForcedTo48BitTest,
-                        ::testing::Combine(
-                            ::testing::ValuesIn(allocationHaveNotToBeForcedTo48Bit),
-                            ::testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(NotForceTo48Bit,
+                         MemoryManagerGetAlloctionDataHaveNotToBeForcedTo48BitTest,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(allocationHaveNotToBeForcedTo48Bit),
+                             ::testing::Bool()));
 
-INSTANTIATE_TEST_CASE_P(OptionallyForceTo48Bit,
-                        MemoryManagerGetAlloctionDataOptionallyForcedTo48BitTest,
-                        ::testing::Combine(
-                            ::testing::ValuesIn(allocationsOptionallyForcedTo48Bit),
-                            ::testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(OptionallyForceTo48Bit,
+                         MemoryManagerGetAlloctionDataOptionallyForcedTo48BitTest,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(allocationsOptionallyForcedTo48Bit),
+                             ::testing::Bool()));

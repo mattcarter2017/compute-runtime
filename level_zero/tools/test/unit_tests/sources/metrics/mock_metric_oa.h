@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -187,6 +187,7 @@ struct Mock<MetricsLibrary> : public MetricsLibrary {
 
     // Not mocked metrics library functions.
     bool metricsLibraryGetContextData(::L0::Device &device, ContextCreateData_1_0 &contextData) { return MetricsLibrary::getContextData(device, contextData); }
+    ClientCallbacks_1_0 &metricsLibraryGetCallbacks() { return callbacks; }
 
     // Original metrics library implementation used by metric context.
     ::L0::MetricsLibrary *metricsLibrary = nullptr;
@@ -265,6 +266,7 @@ class MetricContextFixture : public DeviceFixture {
     void tearDown();
     void openMetricsAdapter();
     void openMetricsAdapterGroup();
+    DebugManagerStateRestore restorer;
 
   public:
     // Mocked objects.
@@ -276,12 +278,12 @@ class MetricContextFixture : public DeviceFixture {
     MockMetricsDiscoveryApi mockMetricsDiscoveryApi = {};
 
     // Metrics discovery device
-    Mock<IAdapterGroup_1_9> adapterGroup;
-    Mock<IAdapter_1_9> adapter;
-    Mock<IMetricsDevice_1_5> metricsDevice;
+    Mock<IAdapterGroup_1_13> adapterGroup;
+    Mock<IAdapter_1_13> adapter;
+    Mock<IMetricsDevice_1_13> metricsDevice;
     MetricsDiscovery::TMetricsDeviceParams_1_2 metricsDeviceParams = {};
     MetricsDiscovery::TTypedValue_1_0 defaultMaximumOaBufferSize = {};
-    void setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_5> &metricDevice);
+    void setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_13> &metricDevice);
     MockOAOsInterface *mockOAOsInterface;
     MockIpSamplingOsInterface *mockIpSamplingOsInterface;
 };
@@ -295,6 +297,7 @@ class MetricMultiDeviceFixture : public MultiDeviceFixture {
     void openMetricsAdapterSubDevice(uint32_t subDeviceIndex);
     void openMetricsAdapterDeviceAndSubDeviceNoCountVerify(uint32_t subDeviceIndex);
     void openMetricsAdapterGroup();
+    DebugManagerStateRestore restorer;
 
   public:
     std::vector<L0::Device *> devices;
@@ -311,12 +314,12 @@ class MetricMultiDeviceFixture : public MultiDeviceFixture {
     MockMetricsDiscoveryApi mockMetricsDiscoveryApi = {};
 
     // Metrics discovery device
-    Mock<IAdapterGroup_1_9> adapterGroup;
-    Mock<IAdapter_1_9> adapter;
-    Mock<IMetricsDevice_1_5> metricsDevice;
+    Mock<IAdapterGroup_1_13> adapterGroup;
+    Mock<IAdapter_1_13> adapter;
+    Mock<IMetricsDevice_1_13> metricsDevice;
     MetricsDiscovery::TMetricsDeviceParams_1_2 metricsDeviceParams = {};
     //    MetricsDiscovery::TTypedValue_1_0 defaultMaximumOaBufferSize = {};
-    void setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_5> &metricDevice);
+    void setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_13> &metricDevice);
 };
 
 class MetricStreamerMultiDeviceFixture : public MetricMultiDeviceFixture {

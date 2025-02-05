@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,13 +25,13 @@ TEST(MockOSTime, WhenSleepingThenDeviceAndHostTimerAreIncreased) {
     cl_ulong hostTimestamp[2] = {0, 0};
 
     auto mDev = MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr);
-    mDev->setOSTime(new MockOSTime());
+    auto osTime = new MockOSTime();
+    osTime->setDeviceTimerResolution();
+    mDev->setOSTime(osTime);
 
     mDev->getDeviceAndHostTimer(
         &deviceTimestamp[0],
         &hostTimestamp[0]);
-
-    std::this_thread::sleep_for(std::chrono::nanoseconds(1000));
 
     mDev->getDeviceAndHostTimer(
         &deviceTimestamp[1],
@@ -96,8 +96,6 @@ TEST(MockOSTime, WhenSleepingThenHostTimerIsIncreased) {
 
     mDev->getHostTimer(
         &hostTimestamp[0]);
-
-    std::this_thread::sleep_for(std::chrono::nanoseconds(1000));
 
     mDev->getHostTimer(
         &hostTimestamp[1]);
@@ -164,16 +162,16 @@ class FailingMockOSTime : public OSTime {
 
 class FailingMockDeviceTime : public DeviceTime {
   public:
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
-        return false;
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+        return TimeQueryStatus::deviceLost;
     }
 
-    double getDynamicDeviceTimerResolution(HardwareInfo const &hwInfo) const override {
+    double getDynamicDeviceTimerResolution() const override {
         return 1.0;
     }
 
-    uint64_t getDynamicDeviceTimerClock(HardwareInfo const &hwInfo) const override {
-        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution(hwInfo));
+    uint64_t getDynamicDeviceTimerClock() const override {
+        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution());
     }
 };
 

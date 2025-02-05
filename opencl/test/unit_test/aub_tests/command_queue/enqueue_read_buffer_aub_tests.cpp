@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -99,13 +99,13 @@ HWTEST_P(AUBReadBuffer, WhenReadingBufferThenExpectationsAreMet) {
     }
 }
 
-INSTANTIATE_TEST_CASE_P(AUBReadBuffer_simple,
-                        AUBReadBuffer,
-                        ::testing::Values(
-                            0 * sizeof(cl_float),
-                            1 * sizeof(cl_float),
-                            2 * sizeof(cl_float),
-                            3 * sizeof(cl_float)));
+INSTANTIATE_TEST_SUITE_P(AUBReadBuffer_simple,
+                         AUBReadBuffer,
+                         ::testing::Values(
+                             0 * sizeof(cl_float),
+                             1 * sizeof(cl_float),
+                             2 * sizeof(cl_float),
+                             3 * sizeof(cl_float)));
 
 HWTEST_F(AUBReadBuffer, GivenReserveCanonicalGpuAddressWhenReadingBufferThenExpectationsAreMet) {
     if (!getAubTestsConfig<FamilyType>().testCanonicalAddress) {
@@ -116,7 +116,7 @@ HWTEST_F(AUBReadBuffer, GivenReserveCanonicalGpuAddressWhenReadingBufferThenExpe
 
     cl_float srcMemory[] = {1.0f, 2.0f, 3.0f, 4.0f};
     cl_float dstMemory[] = {0.0f, 0.0f, 0.0f, 0.0f};
-    GraphicsAllocation *srcAllocation = new MockGraphicsAllocation(0, AllocationType::unknown,
+    GraphicsAllocation *srcAllocation = new MockGraphicsAllocation(0, 1u /*num gmms*/, AllocationType::unknown,
                                                                    srcMemory,
                                                                    0xFFFF800400001000,
                                                                    0xFFFF800400001000,

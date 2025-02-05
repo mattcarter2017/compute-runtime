@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018-2023 Intel Corporation
+# Copyright (C) 2018-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -19,6 +19,7 @@ add_executable(igdrcl_mt_tests EXCLUDE_FROM_ALL
                $<TARGET_OBJECTS:neo_shared_mocks>
                $<TARGET_OBJECTS:neo_mt_tests_config>
                $<TARGET_OBJECTS:igdrcl_libult_env>
+               $<TARGET_OBJECTS:mock_aubstream>
                $<TARGET_OBJECTS:mock_gmm>
                $<TARGET_OBJECTS:${BUILTINS_SOURCES_LIB_NAME}>
 )
@@ -44,6 +45,7 @@ add_dependencies(igdrcl_mt_tests
 create_project_source_tree(igdrcl_mt_tests)
 
 set_target_properties(igdrcl_mt_tests PROPERTIES FOLDER ${OPENCL_TEST_PROJECTS_FOLDER})
+set_property(TARGET igdrcl_mt_tests PROPERTY ENABLE_EXPORTS TRUE)
 set_property(TARGET igdrcl_mt_tests APPEND_STRING PROPERTY COMPILE_FLAGS ${TSAN_FLAGS})
 if(NOT WIN32)
   set_property(TARGET igdrcl_mt_tests APPEND_STRING PROPERTY COMPILE_FLAGS " -g")

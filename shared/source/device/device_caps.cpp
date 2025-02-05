@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,8 +15,10 @@
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/api_specific_config.h"
 #include "shared/source/helpers/basic_math.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
+#include "shared/source/helpers/hw_info_helper.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/source/os_interface/product_helper.h"
@@ -26,7 +28,7 @@
 
 namespace NEO {
 
-static const char *spirvWithVersion = "SPIR-V_1.2 ";
+static const char *spirvWithVersion = "SPIR-V_1.3 SPIR-V_1.2 SPIR-V_1.1 SPIR-V_1.0 ";
 
 size_t Device::getMaxParameterSizeFromIGC() const {
     CompilerInterface *compilerInterface = getCompilerInterface();
@@ -45,13 +47,7 @@ void Device::initializeCaps() {
     auto &gfxCoreHelper = this->getRootDeviceEnvironment().getHelper<NEO::GfxCoreHelper>();
     auto releaseHelper = this->getRootDeviceEnvironment().getReleaseHelper();
 
-    bool ocl21FeaturesEnabled = hwInfo.capabilityTable.supportsOcl21Features;
-    if (debugManager.flags.ForceOCLVersion.get() != 0) {
-        ocl21FeaturesEnabled = (debugManager.flags.ForceOCLVersion.get() == 21);
-    }
-    if (debugManager.flags.ForceOCL21FeaturesSupport.get() != -1) {
-        ocl21FeaturesEnabled = debugManager.flags.ForceOCL21FeaturesSupport.get();
-    }
+    bool ocl21FeaturesEnabled = HwInfoHelper::checkIfOcl21FeaturesEnabledOrEnforced(hwInfo);
     if (ocl21FeaturesEnabled) {
         addressing32bitAllowed = false;
     }
@@ -67,7 +63,7 @@ void Device::initializeCaps() {
     // copy system info to prevent misaligned reads
     const auto systemInfo = hwInfo.gtSystemInfo;
 
-    deviceInfo.globalMemCachelineSize = 64;
+    deviceInfo.globalMemCachelineSize = productHelper.getCacheLineSize();
 
     uint32_t allSubDevicesMask = static_cast<uint32_t>(getDeviceBitfield().to_ulong());
     constexpr uint32_t singleSubDeviceMask = 1;
@@ -88,14 +84,13 @@ void Device::initializeCaps() {
     uint32_t subDeviceCount = gfxCoreHelper.getSubDevicesCount(&getHardwareInfo());
     auto &rootDeviceEnvironment = this->getRootDeviceEnvironment();
     bool platformImplicitScaling = gfxCoreHelper.platformSupportsImplicitScaling(rootDeviceEnvironment);
+    const auto &compilerProductHelper = rootDeviceEnvironment.getHelper<NEO::CompilerProductHelper>();
 
-    if (((NEO::ImplicitScalingHelper::isImplicitScalingEnabled(
-            getDeviceBitfield(), platformImplicitScaling))) &&
+    if ((NEO::ImplicitScalingHelper::isImplicitScalingEnabled(
+            getDeviceBitfield(), platformImplicitScaling)) &&
         (!isSubDevice()) && (subDeviceCount > 1)) {
         deviceInfo.maxMemAllocSize = deviceInfo.globalMemSize;
-    }
-
-    if (!areSharedSystemAllocationsAllowed()) {
+    } else if (!compilerProductHelper.isForceToStatelessRequired()) {
         deviceInfo.maxMemAllocSize = ApiSpecificConfig::getReducedMaxAllocSize(deviceInfo.maxMemAllocSize);
         deviceInfo.maxMemAllocSize = std::min(deviceInfo.maxMemAllocSize, gfxCoreHelper.getMaxMemAllocSize());
     }
@@ -140,7 +135,7 @@ void Device::initializeCaps() {
     deviceInfo.numThreadsPerEU = systemInfo.ThreadCount / systemInfo.EUCount;
 
     if (releaseHelper) {
-        deviceInfo.threadsPerEUConfigs = releaseHelper->getThreadsPerEUConfigs();
+        deviceInfo.threadsPerEUConfigs = releaseHelper->getThreadsPerEUConfigs(deviceInfo.numThreadsPerEU);
     }
     auto maxWS = productHelper.getMaxThreadsForWorkgroupInDSSOrSS(hwInfo, static_cast<uint32_t>(deviceInfo.maxNumEUsPerSubSlice), static_cast<uint32_t>(deviceInfo.maxNumEUsPerDualSubSlice)) * simdSizeUsed;
 
@@ -160,9 +155,6 @@ void Device::initializeCaps() {
     deviceInfo.maxFrontEndThreads = gfxCoreHelper.getMaxThreadsForVfe(hwInfo);
 
     deviceInfo.localMemSize = hwInfo.capabilityTable.slmSize * MemoryConstants::kiloByte;
-    if (debugManager.flags.OverrideSlmSize.get() != -1) {
-        deviceInfo.localMemSize = debugManager.flags.OverrideSlmSize.get() * MemoryConstants::kiloByte;
-    }
 
     deviceInfo.imageSupport = hwInfo.capabilityTable.supportsImages;
     deviceInfo.image2DMaxWidth = 16384;

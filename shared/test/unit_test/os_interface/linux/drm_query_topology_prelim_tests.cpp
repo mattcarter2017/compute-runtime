@@ -1,10 +1,11 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/linux/engine_info.h"
 #include "shared/source/os_interface/os_interface.h"
@@ -19,14 +20,13 @@
 
 #include "gtest/gtest.h"
 
-#include <cmath>
-
 TEST(DrmQueryTopologyTest, givenDrmWhenQueryTopologyCalledThenPassNoFlags) {
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
     DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
 
     DrmQueryTopologyData topologyData = {};
-
+    drm.engineInfoQueried = true;
+    drm.systemInfoQueried = true;
     EXPECT_TRUE(drm.queryTopology(*drm.context.hwInfo, topologyData));
 
     constexpr uint32_t expectedFlag = 0;
@@ -50,8 +50,22 @@ struct QueryTopologyTests : ::testing::Test {
                 return false;
             }
 
-            auto realEuCount = std::max(static_cast<uint32_t>(queryComputeSlicesEuCount / queryComputeSlicesSSCount), rootDeviceEnvironment.getHardwareInfo()->gtSystemInfo.EUCount);
-            auto dataSize = static_cast<size_t>(std::ceil(realEuCount / 8.0));
+            // Values cannot exceed what this GT allows
+            queryComputeSlicesSCount = std::min(queryComputeSlicesSCount, static_cast<uint16_t>(rootDeviceEnvironment.getHardwareInfo()->gtSystemInfo.SliceCount));
+            queryComputeSlicesSSCount = std::min(queryComputeSlicesSSCount, static_cast<uint16_t>(rootDeviceEnvironment.getHardwareInfo()->gtSystemInfo.SubSliceCount));
+            queryComputeSlicesEuCount = std::min(queryComputeSlicesEuCount, static_cast<uint16_t>(rootDeviceEnvironment.getHardwareInfo()->gtSystemInfo.EUCount));
+
+            UNRECOVERABLE_IF((queryComputeSlicesSCount != 0) && (queryComputeSlicesSSCount % queryComputeSlicesSCount != 0));
+            UNRECOVERABLE_IF((queryComputeSlicesSSCount != 0) && (queryComputeSlicesEuCount % queryComputeSlicesSSCount != 0));
+
+            uint16_t subslicesPerSlice = queryComputeSlicesSCount ? (queryComputeSlicesSSCount / queryComputeSlicesSCount) : 0u;
+            uint16_t eusPerSubslice = queryComputeSlicesSSCount ? (queryComputeSlicesEuCount / queryComputeSlicesSSCount) : 0u;
+            uint16_t subsliceOffset = static_cast<uint16_t>(Math::divideAndRoundUp(queryComputeSlicesSCount, 8u));
+            uint16_t subsliceStride = static_cast<uint16_t>(Math::divideAndRoundUp(subslicesPerSlice, 8u));
+            uint16_t euOffset = subsliceOffset + queryComputeSlicesSCount * subsliceStride;
+            uint16_t euStride = static_cast<uint16_t>(Math::divideAndRoundUp(eusPerSubslice, 8u));
+
+            const uint16_t dataSize = euOffset + queryComputeSlicesSSCount * euStride;
 
             if (queryItem->length == 0) {
                 queryItem->length = static_cast<int32_t>(sizeof(QueryTopologyInfo) + dataSize);
@@ -63,14 +77,33 @@ struct QueryTopologyTests : ::testing::Test {
                 uint16_t finalEUVal = queryComputeSlicesEuCount;
 
                 if (useSmallerValuesOnSecondCall && queryComputeSlicesCallCount == 2) {
-                    finalSVal /= 2;
-                    finalSSVal /= 2;
-                    finalEUVal /= 2;
+                    if ((finalSSVal % 2 == 0) && (finalEUVal % 2 == 0)) {
+                        finalSSVal /= 2;
+                        finalEUVal /= 2;
+                    } else if ((finalSSVal % 3 == 0) && (finalEUVal % 3 == 0)) {
+                        finalSSVal /= 3;
+                        finalEUVal /= 3;
+                    } else {
+                        finalSVal = 1;
+                        finalSSVal = subslicesPerSlice;
+                        finalEUVal = subslicesPerSlice * eusPerSubslice;
+                    }
+
+                    subslicesPerSlice = finalSVal ? (finalSSVal / finalSVal) : 0u;
+                    eusPerSubslice = finalSSVal ? (finalEUVal / finalSSVal) : 0u;
+                    subsliceOffset = static_cast<uint16_t>(Math::divideAndRoundUp(finalSVal, 8u));
+                    subsliceStride = static_cast<uint16_t>(Math::divideAndRoundUp(subslicesPerSlice, 8u));
+                    euOffset = subsliceOffset + finalSVal * subsliceStride;
+                    euStride = static_cast<uint16_t>(Math::divideAndRoundUp(eusPerSubslice, 8u));
                 }
 
                 topologyArg->maxSlices = finalSVal;
-                topologyArg->maxSubslices = (finalSSVal / finalSVal);
-                topologyArg->maxEusPerSubslice = (finalEUVal / finalSSVal);
+                topologyArg->maxSubslices = subslicesPerSlice;
+                topologyArg->maxEusPerSubslice = eusPerSubslice;
+                topologyArg->subsliceOffset = subsliceOffset;
+                topologyArg->subsliceStride = subsliceStride;
+                topologyArg->euOffset = euOffset;
+                topologyArg->euStride = euStride;
 
                 memset(topologyArg->data, 0xFF, dataSize);
             }
@@ -101,16 +134,18 @@ struct QueryTopologyTests : ::testing::Test {
 
         drmMock = std::make_unique<MyDrmQueryMock>(*rootDeviceEnvironment);
 
-        drmMock->storedSVal = 8;
-        drmMock->storedSSVal = 32;
-        drmMock->storedEUVal = 512;
+        drmMock->storedSVal = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.SliceCount;
+        drmMock->storedSSVal = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.SubSliceCount;
+        drmMock->storedEUVal = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.EUCount;
 
-        drmMock->queryComputeSlicesSCount = 4;
-        drmMock->queryComputeSlicesSSCount = 16;
-        drmMock->queryComputeSlicesEuCount = 256;
+        drmMock->queryComputeSlicesSCount = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.SliceCount;
+        drmMock->queryComputeSlicesSSCount = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.SubSliceCount;
+        drmMock->queryComputeSlicesEuCount = rootDeviceEnvironment->getHardwareInfo()->gtSystemInfo.EUCount;
 
+        drmMock->memoryInfoQueried = false;
         EXPECT_TRUE(drmMock->queryMemoryInfo());
         EXPECT_TRUE(drmMock->queryEngineInfo());
+        drmMock->systemInfoQueried = true;
     }
 
     DebugManagerStateRestore stateRestorer;
@@ -135,9 +170,9 @@ TEST_F(QueryTopologyTests, givenZeroTilesWhenQueryingThenFallbackToQueryTopology
     EXPECT_EQ(drmMock->storedSSVal, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->storedEUVal, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenNonZeroTilesWhenDebugFlagDisabledThenFallbackToQueryTopology) {
@@ -154,9 +189,9 @@ TEST_F(QueryTopologyTests, givenNonZeroTilesWhenDebugFlagDisabledThenFallbackToQ
     EXPECT_EQ(drmMock->storedSSVal, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->storedEUVal, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenNonZeroTilesWhenQueryingThenUseOnlyNewIoctl) {
@@ -172,9 +207,9 @@ TEST_F(QueryTopologyTests, givenNonZeroTilesWhenQueryingThenUseOnlyNewIoctl) {
     EXPECT_EQ(drmMock->queryComputeSlicesSSCount, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->queryComputeSlicesEuCount, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->queryComputeSlicesSCount, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesSSCount / drmMock->queryComputeSlicesSCount, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesEuCount / drmMock->queryComputeSlicesSSCount, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->queryComputeSlicesSCount, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->queryComputeSlicesSSCount / drmMock->queryComputeSlicesSCount, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->queryComputeSlicesEuCount / drmMock->queryComputeSlicesSSCount, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenNonZeroTilesWithoutEngineInfoThenFallback) {
@@ -191,9 +226,9 @@ TEST_F(QueryTopologyTests, givenNonZeroTilesWithoutEngineInfoThenFallback) {
     EXPECT_EQ(drmMock->storedSSVal, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->storedEUVal, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenNonZeroTilesWhenFailOnNewQueryThenFallback) {
@@ -210,9 +245,9 @@ TEST_F(QueryTopologyTests, givenNonZeroTilesWhenFailOnNewQueryThenFallback) {
     EXPECT_EQ(drmMock->storedSSVal, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->storedEUVal, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenNonZeroTilesWhenIncorrectValuesQueriedThenFallback) {
@@ -229,9 +264,9 @@ TEST_F(QueryTopologyTests, givenNonZeroTilesWhenIncorrectValuesQueriedThenFallba
     EXPECT_EQ(drmMock->storedSSVal, topologyData.subSliceCount);
     EXPECT_EQ(drmMock->storedEUVal, topologyData.euCount);
 
-    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->storedSVal, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->storedSSVal / drmMock->storedSVal, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->storedEUVal / drmMock->storedSSVal, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenAsymetricTilesWhenQueryingThenPickSmallerValue) {
@@ -242,13 +277,23 @@ TEST_F(QueryTopologyTests, givenAsymetricTilesWhenQueryingThenPickSmallerValue) 
     DrmQueryTopologyData topologyData = {};
     drmMock->queryTopology(*rootDeviceEnvironment->getHardwareInfo(), topologyData);
 
-    EXPECT_EQ(drmMock->queryComputeSlicesSCount / 2, topologyData.sliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesSSCount / 2, topologyData.subSliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesEuCount / 2, topologyData.euCount);
+    EXPECT_NE(0, drmMock->queryComputeSlicesSCount);
+    EXPECT_NE(0, topologyData.sliceCount);
+    EXPECT_LE(topologyData.sliceCount, drmMock->queryComputeSlicesSCount);
+    if ((drmMock->queryComputeSlicesSSCount % 2 == 0) && (drmMock->queryComputeSlicesEuCount % 2 == 0)) {
+        EXPECT_EQ(drmMock->queryComputeSlicesSSCount / 2, topologyData.subSliceCount);
+        EXPECT_EQ(drmMock->queryComputeSlicesEuCount / 2, topologyData.euCount);
+    } else if ((drmMock->queryComputeSlicesSSCount % 3 == 0) && (drmMock->queryComputeSlicesEuCount % 3 == 0)) {
+        EXPECT_EQ(drmMock->queryComputeSlicesSSCount / 3, topologyData.subSliceCount);
+        EXPECT_EQ(drmMock->queryComputeSlicesEuCount / 3, topologyData.euCount);
+    } else {
+        EXPECT_EQ(drmMock->queryComputeSlicesSSCount / drmMock->queryComputeSlicesSCount, topologyData.subSliceCount);
+        EXPECT_EQ(drmMock->queryComputeSlicesEuCount / drmMock->queryComputeSlicesSSCount * topologyData.subSliceCount, topologyData.euCount);
+    }
 
-    EXPECT_EQ(drmMock->queryComputeSlicesSCount, topologyData.maxSliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesSSCount / drmMock->queryComputeSlicesSCount, topologyData.maxSubSliceCount);
-    EXPECT_EQ(drmMock->queryComputeSlicesEuCount / drmMock->queryComputeSlicesSSCount, topologyData.maxEuPerSubSlice);
+    EXPECT_EQ(drmMock->queryComputeSlicesSCount, topologyData.maxSlices);
+    EXPECT_EQ(drmMock->queryComputeSlicesSSCount / drmMock->queryComputeSlicesSCount, topologyData.maxSubSlicesPerSlice);
+    EXPECT_EQ(drmMock->queryComputeSlicesEuCount / drmMock->queryComputeSlicesSSCount, topologyData.maxEusPerSubSlice);
 }
 
 TEST_F(QueryTopologyTests, givenAsymetricTilesWhenGettingSliceMappingsThenCorrectMappingsReturnedForBothDeviceIndexes) {
@@ -262,8 +307,8 @@ TEST_F(QueryTopologyTests, givenAsymetricTilesWhenGettingSliceMappingsThenCorrec
     auto device0SliceMapping = drmMock->getSliceMappings(0);
     auto device1SliceMapping = drmMock->getSliceMappings(1);
 
-    ASSERT_EQ(static_cast<size_t>(drmMock->queryComputeSlicesSCount / 2), device0SliceMapping.size());
-    for (int i = 0; i < drmMock->queryComputeSlicesSCount / 2; i++) {
+    ASSERT_GE(static_cast<size_t>(drmMock->queryComputeSlicesSCount), device0SliceMapping.size());
+    for (int i = 0; i < static_cast<int>(device0SliceMapping.size()); i++) {
         EXPECT_EQ(i, device0SliceMapping[i]);
     }
 
@@ -340,6 +385,48 @@ TEST(DrmQueryTest, givenPageFaultSupportEnabledWhenCallingQueryPageFaultSupportT
             EXPECT_FALSE(drm.hasPageFaultSupport());
         }
     }
+}
+
+TEST(DrmQueryTest, givenPrintIoctlDebugFlagSetWhenCallingQueryPageFaultSupportThenCaptureExpectedOutput) {
+    DebugManagerStateRestore restore;
+    debugManager.flags.PrintIoctlEntries.set(true);
+
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
+    const auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<ProductHelper>();
+
+    bool hasPageFaultSupport = true;
+    drm.context.hasPageFaultQueryValue = hasPageFaultSupport;
+
+    testing::internal::CaptureStdout(); // start capturing
+    drm.queryPageFaultSupport();
+    debugManager.flags.PrintIoctlEntries.set(false);
+    std::string outputString = testing::internal::GetCapturedStdout(); // stop capturing
+
+    if (productHelper.isPageFaultSupported()) {
+        std::string expectedString = "DRM_IOCTL_I915_GETPARAM: param: PRELIM_I915_PARAM_HAS_PAGE_FAULT, output value: 1, retCode: 0\n";
+        EXPECT_NE(std::string::npos, outputString.find(expectedString));
+    } else {
+        EXPECT_TRUE(outputString.empty());
+    }
+}
+
+TEST(DrmQueryTest, givenPrintIoctlDebugFlagNotSetWhenIsPageFaultSupportedCalledThenNoCapturedOutput) {
+    DebugManagerStateRestore restore;
+    debugManager.flags.PrintIoctlEntries.set(false);
+
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    DrmQueryMock drm{*executionEnvironment->rootDeviceEnvironments[0]};
+
+    bool hasPageFaultSupport = true;
+    drm.context.hasPageFaultQueryValue = hasPageFaultSupport;
+
+    testing::internal::CaptureStdout(); // start capturing
+    drm.queryPageFaultSupport();
+    debugManager.flags.PrintIoctlEntries.set(false);
+    std::string outputString = testing::internal::GetCapturedStdout(); // stop capturing
+
+    EXPECT_TRUE(outputString.empty());
 }
 
 TEST(DrmQueryTest, WhenQueryPageFaultSupportFailsThenReturnFalse) {

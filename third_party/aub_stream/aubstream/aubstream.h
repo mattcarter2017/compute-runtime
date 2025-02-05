@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -62,6 +62,9 @@ constexpr uint32_t aubFileAndTbx = 2;
 constexpr uint32_t tbxShm = 3;
 constexpr uint32_t tbxShm3 = 4;
 constexpr uint32_t tbxShm4 = 5;
+constexpr uint32_t null = 6;
+constexpr uint32_t aubFileAndShm = 7;
+constexpr uint32_t aubFileAndShm4 = 8;
 } // namespace mode
 
 namespace clearColorType {
@@ -78,6 +81,9 @@ extern "C" void setTbxServerIp(std::string server);
 extern "C" void setTbxFrontdoorMode(bool frontdoor);
 extern "C" void setAubStreamCaller(uint32_t caller);
 
+extern "C" void injectMMIOListLegacy(MMIOList mmioList);
+extern "C" void setTbxServerIpLegacy(std::string server);
+
 namespace caller {
 constexpr uint32_t neo = 0;
 constexpr uint32_t rlr = 1;
@@ -89,8 +95,19 @@ constexpr uint32_t rl = 4;
 namespace hardwareContextFlags {
 constexpr uint32_t contextGroup = 1 << 15;
 constexpr uint32_t highPriority = 1 << 14;
+constexpr uint32_t lowPriority = 1 << 13;
 } // namespace hardwareContextFlags
 
-static_assert(std::is_pod<SurfaceInfo>::value, "SurfaceInfo is not POD type");
+namespace hardwareContextId {
+constexpr uint32_t invalidContextId = -1;
+}
+
+struct CreateHardwareContext2Params {
+    uint32_t contextId;
+    uint32_t primaryContextId = hardwareContextId::invalidContextId;
+};
+
+static_assert(std::is_standard_layout_v<SurfaceInfo> && std::is_trivial_v<SurfaceInfo> && std::is_trivially_copyable_v<SurfaceInfo>, "SurfaceInfo is not POD type");
+static_assert(std::is_standard_layout_v<CreateHardwareContext2Params>, "CreateHardwareContext2Params is not standard layout type");
 
 } // namespace aub_stream

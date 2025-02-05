@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,25 +14,27 @@
 #include "shared/source/os_interface/linux/ioctl_helper.h"
 #include "shared/source/os_interface/linux/memory_info.h"
 #include "shared/source/os_interface/linux/xe/ioctl_helper_xe.h"
+#include "shared/source/os_interface/linux/xe/xedrm.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
+#include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/libult/linux/drm_mock.h"
 #include "shared/test/common/mocks/linux/mock_os_time_linux.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_io_functions.h"
 #include "shared/test/common/os_interface/linux/sys_calls_linux_ult.h"
+#include "shared/test/common/os_interface/linux/xe/eudebug/mock_eudebug_interface.h"
 #include "shared/test/common/test_macros/test.h"
-
-#include "uapi-eudebug/drm/xe_drm.h"
-#include "uapi-eudebug/drm/xe_drm_tmp.h"
 
 using namespace NEO;
 
 struct MockIoctlHelperXeDebug : IoctlHelperXe {
-    using IoctlHelperXe::debugMetadata;
-    using IoctlHelperXe::freeDebugMetadata;
-    using IoctlHelperXe::getRunaloneExtProperty;
+    using IoctlHelperXe::bindInfo;
+    using IoctlHelperXe::euDebugInterface;
+    using IoctlHelperXe::getEudebugExtProperty;
     using IoctlHelperXe::IoctlHelperXe;
+    using IoctlHelperXe::tileIdToGtId;
 };
 
 inline constexpr int testValueVmId = 0x5764;
@@ -40,9 +42,86 @@ inline constexpr int testValueMapOff = 0x7788;
 inline constexpr int testValuePrime = 0x4321;
 inline constexpr uint32_t testValueGemCreate = 0x8273;
 
-class DrmMockXeDebug : public DrmMockCustom {
-  public:
-    DrmMockXeDebug(RootDeviceEnvironment &rootDeviceEnvironment) : DrmMockCustom(rootDeviceEnvironment){};
+struct DrmMockXeDebug : public DrmMockCustom {
+    using Drm::engineInfo;
+
+    static auto create(RootDeviceEnvironment &rootDeviceEnvironment) {
+        auto drm = std::unique_ptr<DrmMockXeDebug>(new DrmMockXeDebug{rootDeviceEnvironment});
+
+        drm->reset();
+        auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<NEO::GfxCoreHelper>();
+        drm->ioctlExpected.contextCreate = static_cast<int>(gfxCoreHelper.getGpgpuEngineInstances(rootDeviceEnvironment).size());
+        drm->ioctlExpected.contextDestroy = drm->ioctlExpected.contextCreate.load();
+        drm->ioctlHelper = std::make_unique<MockIoctlHelperXeDebug>(*drm);
+        drm->isVmBindAvailable();
+        drm->reset();
+
+        drm->ioctlHelper = std::make_unique<IoctlHelperXe>(*drm);
+
+        auto xeQueryConfig = reinterpret_cast<drm_xe_query_config *>(drm->queryConfig);
+        xeQueryConfig->num_params = 6;
+        xeQueryConfig->info[DRM_XE_QUERY_CONFIG_REV_AND_DEVICE_ID] = 0; // this should be queried by ioctl sys call
+        xeQueryConfig->info[DRM_XE_QUERY_CONFIG_VA_BITS] = 48;
+        xeQueryConfig->info[DRM_XE_QUERY_CONFIG_MAX_EXEC_QUEUE_PRIORITY] = mockMaxExecQueuePriority;
+
+        drm->queryGtList.resize(49); // 1 qword for num gts and 12 qwords per gt
+        auto xeQueryGtList = reinterpret_cast<drm_xe_query_gt_list *>(drm->queryGtList.begin());
+        xeQueryGtList->num_gt = 4;
+        xeQueryGtList->gt_list[0] = {
+            DRM_XE_QUERY_GT_TYPE_MAIN, // type
+            0,                         // tile_id
+            0,                         // gt_id
+            {0},                       // padding
+            mockTimestampFrequency,    // reference_clock
+            0b100,                     // native mem regions
+            0x011,                     // slow mem regions
+        };
+        xeQueryGtList->gt_list[1] = {
+            DRM_XE_QUERY_GT_TYPE_MEDIA, // type
+            1,                          // tile_id
+            1,                          // gt_id
+            {0},                        // padding
+            mockTimestampFrequency,     // reference_clock
+            0b001,                      // native mem regions
+            0x110,                      // slow mem regions
+        };
+        xeQueryGtList->gt_list[2] = {
+            DRM_XE_QUERY_GT_TYPE_MAIN, // type
+            1,                         // tile_id
+            2,                         // gt_id
+            {0},                       // padding
+            mockTimestampFrequency,    // reference_clock
+            0b010,                     // native mem regions
+            0x101,                     // slow mem regions
+        };
+        xeQueryGtList->gt_list[3] = {
+            DRM_XE_QUERY_GT_TYPE_MAIN, // type
+            2,                         // tile_id
+            3,                         // gt_id
+            {0},                       // padding
+            mockTimestampFrequency,    // reference_clock
+            0b100,                     // native mem regions
+            0x011,                     // slow mem regions
+        };
+
+        drm->ioctlHelper->initialize();
+        EXPECT_EQ(1, drm->ioctlHelper->getEuDebugSysFsEnable());
+        auto xeQueryEngines = reinterpret_cast<drm_xe_query_engines *>(drm->queryEngines);
+        xeQueryEngines->num_engines = 11;
+        xeQueryEngines->engines[0] = {{DRM_XE_ENGINE_CLASS_RENDER, 0, 0}, {}};
+        xeQueryEngines->engines[1] = {{DRM_XE_ENGINE_CLASS_COPY, 1, 0}, {}};
+        xeQueryEngines->engines[2] = {{DRM_XE_ENGINE_CLASS_COPY, 2, 0}, {}};
+        xeQueryEngines->engines[3] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 3, 0}, {}};
+        xeQueryEngines->engines[4] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 4, 0}, {}};
+        xeQueryEngines->engines[5] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 5, 1}, {}};
+        xeQueryEngines->engines[6] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 6, 1}, {}};
+        xeQueryEngines->engines[7] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 7, 1}, {}};
+        xeQueryEngines->engines[8] = {{DRM_XE_ENGINE_CLASS_COMPUTE, 8, 1}, {}};
+        xeQueryEngines->engines[9] = {{DRM_XE_ENGINE_CLASS_VIDEO_DECODE, 9, 1}, {}};
+        xeQueryEngines->engines[10] = {{DRM_XE_ENGINE_CLASS_VIDEO_ENHANCE, 10, 0}, {}};
+
+        return drm;
+    }
 
     int getErrno() override {
         if (baseErrno) {
@@ -53,8 +132,8 @@ class DrmMockXeDebug : public DrmMockCustom {
     bool baseErrno = false;
     int errnoRetVal = 0;
 
-    unsigned int bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType, bool engineInstancedDevice) override {
-        return static_cast<unsigned int>(DrmParam::execDefault);
+    void setPciPath(const char *pciPath) {
+        hwDeviceId = std::make_unique<HwDeviceIdDrm>(getFileDescriptor(), pciPath);
     }
 
     int ioctl(DrmIoctl request, void *arg) override {
@@ -64,6 +143,9 @@ class DrmMockXeDebug : public DrmMockCustom {
             return setIoctlAnswer;
         }
         switch (request) {
+        case DrmIoctl::gemVmBind: {
+            return 0;
+        } break;
         case DrmIoctl::query: {
             struct drm_xe_device_query *deviceQuery = static_cast<struct drm_xe_device_query *>(arg);
             switch (deviceQuery->query) {
@@ -73,27 +155,38 @@ class DrmMockXeDebug : public DrmMockCustom {
                 }
                 deviceQuery->size = sizeof(queryEngines);
                 break;
+            case DRM_XE_DEVICE_QUERY_CONFIG:
+                if (deviceQuery->data) {
+                    memcpy_s(reinterpret_cast<void *>(deviceQuery->data), deviceQuery->size, queryConfig, sizeof(queryConfig));
+                }
+                deviceQuery->size = sizeof(queryConfig);
+                break;
+            case DRM_XE_DEVICE_QUERY_GT_LIST:
+                if (deviceQuery->data) {
+                    memcpy_s(reinterpret_cast<void *>(deviceQuery->data), deviceQuery->size, queryGtList.begin(), sizeof(queryGtList[0]) * queryGtList.size());
+                }
+                deviceQuery->size = static_cast<uint32_t>(sizeof(queryGtList[0]) * queryGtList.size());
+                break;
             };
             ret = 0;
         } break;
         case DrmIoctl::gemContextCreateExt: {
             auto create = static_cast<struct drm_xe_exec_queue_create *>(arg);
+            execQueueCreateParams = *create;
             if (create->extensions) {
                 receivedContextCreateSetParam = *reinterpret_cast<struct drm_xe_ext_set_property *>(create->extensions);
+            }
+            execQueueEngineInstances.clear();
+            for (uint16_t i = 0; i < create->num_placements; i++) {
+                execQueueEngineInstances.push_back(reinterpret_cast<drm_xe_engine_class_instance *>(create->instances)[i]);
             }
             ret = 0;
         } break;
         case DrmIoctl::gemVmCreate: {
-            struct drm_xe_vm_create *v = static_cast<struct drm_xe_vm_create *>(arg);
-            drm_xe_ext_vm_set_debug_metadata *metadata = reinterpret_cast<drm_xe_ext_vm_set_debug_metadata *>(v->extensions);
-            while (metadata) {
-                vmCreateMetadata.push_back(*metadata);
-                metadata = reinterpret_cast<drm_xe_ext_vm_set_debug_metadata *>(metadata->base.next_extension);
-            }
             ret = 0;
         } break;
         case DrmIoctl::debuggerOpen: {
-            auto debuggerOpen = reinterpret_cast<drm_xe_eudebug_connect *>(arg);
+            auto debuggerOpen = reinterpret_cast<EuDebugConnect *>(arg);
 
             if (debuggerOpen->version != 0) {
                 return -1;
@@ -102,6 +195,24 @@ class DrmMockXeDebug : public DrmMockCustom {
                 debuggerOpen->version = debuggerOpenVersion;
             }
             return debuggerOpenRetval;
+        } break;
+        case DrmIoctl::metadataCreate: {
+            auto metadata = reinterpret_cast<DebugMetadataCreate *>(arg);
+            metadataAddr = reinterpret_cast<void *>(metadata->userAddr);
+            metadataSize = metadata->len;
+            metadataType = metadata->type;
+            metadata->metadataId = metadataID;
+            return 0;
+        } break;
+        case DrmIoctl::metadataDestroy: {
+            auto metadata = reinterpret_cast<DebugMetadataDestroy *>(arg);
+            metadataID = metadata->metadataId;
+            return 0;
+        } break;
+        case DrmIoctl::gemWaitUserFence: {
+            auto waitUserFenceInput = static_cast<drm_xe_wait_user_fence *>(arg);
+            waitUserFenceInputs.push_back(*waitUserFenceInput);
+            return 0;
         } break;
 
         default:
@@ -135,19 +246,11 @@ class DrmMockXeDebug : public DrmMockCustom {
         }
         return allowDebugAttach;
     }
+    static constexpr const char *mockSysFsPciPath = "mock_sys_fs_pci_path";
+    std::string getSysFsPciPath() override { return mockSysFsPciPath; }
 
-    const drm_xe_engine_class_instance queryEngines[11] = {
-        {DRM_XE_ENGINE_CLASS_RENDER, 0, 0},
-        {DRM_XE_ENGINE_CLASS_COPY, 1, 0},
-        {DRM_XE_ENGINE_CLASS_COPY, 2, 0},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 3, 0},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 4, 0},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 5, 1},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 6, 1},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 7, 1},
-        {DRM_XE_ENGINE_CLASS_COMPUTE, 8, 1},
-        {DRM_XE_ENGINE_CLASS_VIDEO_DECODE, 9, 1},
-        {DRM_XE_ENGINE_CLASS_VIDEO_ENHANCE, 10, 0}};
+    static_assert(sizeof(drm_xe_engine) == 4 * sizeof(uint64_t), "");
+    uint64_t queryEngines[45]{}; // 1 qword for num engines and 4 qwords per engine
 
     struct drm_xe_ext_set_property receivedContextCreateSetParam = {};
     bool allowDebugAttachCallBase = false;
@@ -158,10 +261,46 @@ class DrmMockXeDebug : public DrmMockCustom {
     int setIoctlAnswer = 0;
     int gemVmBindReturn = 0;
 
+    uint32_t metadataID = 20;
+    void *metadataAddr = nullptr;
+    size_t metadataSize = 0;
+    uint64_t metadataType = 9999;
+
     alignas(64) std::vector<uint8_t> queryTopology;
-    std::vector<drm_xe_ext_vm_set_debug_metadata> vmCreateMetadata;
+    std::vector<drm_xe_engine_class_instance> execQueueEngineInstances;
+    drm_xe_exec_queue_create execQueueCreateParams = {};
+    StackVec<drm_xe_wait_user_fence, 1> waitUserFenceInputs;
+    VariableBackup<decltype(NEO::IoFunctions::fopenPtr)> mockFopen{&NEO::IoFunctions::fopenPtr};
+    VariableBackup<size_t (*)(void *, size_t, size_t, FILE *)> mockFread{&NEO::IoFunctions::freadPtr};
 
     // Debugger ioctls
     int debuggerOpenRetval = 10; // debugFd
     uint32_t debuggerOpenVersion = 0;
+    StackVec<uint64_t, 49> queryGtList{}; // 1 qword for num gts and 12 qwords per gt
+    static constexpr uint32_t mockTimestampFrequency = 12500000;
+    uint64_t queryConfig[7]{}; // 1 qword for num params and 1 qwords per param
+    static constexpr int32_t mockMaxExecQueuePriority = 3;
+
+  protected:
+    // Don't call directly, use the create() function
+    DrmMockXeDebug(RootDeviceEnvironment &rootDeviceEnvironment)
+        : DrmMockCustom(std::make_unique<HwDeviceIdDrm>(mockFd, mockPciPath), rootDeviceEnvironment) {
+        NEO::IoFunctions::fopenPtr = [](const char *filename, const char *mode) -> FILE * {
+            std::string fsEntry(filename);
+            std::string expectedPath = std::string(DrmMockXeDebug::mockSysFsPciPath) + MockEuDebugInterface::sysFsXeEuDebugFile;
+            if (fsEntry == expectedPath) {
+                return reinterpret_cast<FILE *>(MockEuDebugInterface::sysFsFd);
+            }
+
+            return NEO::IoFunctions::mockFopen(filename, mode);
+        };
+        NEO::IoFunctions::freadPtr = [](void *ptr, size_t size, size_t count, FILE *stream) -> size_t {
+            if (stream == reinterpret_cast<FILE *>(MockEuDebugInterface::sysFsFd)) {
+
+                memcpy_s(ptr, size, &MockEuDebugInterface::sysFsContent, sizeof(MockEuDebugInterface::sysFsContent));
+                return sizeof(MockEuDebugInterface::sysFsContent);
+            }
+            return NEO::IoFunctions::mockFread(ptr, size, count, stream);
+        };
+    }
 };

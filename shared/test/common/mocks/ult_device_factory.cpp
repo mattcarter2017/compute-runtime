@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,6 +32,11 @@ UltDeviceFactory::UltDeviceFactory(uint32_t rootDevicesCount, uint32_t subDevice
     debugManager.flags.CreateMultipleRootDevices.set(rootDevicesCount);
     debugManager.flags.CreateMultipleSubDevices.set(subDevicesCount);
     createRootDeviceFuncBackup = [](ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex) -> std::unique_ptr<Device> {
+        for (auto i = 0u; i < executionEnvironment.rootDeviceEnvironments.size(); i++) {
+            UnitTestSetter::setRcsExposure(*executionEnvironment.rootDeviceEnvironments[i]);
+            UnitTestSetter::setCcsExposure(*executionEnvironment.rootDeviceEnvironments[i]);
+        }
+        executionEnvironment.calculateMaxOsContextCount();
         return std::unique_ptr<Device>(MockDevice::create<MockDevice>(&executionEnvironment, rootDeviceIndex));
     };
     createMemoryManagerFuncBackup = UltDeviceFactory::initializeMemoryManager;
@@ -42,7 +47,16 @@ UltDeviceFactory::UltDeviceFactory(uint32_t rootDevicesCount, uint32_t subDevice
         pCreatedDevice->incRefInternal();
         if (pCreatedDevice->getNumSubDevices() > 1) {
             for (uint32_t i = 0; i < pCreatedDevice->getNumSubDevices(); i++) {
-                this->subDevices.push_back(static_cast<SubDevice *>(pCreatedDevice->getSubDevice(i)));
+                auto *pDevice = static_cast<SubDevice *>(pCreatedDevice->getSubDevice(i));
+                this->subDevices.push_back(pDevice);
+            }
+        }
+        if (pCreatedDevice->getPreemptionMode() == NEO::PreemptionMode::MidThread) {
+            for (auto &engine : pCreatedDevice->getAllEngines()) {
+                NEO::CommandStreamReceiver *csr = engine.commandStreamReceiver;
+                if (!csr->getPreemptionAllocation()) {
+                    csr->createPreemptionAllocation();
+                }
             }
         }
         this->rootDevices.push_back(static_cast<MockDevice *>(pCreatedDevice.release()));
@@ -55,7 +69,7 @@ UltDeviceFactory::~UltDeviceFactory() {
     }
 }
 
-void UltDeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &executionEnvironment, uint32_t rootDevicesCount) {
+bool UltDeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &executionEnvironment, uint32_t rootDevicesCount) {
     uint32_t numRootDevices = rootDevicesCount;
     executionEnvironment.prepareRootDeviceEnvironments(numRootDevices);
     for (auto i = 0u; i < numRootDevices; i++) {
@@ -64,10 +78,15 @@ void UltDeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &execution
              executionEnvironment.rootDeviceEnvironments[i]->getHardwareInfo()->platform.eRenderCoreFamily == IGFX_UNKNOWN_CORE)) {
             executionEnvironment.rootDeviceEnvironments[i]->setHwInfoAndInitHelpers(defaultHwInfo.get());
         }
+        executionEnvironment.rootDeviceEnvironments[i]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
     }
     executionEnvironment.parseAffinityMask();
-    executionEnvironment.calculateMaxOsContextCount();
-    DeviceFactory::createMemoryManagerFunc(executionEnvironment);
+    auto retVal = executionEnvironment.rootDeviceEnvironments.size();
+    if (retVal) {
+        executionEnvironment.calculateMaxOsContextCount();
+        DeviceFactory::createMemoryManagerFunc(executionEnvironment);
+    }
+    return retVal;
 }
 bool UltDeviceFactory::initializeMemoryManager(ExecutionEnvironment &executionEnvironment) {
     if (executionEnvironment.memoryManager == nullptr) {

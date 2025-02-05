@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "level_zero/core/source/module/module_imp.h"
 
+#include "shared/source/command_stream/command_stream_receiver.h"
 #include "shared/source/compiler_interface/compiler_options.h"
 #include "shared/source/compiler_interface/compiler_options_extra.h"
 #include "shared/source/compiler_interface/compiler_warnings/compiler_warnings.h"
@@ -37,6 +38,7 @@
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/memory_manager/memory_operations_handler.h"
 #include "shared/source/memory_manager/unified_memory_manager.h"
+#include "shared/source/os_interface/os_context.h"
 #include "shared/source/program/kernel_info.h"
 #include "shared/source/program/program_initialization.h"
 
@@ -274,8 +276,9 @@ ze_result_t ModuleTranslationUnit::buildFromSpirV(const char *input, uint32_t in
     if (isZebinAllowed == false) {
         const auto &rootDevice = neoDevice->getRootDevice();
         if (!rootDevice->getCompilerInterface()->addOptionDisableZebin(this->options, internalOptions)) {
-            driverHandle->setErrorDescription("Cannot build zebinary for this device with debugger enabled. Remove \"-ze-intel-enable-zebin\" build flag\n");
-            updateBuildLog("Cannot build zebinary for this device with debugger enabled. Remove \"-ze-intel-enable-zebin\" build flag");
+            CREATE_DEBUG_STRING(str, "%s", "Cannot build zebinary for this device with debugger enabled. Remove \"-ze-intel-enable-zebin\" build flag\n");
+            driverHandle->setErrorDescription(std::string(str.get()));
+            updateBuildLog(std::string(str.get()));
             return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
         }
     }
@@ -288,7 +291,7 @@ ze_result_t ModuleTranslationUnit::buildFromSpirV(const char *input, uint32_t in
     return this->compileGenBinary(inputArgs, false);
 }
 
-ze_result_t ModuleTranslationUnit::createFromNativeBinary(const char *input, size_t inputSize) {
+ze_result_t ModuleTranslationUnit::createFromNativeBinary(const char *input, size_t inputSize, const char *internalBuildOptions) {
     UNRECOVERABLE_IF((nullptr == device) || (nullptr == device->getNEODevice()));
     auto productAbbreviation = NEO::hardwarePrefix[device->getNEODevice()->getHardwareInfo().platform.eProductFamily];
 
@@ -303,16 +306,14 @@ ze_result_t ModuleTranslationUnit::createFromNativeBinary(const char *input, siz
         PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodeWarnings.c_str());
     }
     if (singleDeviceBinary.intermediateRepresentation.empty() && singleDeviceBinary.deviceBinary.empty()) {
-        driverHandle->setErrorDescription("%s\n", decodeErrors.c_str());
+        CREATE_DEBUG_STRING(str, "%s\n", decodeErrors.c_str());
+        driverHandle->setErrorDescription(std::string(str.get()));
         PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodeErrors.c_str());
         return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
     } else {
         this->irBinary = makeCopy(reinterpret_cast<const char *>(singleDeviceBinary.intermediateRepresentation.begin()), singleDeviceBinary.intermediateRepresentation.size());
         this->irBinarySize = singleDeviceBinary.intermediateRepresentation.size();
         this->options = singleDeviceBinary.buildOptions.str();
-        if (singleDeviceBinary.format == NEO::DeviceBinaryFormat::zebin) {
-            this->options += " " + NEO::CompilerOptions::enableZebin.str();
-        }
 
         if (false == singleDeviceBinary.debugData.empty()) {
             this->debugData = makeCopy(reinterpret_cast<const char *>(singleDeviceBinary.debugData.begin()), singleDeviceBinary.debugData.size());
@@ -347,7 +348,7 @@ ze_result_t ModuleTranslationUnit::createFromNativeBinary(const char *input, siz
             updateBuildLog(NEO::CompilerWarnings::recompiledFromIr.str());
         }
 
-        return buildFromSpirV(this->irBinary.get(), static_cast<uint32_t>(this->irBinarySize), this->options.c_str(), "", nullptr);
+        return buildFromSpirV(this->irBinary.get(), static_cast<uint32_t>(this->irBinarySize), this->options.c_str(), internalBuildOptions, nullptr);
     } else {
         if (processUnpackedBinary() != ZE_RESULT_SUCCESS) {
             driverHandle->clearErrorDescription();
@@ -379,7 +380,8 @@ ze_result_t ModuleTranslationUnit::processUnpackedBinary() {
     }
 
     if (NEO::DecodeError::success != decodeError) {
-        driverHandle->setErrorDescription("%s\n", decodeErrors.c_str());
+        CREATE_DEBUG_STRING(str, "%s\n", decodeErrors.c_str());
+        driverHandle->setErrorDescription(std::string(str.get()));
         PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "%s\n", decodeErrors.c_str());
         return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
     }
@@ -401,8 +403,8 @@ ze_result_t ModuleTranslationUnit::processUnpackedBinary() {
     }
 
     if (slmNeeded > slmAvailable) {
-        driverHandle->setErrorDescription("Size of SLM (%u) larger than available (%u)\n",
-                                          static_cast<uint32_t>(slmNeeded), static_cast<uint32_t>(slmAvailable));
+        CREATE_DEBUG_STRING(str, "Size of SLM (%u) larger than available (%u)\n", static_cast<uint32_t>(slmNeeded), static_cast<uint32_t>(slmAvailable));
+        driverHandle->setErrorDescription(std::string(str.get()));
         PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Size of SLM (%u) larger than available (%u)\n",
                            static_cast<uint32_t>(slmNeeded), static_cast<uint32_t>(slmAvailable));
         return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
@@ -500,7 +502,7 @@ void ModuleTranslationUnit::processDebugData() {
 
 ModuleImp::ModuleImp(Device *device, ModuleBuildLog *moduleBuildLog, ModuleType type)
     : device(device), translationUnit(std::make_unique<ModuleTranslationUnit>(device)),
-      moduleBuildLog(moduleBuildLog), kernelsIsaParentRegion(nullptr), type(type) {
+      moduleBuildLog(moduleBuildLog), type(type) {
     auto &gfxCoreHelper = device->getGfxCoreHelper();
     auto &hwInfo = device->getHwInfo();
     this->isaAllocationPageSize = gfxCoreHelper.useSystemMemoryPlacementForISA(hwInfo) ? MemoryConstants::pageSize : MemoryConstants::pageSize64k;
@@ -514,16 +516,23 @@ ModuleImp::~ModuleImp() {
         }
     }
     this->kernelImmDatas.clear();
-    if (this->kernelsIsaParentRegion) {
-        DEBUG_BREAK_IF(this->device->getNEODevice()->getMemoryManager() == nullptr);
-        this->device->getNEODevice()->getMemoryManager()->freeGraphicsMemory(this->kernelsIsaParentRegion.release());
+    if (this->sharedIsaAllocation) {
+        auto neoDevice = this->device->getNEODevice();
+        neoDevice->getIsaPoolAllocator().freeSharedIsaAllocation(this->sharedIsaAllocation.release());
     }
 }
 
 NEO::Zebin::Debug::Segments ModuleImp::getZebinSegments() {
-    std::vector<std::pair<std::string_view, NEO::GraphicsAllocation *>> kernels;
-    for (const auto &kernelImmData : kernelImmDatas)
-        kernels.push_back({kernelImmData->getDescriptor().kernelMetadata.kernelName, kernelImmData->getIsaGraphicsAllocation()});
+    std::vector<NEO::Zebin::Debug::Segments::KernelNameIsaTupleT> kernels;
+    for (const auto &kernelImmData : kernelImmDatas) {
+        NEO::Zebin::Debug::Segments::Segment segment = {kernelImmData->getIsaGraphicsAllocation()->getGpuAddress(), kernelImmData->getIsaGraphicsAllocation()->getUnderlyingBufferSize()};
+        if (kernelImmData->getIsaParentAllocation()) {
+            segment.address += kernelImmData->getIsaOffsetInParentAllocation();
+            segment.size = kernelImmData->getIsaSubAllocationSize();
+        }
+        kernels.push_back({kernelImmData->getDescriptor().kernelMetadata.kernelName, segment});
+    }
+
     ArrayRef<const uint8_t> strings = {reinterpret_cast<const uint8_t *>(translationUnit->programInfo.globalStrings.initData),
                                        translationUnit->programInfo.globalStrings.size};
     return NEO::Zebin::Debug::Segments(translationUnit->globalVarBuffer, translationUnit->globalConstBuffer, strings, kernels);
@@ -531,15 +540,14 @@ NEO::Zebin::Debug::Segments ModuleImp::getZebinSegments() {
 
 ze_result_t ModuleImp::initialize(const ze_module_desc_t *desc, NEO::Device *neoDevice) {
     bool linkageSuccessful = true;
-    ze_result_t result = ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
-
-    if (result = this->initializeTranslationUnit(desc, neoDevice); result != ZE_RESULT_SUCCESS) {
+    ze_result_t result = this->initializeTranslationUnit(desc, neoDevice);
+    this->updateBuildLog(neoDevice);
+    if (result != ZE_RESULT_SUCCESS) {
         return result;
     }
-    this->updateBuildLog(neoDevice);
-    this->verifyDebugCapabilities();
-    if (result = this->checkIfBuildShouldBeFailed(neoDevice); result != ZE_RESULT_SUCCESS) {
-        return result;
+
+    if (this->shouldBuildBeFailed(neoDevice)) {
+        return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
     }
     if (result = this->initializeKernelImmutableDatas(); result != ZE_RESULT_SUCCESS) {
         return result;
@@ -565,7 +573,7 @@ ze_result_t ModuleImp::initialize(const ze_module_desc_t *desc, NEO::Device *neo
     linkageSuccessful &= populateHostGlobalSymbolsMap(this->translationUnit->programInfo.globalsDeviceToHostNameMap);
     this->updateBuildLog(neoDevice);
 
-    if ((this->isFullyLinked && this->type == ModuleType::user) || (this->kernelsIsaParentRegion && this->type == ModuleType::builtin)) {
+    if ((this->isFullyLinked && this->type == ModuleType::user) || (this->sharedIsaAllocation && this->type == ModuleType::builtin)) {
         this->transferIsaSegmentsToAllocation(neoDevice, nullptr);
 
         if (device->getL0Debugger()) {
@@ -584,31 +592,38 @@ void ModuleImp::transferIsaSegmentsToAllocation(NEO::Device *neoDevice, const NE
     const auto &productHelper = neoDevice->getProductHelper();
     auto &rootDeviceEnvironment = neoDevice->getRootDeviceEnvironment();
 
-    if (this->kernelsIsaParentRegion && this->kernelImmDatas.size()) {
+    if (this->sharedIsaAllocation && this->kernelImmDatas.size()) {
         if (this->kernelImmDatas[0]->isIsaCopiedToAllocation()) {
             return;
         }
 
-        const auto isaBufferSize = this->kernelsIsaParentRegion->getUnderlyingBufferSize();
+        const auto isaBufferSize = this->sharedIsaAllocation->getSize();
         DEBUG_BREAK_IF(isaBufferSize == 0);
         auto isaBuffer = std::vector<std::byte>(isaBufferSize);
         std::memset(isaBuffer.data(), 0x0, isaBufferSize);
-
+        auto moduleOffset = sharedIsaAllocation->getOffset();
         for (auto &kernelImmData : this->kernelImmDatas) {
             DEBUG_BREAK_IF(kernelImmData->isIsaCopiedToAllocation());
             kernelImmData->getIsaGraphicsAllocation()->setAubWritable(true, std::numeric_limits<uint32_t>::max());
             kernelImmData->getIsaGraphicsAllocation()->setTbxWritable(true, std::numeric_limits<uint32_t>::max());
 
             auto [kernelHeapPtr, kernelHeapSize] = this->getKernelHeapPointerAndSize(kernelImmData, isaSegmentsForPatching);
-            auto offset = kernelImmData->getIsaOffsetInParentAllocation();
-            memcpy_s(isaBuffer.data() + offset, isaBufferSize - offset, kernelHeapPtr, kernelHeapSize);
+            auto isaOffset = kernelImmData->getIsaOffsetInParentAllocation() - moduleOffset;
+            memcpy_s(isaBuffer.data() + isaOffset, isaBufferSize - isaOffset, kernelHeapPtr, kernelHeapSize);
         }
-        NEO::MemoryTransferHelper::transferMemoryToAllocation(productHelper.isBlitCopyRequiredForLocalMemory(rootDeviceEnvironment, *this->kernelsIsaParentRegion),
+        auto moduleAllocation = this->sharedIsaAllocation->getGraphicsAllocation();
+        auto lock = this->sharedIsaAllocation->obtainSharedAllocationLock();
+        NEO::MemoryTransferHelper::transferMemoryToAllocation(productHelper.isBlitCopyRequiredForLocalMemory(rootDeviceEnvironment, *moduleAllocation),
                                                               *neoDevice,
-                                                              this->kernelsIsaParentRegion.get(),
-                                                              0u,
+                                                              moduleAllocation,
+                                                              moduleOffset,
                                                               isaBuffer.data(),
                                                               isaBuffer.size());
+
+        if (neoDevice->getDefaultEngine().commandStreamReceiver->getType() != NEO::CommandStreamReceiverType::hardware) {
+            neoDevice->getDefaultEngine().commandStreamReceiver->writeMemory(*moduleAllocation);
+        }
+
         for (auto &kernelImmData : kernelImmDatas) {
             kernelImmData->setIsaCopiedToAllocation();
         }
@@ -656,7 +671,7 @@ inline ze_result_t ModuleImp::initializeTranslationUnit(const ze_module_desc_t *
         if (desc->format != ZE_MODULE_FORMAT_IL_SPIRV) {
             return ZE_RESULT_ERROR_INVALID_ARGUMENT;
         }
-        this->builtFromSPIRv = true;
+        this->builtFromSpirv = true;
         const ze_module_program_exp_desc_t *programExpDesc =
             reinterpret_cast<const ze_module_program_exp_desc_t *>(expDesc);
         std::vector<const char *> inputSpirVs;
@@ -726,9 +741,9 @@ inline ze_result_t ModuleImp::initializeTranslationUnit(const ze_module_desc_t *
             this->isFunctionSymbolExportEnabled = true;
             this->isGlobalSymbolExportEnabled = true;
             this->precompiled = true;
-            return this->translationUnit->createFromNativeBinary(reinterpret_cast<const char *>(desc->pInputModule), desc->inputSize);
+            return this->translationUnit->createFromNativeBinary(reinterpret_cast<const char *>(desc->pInputModule), desc->inputSize, internalBuildOptions.c_str());
         } else if (desc->format == ZE_MODULE_FORMAT_IL_SPIRV) {
-            this->builtFromSPIRv = true;
+            this->builtFromSpirv = true;
             this->precompiled = false;
             return this->translationUnit->buildFromSpirV(reinterpret_cast<const char *>(desc->pInputModule),
                                                          static_cast<uint32_t>(desc->inputSize),
@@ -741,19 +756,15 @@ inline ze_result_t ModuleImp::initializeTranslationUnit(const ze_module_desc_t *
     }
 }
 
-inline ze_result_t ModuleImp::checkIfBuildShouldBeFailed(NEO::Device *neoDevice) {
+inline bool ModuleImp::shouldBuildBeFailed(NEO::Device *neoDevice) {
     auto &rootDeviceEnvironment = neoDevice->getRootDeviceEnvironment();
     auto containsStatefulAccess = NEO::AddressingModeHelper::containsStatefulAccess(translationUnit->programInfo.kernelInfos, false);
     auto isUserKernel = (type == ModuleType::user);
     auto isGeneratedByIgc = translationUnit->isGeneratedByIgc;
-    auto failBuildProgram = containsStatefulAccess &&
-                            isUserKernel &&
-                            NEO::AddressingModeHelper::failBuildProgramWithStatefulAccess(rootDeviceEnvironment) &&
-                            isGeneratedByIgc;
-    if (failBuildProgram) {
-        return ZE_RESULT_ERROR_MODULE_BUILD_FAILURE;
-    }
-    return ZE_RESULT_SUCCESS;
+    return containsStatefulAccess &&
+           isUserKernel &&
+           NEO::AddressingModeHelper::failBuildProgramWithStatefulAccess(rootDeviceEnvironment) &&
+           isGeneratedByIgc;
 }
 
 ze_result_t ModuleImp::initializeKernelImmutableDatas() {
@@ -800,23 +811,24 @@ ze_result_t ModuleImp::setIsaGraphicsAllocations() {
         DEBUG_BREAK_IF(kernelInfo->heapInfo.kernelHeapSize == 0lu);
         DEBUG_BREAK_IF(!kernelInfo->heapInfo.pKernelHeap);
         auto chunkOffset = kernelsIsaTotalSize;
-        auto chunkSize = this->computeKernelIsaAllocationAlignedSizeWithPadding(kernelInfo->heapInfo.kernelHeapSize);
+        auto chunkSize = this->computeKernelIsaAllocationAlignedSizeWithPadding(kernelInfo->heapInfo.kernelHeapSize, ((i + 1) == kernelsCount));
         kernelsIsaTotalSize += chunkSize;
         kernelsChunks[i] = {chunkOffset, chunkSize};
     }
 
     bool debuggerDisabled = (this->device->getL0Debugger() == nullptr);
     if (debuggerDisabled && kernelsIsaTotalSize <= isaAllocationPageSize) {
-        if (auto allocation = this->allocateKernelsIsaMemory(kernelsIsaTotalSize); allocation == nullptr) {
+        auto neoDevice = this->device->getNEODevice();
+        auto &isaAllocator = neoDevice->getIsaPoolAllocator();
+        auto crossModuleAllocation = isaAllocator.requestGraphicsAllocationForIsa(this->type == ModuleType::builtin, kernelsIsaTotalSize);
+        if (crossModuleAllocation == nullptr) {
             return ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY;
-        } else {
-            this->kernelsIsaParentRegion.reset(allocation);
         }
-
+        this->sharedIsaAllocation.reset(crossModuleAllocation);
         for (auto i = 0lu; i < kernelsCount; i++) {
             auto [isaOffset, isaSize] = kernelsChunks[i];
-            this->kernelImmDatas[i]->setIsaParentAllocation(this->kernelsIsaParentRegion.get());
-            this->kernelImmDatas[i]->setIsaSubAllocationOffset(isaOffset);
+            this->kernelImmDatas[i]->setIsaParentAllocation(this->sharedIsaAllocation->getGraphicsAllocation());
+            this->kernelImmDatas[i]->setIsaSubAllocationOffset(this->sharedIsaAllocation->getOffset() + isaOffset);
             this->kernelImmDatas[i]->setIsaSubAllocationSize(isaSize);
         }
     } else {
@@ -832,8 +844,8 @@ ze_result_t ModuleImp::setIsaGraphicsAllocations() {
     return ZE_RESULT_SUCCESS;
 }
 
-size_t ModuleImp::computeKernelIsaAllocationAlignedSizeWithPadding(size_t isaSize) {
-    auto isaPadding = this->device->getGfxCoreHelper().getPaddingForISAAllocation();
+size_t ModuleImp::computeKernelIsaAllocationAlignedSizeWithPadding(size_t isaSize, bool lastKernel) {
+    auto isaPadding = lastKernel ? this->device->getGfxCoreHelper().getPaddingForISAAllocation() : 0u;
     auto kernelStartPointerAlignment = this->device->getGfxCoreHelper().getKernelIsaPointerAlignment();
     auto isaAllocationSize = alignUp(isaPadding + isaSize, kernelStartPointerAlignment);
     return isaAllocationSize;
@@ -842,10 +854,14 @@ size_t ModuleImp::computeKernelIsaAllocationAlignedSizeWithPadding(size_t isaSiz
 NEO::GraphicsAllocation *ModuleImp::allocateKernelsIsaMemory(size_t size) {
     auto allocType = (this->type == ModuleType::builtin ? NEO::AllocationType::kernelIsaInternal : NEO::AllocationType::kernelIsa);
     auto neoDevice = this->device->getNEODevice();
-    return neoDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({neoDevice->getRootDeviceIndex(),
-                                                                                size,
-                                                                                allocType,
-                                                                                neoDevice->getDeviceBitfield()});
+
+    NEO::AllocationProperties properties{neoDevice->getRootDeviceIndex(), size, allocType, neoDevice->getDeviceBitfield()};
+
+    if (NEO::debugManager.flags.AlignLocalMemoryVaTo2MB.get() == 1) {
+        properties.alignment = MemoryConstants::pageSize2M;
+    }
+
+    return neoDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(properties);
 }
 
 void ModuleImp::createDebugZebin() {
@@ -881,7 +897,6 @@ void ModuleImp::createBuildOptions(const char *pBuildFlags, std::string &apiOpti
 
         moveBuildOption(apiOptions, apiOptions, NEO::CompilerOptions::optDisable, BuildOptions::optDisable);
         moveBuildOption(internalBuildOptions, apiOptions, NEO::CompilerOptions::greaterThan4gbBuffersRequired, BuildOptions::greaterThan4GbRequired);
-        moveBuildOption(internalBuildOptions, apiOptions, NEO::CompilerOptions::allowZebin, NEO::CompilerOptions::enableZebin);
         moveBuildOption(internalBuildOptions, apiOptions, NEO::CompilerOptions::largeGrf, BuildOptions::optLargeRegisterFile);
         moveBuildOption(internalBuildOptions, apiOptions, NEO::CompilerOptions::autoGrf, BuildOptions::optAutoGrf);
 
@@ -894,7 +909,7 @@ void ModuleImp::createBuildOptions(const char *pBuildFlags, std::string &apiOpti
 
         createBuildExtraOptions(apiOptions, internalBuildOptions);
     }
-    if (NEO::ApiSpecificConfig::getBindlessMode(device->getNEODevice()->getReleaseHelper())) {
+    if (NEO::ApiSpecificConfig::getBindlessMode(*device->getNEODevice())) {
         NEO::CompilerOptions::concatenateAppend(internalBuildOptions, NEO::CompilerOptions::bindlessMode.str());
     }
 }
@@ -968,17 +983,6 @@ ze_result_t ModuleImp::createKernel(const ze_kernel_desc_t *desc,
         driverHandle->clearErrorDescription();
     }
 
-    auto localMemSize = static_cast<uint32_t>(this->getDevice()->getNEODevice()->getDeviceInfo().localMemSize);
-    for (const auto &kernelImmutableData : this->getKernelImmutableDataVector()) {
-        auto slmInlineSize = kernelImmutableData->getDescriptor().kernelAttributes.slmInlineSize;
-        if (slmInlineSize > 0 && localMemSize < slmInlineSize) {
-            driverHandle->setErrorDescription("Size of SLM (%u) larger than available (%u)\n", slmInlineSize, localMemSize);
-            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Size of SLM (%u) larger than available (%u)\n", slmInlineSize, localMemSize);
-            res = ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY;
-            break;
-        }
-    }
-
     return res;
 }
 
@@ -1044,7 +1048,7 @@ void ModuleImp::copyPatchedSegments(const NEO::Linker::PatchableSegments &isaSeg
                 NEO::MemoryOperationsHandler *memoryOperationsIface = rootDeviceEnvironment.memoryOperationsInterface.get();
                 auto allocation = kernelImmData->getIsaGraphicsAllocation();
                 if (memoryOperationsIface) {
-                    memoryOperationsIface->makeResident(neoDevice, ArrayRef<NEO::GraphicsAllocation *>(&allocation, 1));
+                    memoryOperationsIface->makeResident(neoDevice, ArrayRef<NEO::GraphicsAllocation *>(&allocation, 1), false);
                 }
             }
         }
@@ -1065,6 +1069,10 @@ bool ModuleImp::linkBinary() {
     Linker::SegmentInfo strings;
     GraphicsAllocation *globalsForPatching = translationUnit->globalVarBuffer;
     GraphicsAllocation *constantsForPatching = translationUnit->globalConstBuffer;
+
+    auto &compilerProductHelper = this->device->getNEODevice()->getCompilerProductHelper();
+    bool useFullAddress = compilerProductHelper.isHeaplessModeEnabled();
+
     if (globalsForPatching != nullptr) {
         globals.gpuAddress = static_cast<uintptr_t>(globalsForPatching->getGpuAddress());
         globals.segmentSize = globalsForPatching->getUnderlyingBufferSize();
@@ -1081,11 +1089,20 @@ bool ModuleImp::linkBinary() {
         auto exportedFunctionHeapId = linkerInput->getExportedFunctionsSegmentId();
         this->exportedFunctionsSurface = this->kernelImmDatas[exportedFunctionHeapId]->getIsaGraphicsAllocation();
         auto offsetInParentAllocation = this->kernelImmDatas[exportedFunctionHeapId]->getIsaOffsetInParentAllocation();
-        exportedFunctions.gpuAddress = static_cast<uintptr_t>(exportedFunctionsSurface->getGpuAddressToPatch() + offsetInParentAllocation);
+
+        uintptr_t isaAddressToPatch = 0;
+        if (useFullAddress) {
+            isaAddressToPatch = static_cast<uintptr_t>(exportedFunctionsSurface->getGpuAddress() + offsetInParentAllocation);
+        } else {
+            isaAddressToPatch = static_cast<uintptr_t>(exportedFunctionsSurface->getGpuAddressToPatch() + offsetInParentAllocation);
+        }
+
+        exportedFunctions.gpuAddress = isaAddressToPatch;
         exportedFunctions.segmentSize = this->kernelImmDatas[exportedFunctionHeapId]->getIsaSize();
     }
 
     Linker::KernelDescriptorsT kernelDescriptors;
+
     if (linkerInput->getTraits().requiresPatchingOfInstructionSegments) {
         patchedIsaTempStorage.reserve(this->kernelImmDatas.size());
         kernelDescriptors.reserve(this->kernelImmDatas.size());
@@ -1094,8 +1111,15 @@ bool ModuleImp::linkBinary() {
             auto &kernHeapInfo = kernelInfo->heapInfo;
             const char *originalIsa = reinterpret_cast<const char *>(kernHeapInfo.pKernelHeap);
             patchedIsaTempStorage.push_back(std::vector<char>(originalIsa, originalIsa + kernHeapInfo.kernelHeapSize));
-            auto isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddressToPatch() +
-                                                            kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+            uintptr_t isaAddressToPatch = 0;
+            if (useFullAddress) {
+                isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddress() +
+                                                           kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+            } else {
+                isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddressToPatch() +
+                                                           kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+            }
+
             isaSegmentsForPatching.push_back(Linker::PatchableSegment{patchedIsaTempStorage.rbegin()->data(), isaAddressToPatch, kernHeapInfo.kernelHeapSize});
             kernelDescriptors.push_back(&kernelInfo->kernelDescriptor);
         }
@@ -1171,7 +1195,8 @@ ze_result_t ModuleImp::getFunctionPointer(const char *pFunctionName, void **pfnF
 
     if (*pfnFunction == nullptr) {
         if (!this->isFunctionSymbolExportEnabled) {
-            driverHandle->setErrorDescription("Function Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
+            CREATE_DEBUG_STRING(str, "Function Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
+            driverHandle->setErrorDescription(std::string(str.get()));
             PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Function Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
             return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
         }
@@ -1198,7 +1223,8 @@ ze_result_t ModuleImp::getGlobalPointer(const char *pGlobalName, size_t *pSize, 
             }
         } else {
             if (!this->isGlobalSymbolExportEnabled) {
-                driverHandle->setErrorDescription("Global Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableGlobalVariableSymbols.str().c_str());
+                CREATE_DEBUG_STRING(str, "Global Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableGlobalVariableSymbols.str().c_str());
+                driverHandle->setErrorDescription(std::string(str.get()));
                 PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Global Pointers Not Supported Without Compiler flag %s\n", BuildOptions::enableGlobalVariableSymbols.str().c_str());
                 return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
             }
@@ -1253,35 +1279,26 @@ ze_result_t ModuleImp::getKernelNames(uint32_t *pCount, const char **pNames) {
     return ZE_RESULT_SUCCESS;
 }
 
-void ModuleImp::verifyDebugCapabilities() {
-    bool debugCapabilities = device->getNEODevice()->getDebugger() != nullptr;
-
-    if (debugCapabilities) {
-        // verify all kernels are debuggable
-        for (auto kernelInfo : this->translationUnit->programInfo.kernelInfos) {
-            bool systemThreadSurfaceAvailable = NEO::isValidOffset(kernelInfo->kernelDescriptor.payloadMappings.implicitArgs.systemThreadSurfaceAddress.bindful) ||
-                                                NEO::isValidOffset(kernelInfo->kernelDescriptor.payloadMappings.implicitArgs.systemThreadSurfaceAddress.bindless);
-
-            debugCapabilities &= systemThreadSurfaceAvailable;
-        }
-    }
-}
-
 void ModuleImp::checkIfPrivateMemoryPerDispatchIsNeeded() {
     size_t modulePrivateMemorySize = 0;
+    auto neoDevice = this->device->getNEODevice();
     for (auto &kernelImmData : this->kernelImmDatas) {
         if (0 == kernelImmData->getDescriptor().kernelAttributes.perHwThreadPrivateMemorySize) {
             continue;
         }
         auto kernelPrivateMemorySize = NEO::KernelHelper::getPrivateSurfaceSize(kernelImmData->getDescriptor().kernelAttributes.perHwThreadPrivateMemorySize,
-                                                                                this->device->getNEODevice()->getDeviceInfo().computeUnitsUsedForScratch);
+                                                                                neoDevice->getDeviceInfo().computeUnitsUsedForScratch);
         modulePrivateMemorySize += kernelPrivateMemorySize;
     }
 
     this->allocatePrivateMemoryPerDispatch = false;
     if (modulePrivateMemorySize > 0U) {
-        auto globalMemorySize = device->getNEODevice()->getRootDevice()->getGlobalMemorySize(static_cast<uint32_t>(device->getNEODevice()->getDeviceBitfield().to_ulong()));
-        this->allocatePrivateMemoryPerDispatch = modulePrivateMemorySize > globalMemorySize;
+        auto deviceBitfield = neoDevice->getDeviceBitfield();
+        auto globalMemorySize = neoDevice->getRootDevice()->getGlobalMemorySize(static_cast<uint32_t>(deviceBitfield.to_ulong()));
+        auto numSubDevices = deviceBitfield.count();
+        this->allocatePrivateMemoryPerDispatch = modulePrivateMemorySize * numSubDevices > globalMemorySize;
+        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Private Memory Per Dispatch %d for modulePrivateMemorySize %zu subDevices %zu globalMemorySize %" PRIu64 "\n",
+                           this->allocatePrivateMemoryPerDispatch, modulePrivateMemorySize, numSubDevices, globalMemorySize);
     }
 }
 
@@ -1404,6 +1421,7 @@ ze_result_t ModuleImp::performDynamicLink(uint32_t numModules,
         auto &isaSegmentsForPatching = moduleId->isaSegmentsForPatching;
         auto &patchedIsaTempStorage = moduleId->patchedIsaTempStorage;
         uint32_t numPatchedSymbols = 0u;
+        auto &compilerProductHelper = this->device->getNEODevice()->getCompilerProductHelper();
         std::vector<std::string> unresolvedSymbolLogMessages;
         if (moduleId->translationUnit->programInfo.linkerInput && moduleId->translationUnit->programInfo.linkerInput->getTraits().requiresPatchingOfInstructionSegments) {
             if (patchedIsaTempStorage.empty()) {
@@ -1413,8 +1431,16 @@ ze_result_t ModuleImp::performDynamicLink(uint32_t numModules,
                     auto &kernHeapInfo = kernelInfo->heapInfo;
                     const char *originalIsa = reinterpret_cast<const char *>(kernHeapInfo.pKernelHeap);
                     patchedIsaTempStorage.push_back(std::vector<char>(originalIsa, originalIsa + kernHeapInfo.kernelHeapSize));
-                    auto isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddressToPatch() +
-                                                                    kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+
+                    uintptr_t isaAddressToPatch = 0;
+                    if (compilerProductHelper.isHeaplessModeEnabled()) {
+                        isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddress() +
+                                                                   kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+                    } else {
+                        isaAddressToPatch = static_cast<uintptr_t>(kernelImmDatas.at(i)->getIsaGraphicsAllocation()->getGpuAddressToPatch() +
+                                                                   kernelImmDatas.at(i)->getIsaOffsetInParentAllocation());
+                    }
+
                     isaSegmentsForPatching.push_back(NEO::Linker::PatchableSegment{patchedIsaTempStorage.rbegin()->data(), isaAddressToPatch, kernHeapInfo.kernelHeapSize});
                 }
             }
@@ -1454,7 +1480,8 @@ ze_result_t ModuleImp::performDynamicLink(uint32_t numModules,
         if (numPatchedSymbols != moduleId->unresolvedExternalsInfo.size()) {
             driverHandle->clearErrorDescription();
             if (functionSymbolExportEnabledCounter == 0) {
-                driverHandle->setErrorDescription("Dynamic Link Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
+                CREATE_DEBUG_STRING(str, "Dynamic Link Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
+                driverHandle->setErrorDescription(std::string(str.get()));
                 PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Dynamic Link Not Supported Without Compiler flag %s\n", BuildOptions::enableLibraryCompile.str().c_str());
             }
             return ZE_RESULT_ERROR_MODULE_LINK_FAILURE;
@@ -1528,6 +1555,21 @@ ze_result_t ModuleImp::destroy() {
 
     auto tempHandle = debugModuleHandle;
     auto tempDevice = device;
+
+    auto rootDeviceIndex = getDevice()->getNEODevice()->getRootDeviceIndex();
+    auto &executionEnvironment = getDevice()->getNEODevice()->getRootDeviceEnvironment().executionEnvironment;
+
+    for (const auto &kernelImmData : this->kernelImmDatas) {
+        if (kernelImmData->getIsaGraphicsAllocation()) {
+            for (auto &engine : executionEnvironment.memoryManager->getRegisteredEngines(rootDeviceIndex)) {
+                auto contextId = engine.osContext->getContextId();
+                if (kernelImmData->getIsaGraphicsAllocation()->isUsedByOsContext(contextId)) {
+                    engine.commandStreamReceiver->registerInstructionCacheFlush();
+                }
+            }
+        }
+    }
+
     delete this;
 
     if (tempDevice->getL0Debugger() && tempHandle != 0) {
@@ -1663,6 +1705,13 @@ bool moveBuildOption(std::string &dstOptionsSet, std::string &srcOptionSet, NEO:
     srcOptionSet.erase(optInSrcPos, srcOptionName.length());
     NEO::CompilerOptions::concatenateAppend(dstOptionsSet, dstOptionName);
     return true;
+}
+
+NEO::GraphicsAllocation *ModuleImp::getKernelsIsaParentAllocation() const {
+    if (!sharedIsaAllocation) {
+        return nullptr;
+    }
+    return sharedIsaAllocation->getGraphicsAllocation();
 }
 
 } // namespace L0

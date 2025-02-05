@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,10 +26,15 @@ AubMemoryOperationsHandler::AubMemoryOperationsHandler(aub_stream::AubManager *a
     this->aubManager = aubManager;
 }
 
-MemoryOperationsStatus AubMemoryOperationsHandler::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+MemoryOperationsStatus AubMemoryOperationsHandler::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations, bool isDummyExecNeeded) {
     if (!aubManager) {
         return MemoryOperationsStatus::deviceUninitialized;
     }
+
+    if (device) {
+        device->getDefaultEngine().commandStreamReceiver->initializeEngine();
+    }
+
     auto lock = acquireLock(resourcesLock);
     int hint = AubMemDump::DataTypeHintValues::TraceNotype;
     for (const auto &allocation : gfxAllocations) {
@@ -37,18 +42,19 @@ MemoryOperationsStatus AubMemoryOperationsHandler::makeResident(Device *device, 
             continue;
         }
 
+        auto memoryBanks = static_cast<uint32_t>(getMemoryBanksBitfield(allocation, device).to_ulong());
         uint64_t gpuAddress = device ? device->getGmmHelper()->decanonize(allocation->getGpuAddress()) : allocation->getGpuAddress();
         aub_stream::AllocationParams params(gpuAddress,
                                             allocation->getUnderlyingBuffer(),
                                             allocation->getUnderlyingBufferSize(),
-                                            allocation->storageInfo.getMemoryBanks(),
+                                            memoryBanks,
                                             hint,
                                             allocation->getUsedPageSize());
 
         auto gmm = allocation->getDefaultGmm();
 
         if (gmm) {
-            params.additionalParams.compressionEnabled = gmm->isCompressionEnabled;
+            params.additionalParams.compressionEnabled = gmm->isCompressionEnabled();
             params.additionalParams.uncached = CacheSettingsHelper::isUncachedType(gmm->resourceParams.Usage);
         }
 
@@ -69,6 +75,10 @@ MemoryOperationsStatus AubMemoryOperationsHandler::makeResident(Device *device, 
     return MemoryOperationsStatus::success;
 }
 
+MemoryOperationsStatus AubMemoryOperationsHandler::lock(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+    return makeResident(device, gfxAllocations, false);
+}
+
 MemoryOperationsStatus AubMemoryOperationsHandler::evict(Device *device, GraphicsAllocation &gfxAllocation) {
     auto lock = acquireLock(resourcesLock);
     auto itor = std::find(residentAllocations.begin(), residentAllocations.end(), &gfxAllocation);
@@ -79,9 +89,17 @@ MemoryOperationsStatus AubMemoryOperationsHandler::evict(Device *device, Graphic
         return MemoryOperationsStatus::success;
     }
 }
+MemoryOperationsStatus AubMemoryOperationsHandler::free(Device *device, GraphicsAllocation &gfxAllocation) {
+    auto lock = acquireLock(resourcesLock);
+    auto itor = std::find(residentAllocations.begin(), residentAllocations.end(), &gfxAllocation);
+    if (itor != residentAllocations.end()) {
+        residentAllocations.erase(itor, itor + 1);
+    }
+    return MemoryOperationsStatus::success;
+}
 
 MemoryOperationsStatus AubMemoryOperationsHandler::makeResidentWithinOsContext(OsContext *osContext, ArrayRef<GraphicsAllocation *> gfxAllocations, bool evictable) {
-    return makeResident(nullptr, gfxAllocations);
+    return makeResident(nullptr, gfxAllocations, false);
 }
 
 MemoryOperationsStatus AubMemoryOperationsHandler::evictWithinOsContext(OsContext *osContext, GraphicsAllocation &gfxAllocation) {
@@ -135,6 +153,13 @@ DeviceBitfield AubMemoryOperationsHandler::getMemoryBanksBitfield(GraphicsAlloca
         return device->getDeviceBitfield();
     }
     return {};
+}
+
+void AubMemoryOperationsHandler::processFlushResidency(CommandStreamReceiver *csr) {
+    auto lock = acquireLock(resourcesLock);
+    for (const auto &allocation : this->residentAllocations) {
+        csr->writeMemory(*allocation);
+    }
 }
 
 } // namespace NEO

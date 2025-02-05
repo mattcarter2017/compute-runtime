@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,8 @@ namespace L0 {
 namespace ult {
 
 void MetricContextFixture::setUp() {
+
+    debugManager.flags.DisableProgrammableMetricsSupport.set(1);
 
     // Call base class.
     DeviceFixture::setUp();
@@ -83,11 +85,12 @@ void MetricContextFixture::openMetricsAdapterGroup() {
     adapter.openMetricsDeviceOutDevice = &metricsDevice;
 }
 
-void MetricContextFixture::setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_5> &metricDevice) {
+void MetricContextFixture::setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_13> &metricDevice) {
     metricDevice.GetParamsResult = &metricsDeviceParams;
 }
 
 void MetricMultiDeviceFixture::setUp() {
+    debugManager.flags.DisableProgrammableMetricsSupport.set(1);
     debugManager.flags.EnableImplicitScaling.set(1);
 
     MultiDeviceFixture::setUp();
@@ -198,7 +201,7 @@ void MetricMultiDeviceFixture::openMetricsAdapterGroup() {
     adapter.openMetricsDeviceOutDevice = &metricsDevice;
 }
 
-void MetricMultiDeviceFixture::setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_5> &metricDevice) {
+void MetricMultiDeviceFixture::setupDefaultMocksForMetricDevice(Mock<IMetricsDevice_1_13> &metricDevice) {
     metricDevice.GetParamsResult = &metricsDeviceParams;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,7 +22,28 @@ class TimestampPacketContainer;
 class GraphicsAllocation;
 class CommandStreamReceiver;
 
+enum class BlitSyncMode {
+    none = 0,
+    timestamp,
+    immediate,
+    timestampAndImmediate
+};
+
+struct BlitSyncProperties {
+    TagNodeBase *outputTimestampPacket = nullptr;
+    BlitSyncMode syncMode = BlitSyncMode::none;
+    uint64_t deviceGpuWriteAddress = 0;
+    uint64_t hostGpuWriteAddress = 0;
+    uint64_t timestampGpuWriteAddress = 0;
+    uint64_t writeValue = 0;
+
+    bool isTimestampMode() const {
+        return (syncMode == BlitSyncMode::timestamp) || (syncMode == BlitSyncMode::timestampAndImmediate);
+    }
+};
+
 struct BlitProperties {
+    static BlitProperties constructPropertiesForMemoryFill(GraphicsAllocation *dstAllocation, size_t size, uint32_t *pattern, size_t patternSize, size_t offset);
     static BlitProperties constructPropertiesForReadWrite(BlitterConstants::BlitDirection blitDirection,
                                                           CommandStreamReceiver &commandStreamReceiver,
                                                           GraphicsAllocation *memObjAllocation,
@@ -45,32 +66,35 @@ struct BlitProperties {
                                                    TimestampPacketContainer &kernelTimestamps, const CsrDependencies &depsFromEvents,
                                                    CommandStreamReceiver &gpguCsr, CommandStreamReceiver &bcsCsr);
 
-    TagNodeBase *outputTimestampPacket = nullptr;
-    TagNodeBase *multiRootDeviceEventSync = nullptr;
-    BlitterConstants::BlitDirection blitDirection = BlitterConstants::BlitDirection::bufferToHostPtr;
+    BlitSyncProperties blitSyncProperties = {};
     CsrDependencies csrDependencies;
+    TagNodeBase *multiRootDeviceEventSync = nullptr;
+
+    BlitterConstants::BlitDirection blitDirection = BlitterConstants::BlitDirection::bufferToHostPtr;
     AuxTranslationDirection auxTranslationDirection = AuxTranslationDirection::none;
 
     GraphicsAllocation *dstAllocation = nullptr;
     GraphicsAllocation *srcAllocation = nullptr;
     GraphicsAllocation *clearColorAllocation = nullptr;
+    uint32_t *fillPattern = nullptr;
     uint64_t dstGpuAddress = 0;
     uint64_t srcGpuAddress = 0;
 
     Vec3<size_t> copySize = 0;
     Vec3<size_t> dstOffset = 0;
     Vec3<size_t> srcOffset = 0;
-    bool isSystemMemoryPoolUsed = false;
 
     size_t dstRowPitch = 0;
     size_t dstSlicePitch = 0;
     size_t srcRowPitch = 0;
     size_t srcSlicePitch = 0;
+    size_t fillPatternSize = 0;
     Vec3<size_t> dstSize = 0;
     Vec3<size_t> srcSize = 0;
     size_t bytesPerPixel = 1;
     GMM_YUV_PLANE_ENUM dstPlane = GMM_YUV_PLANE_ENUM::GMM_NO_PLANE;
     GMM_YUV_PLANE_ENUM srcPlane = GMM_YUV_PLANE_ENUM::GMM_NO_PLANE;
+    bool isSystemMemoryPoolUsed = false;
 
     bool isImageOperation() const;
 };

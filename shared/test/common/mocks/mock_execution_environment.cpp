@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,10 @@
 
 #include "shared/test/common/mocks/mock_execution_environment.h"
 
+#include "shared/source/built_ins/built_ins.h"
 #include "shared/test/common/fixtures/mock_aub_center_fixture.h"
 #include "shared/test/common/helpers/default_hw_info.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 
 #include "gtest/gtest.h"
 
@@ -50,6 +52,13 @@ MockRootDeviceEnvironment::~MockRootDeviceEnvironment() {
     }
 }
 
+void MockRootDeviceEnvironment::resetBuiltins(RootDeviceEnvironment *rootDeviceEnvironment, BuiltIns *newValue) {
+    if (rootDeviceEnvironment->builtins) {
+        rootDeviceEnvironment->builtins->freeSipKernels(rootDeviceEnvironment->executionEnvironment.memoryManager.get());
+    }
+    rootDeviceEnvironment->builtins.reset(newValue);
+}
+
 MockExecutionEnvironment::MockExecutionEnvironment() : MockExecutionEnvironment(defaultHwInfo.get()) {}
 MockExecutionEnvironment::MockExecutionEnvironment(const HardwareInfo *hwInfo) : MockExecutionEnvironment(hwInfo, true, 1u) {
 }
@@ -68,6 +77,9 @@ MockExecutionEnvironment::MockExecutionEnvironment(const HardwareInfo *hwInfo, b
         if (useMockGmm) {
             rootDeviceEnvironments[rootDeviceIndex]->initGmm();
         }
+
+        UnitTestSetter::setRcsExposure(*rootDeviceEnvironments[rootDeviceIndex]);
+        UnitTestSetter::setCcsExposure(*rootDeviceEnvironments[rootDeviceIndex]);
     }
 
     calculateMaxOsContextCount();

@@ -1,16 +1,10 @@
 #
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
 
-if(WIN32)
-  cmake_minimum_required(VERSION 3.13.0 FATAL_ERROR)
-else()
-  cmake_minimum_required(VERSION 3.2.0 FATAL_ERROR)
-endif()
-
-include(ExternalProject)
+cmake_minimum_required(VERSION 3.13.0 FATAL_ERROR)
 
 if(NEO_ENABLE_INTERPROCEDURAL_OPTIMIZATION)
   cmake_policy(SET CMP0069 NEW)
@@ -24,7 +18,7 @@ if(NOT DEFINED NEO_SOURCE_DIR)
   set(NEO_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
-if(MSVC)
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(CMAKE_GENERATOR_TOOLSET "host=x64")
 endif()
 
@@ -55,6 +49,7 @@ elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
     set(NEO_DISABLE_LD_GOLD TRUE)
   endif()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/sse2neon)
+  set(DISABLE_WDDM_LINUX TRUE)
 endif()
 message(STATUS "Host processor: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 message(STATUS "Target processor: ${CMAKE_SYSTEM_PROCESSOR}")
@@ -84,9 +79,20 @@ include(GNUInstallDirs)
 if(USE_SANITIZE_UB AND WIN32)
   add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Xlinker /NODEFAULTLIB:clang_rt.ubsan_standalone_cxx-x86_64.lib")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Xlinker /NODEFAULTLIB:clang_rt.ubsan_standalone_cxx-x86_64.lib")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Xlinker /NODEFAULTLIB:clang_rt.ubsan_standalone_cxx-x86_64.lib")
 endif()
 
+if(WIN32 AND NOT MSVC)
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Xlinker onecore.lib")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Xlinker onecore.lib")
+endif()
+
+if(NOT DEFINED NEO_USE_CL_CACHE)
+  set(NEO_USE_CL_CACHE FALSE CACHE BOOL "use cl_cache when running ocloc" FORCE)
+endif()
+if(NEO_USE_CL_CACHE)
+  set(NEO_DISABLE_BUILTINS_COMPILATION FALSE)
+endif()
 # define global property where we will collect component list to package
 define_property(GLOBAL PROPERTY NEO_OCL_COMPONENTS_LIST BRIEF_DOCS "List of components" FULL_DOCS "List of components to create packages")
 set(GLOBAL PROPERTY NEO_OCL_COMPONENTS_LIST "")
@@ -107,6 +113,10 @@ endif()
 if(ENABLE_DYNAMIC_MEMORY_TRACKING)
   message(STATUS "Enabling dynamic memory tracking")
   add_definitions(-DENABLE_DYNAMIC_MEMORY_TRACKING)
+endif()
+
+if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+  message(STATUS "Enabling serialized builtins compilation")
 endif()
 
 if(DEFINED NEO_EXTRA_DEFINES)
@@ -173,6 +183,32 @@ endif()
 
 include(CheckCXXCompilerFlag)
 if(UNIX)
+  if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU" AND(
+                                                   ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 9.0 OR
+                                                   (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 13.0
+    )))
+    message(STATUS "Disabling LTO because compiler is ${CMAKE_CXX_COMPILER_ID} v${CMAKE_CXX_COMPILER_VERSION}")
+    set(NEO_DISABLE_LTO TRUE)
+  endif()
+
+  if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU" AND ${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL 14.0)
+    message(STATUS "Disabling LTO because compiler is ${CMAKE_CXX_COMPILER_ID} v${CMAKE_CXX_COMPILER_VERSION}")
+    set(NEO_DISABLE_LTO TRUE)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
+  endif()
+
+  if(NOT NEO_DISABLE_LTO)
+    check_cxx_compiler_flag("-flto=auto" COMPILER_SUPPORTS_FLTO_AUTO)
+    if(COMPILER_SUPPORTS_FLTO_AUTO)
+      message(STATUS "enabling lto=auto, disabling ld.lld")
+      set(NEO_DISABLE_LD_LLD TRUE)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=auto")
+      check_cxx_compiler_flag("-ffat-lto-objects" COMPILER_SUPPORTS_FAT_LTO_OBJECTS)
+      if(COMPILER_SUPPORTS_FAT_LTO_OBJECTS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffat-lto-objects")
+      endif()
+    endif()
+  endif()
   find_program(__LD_GOLD_FOUND ld.gold)
   find_program(__LD_LLD_FOUND ld.lld)
   check_cxx_compiler_flag(-fuse-ld=lld COMPILER_SUPPORTS_LLD)
@@ -180,9 +216,11 @@ if(UNIX)
   if(NOT NEO_DISABLE_LD_LLD AND COMPILER_SUPPORTS_LLD AND __LD_LLD_FOUND)
     message(STATUS "Using linker: ld.lld")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld -Wl,--build-id=sha1")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=lld -Wl,--build-id=sha1")
   elseif(NOT NEO_DISABLE_LD_GOLD AND COMPILER_SUPPORTS_GOLD AND __LD_GOLD_FOUND)
     message(STATUS "Using linker: ld.gold")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=gold")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=gold")
   else()
     message(STATUS "Using linker: default")
   endif()
@@ -235,9 +273,31 @@ if(NEO_SKIP_UNIT_TESTS)
   set(NEO_SKIP_L0_BLACK_BOX_TESTS TRUE)
 endif()
 
-if(DEFINED DO_NOT_RUN_AUB_TESTS)
-  set(NEO_SKIP_AUB_TEST_RUN ${DO_NOT_RUN_AUB_TESTS})
+if(DEFINED NEO_GENERATE_AUBS_FOR)
+  if(DEFINED NEO_SKIP_AUB_TESTS_RUN AND NEO_SKIP_AUB_TESTS_RUN)
+    message(FATAL_ERROR "Invalid cmake flags combination, NEO_GENERATE_AUBS_FOR assumes aub tests execution is not skipped")
+  endif()
+  set(NEO_SKIP_AUB_TESTS_RUN FALSE)
 endif()
+
+if(NOT DEFINED NEO_SKIP_AUB_TESTS_RUN)
+  set(NEO_SKIP_AUB_TESTS_RUN TRUE)
+endif()
+
+if(NOT DEFINED NEO_SKIP_AUB_TESTS)
+  set(NEO_SKIP_AUB_TESTS TRUE)
+endif()
+
+if(NOT NEO_SKIP_AUB_TESTS_RUN)
+  set(NEO_SKIP_AUB_TESTS FALSE)
+endif()
+
+if(NEO_IGNORE_INVALID_TEST_EXCLUDES)
+  add_definitions(-DNEO_IGNORE_INVALID_TEST_EXCLUDES)
+endif()
+
+message(STATUS "NEO_SKIP_AUB_TESTS: ${NEO_SKIP_AUB_TESTS}")
+message(STATUS "NEO_SKIP_AUB_TESTS_RUN: ${NEO_SKIP_AUB_TESTS_RUN}")
 
 # Set our build directory
 if(NOT DEFINED NEO_BUILD_DIR)
@@ -248,8 +308,8 @@ if(NOT NEO_BINARY_DIR)
   set(NEO_BINARY_DIR ${CMAKE_BINARY_DIR})
 endif()
 
-# we use c++17
-set(CMAKE_CXX_STANDARD 17)
+# we use c++20
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # we force using response files
@@ -370,7 +430,7 @@ if(NOT DEFINED AOT_CONFIG_HEADERS_DIR)
 endif()
 
 # Intel Graphics Compiler detection
-include(cmake/find_igc.cmake)
+include(cmake${BRANCH_DIR_SUFFIX}/find_igc.cmake)
 
 # GmmLib detection
 include(cmake/find_gmmlib.cmake)
@@ -428,7 +488,7 @@ if(NOT DISABLE_LIBVA)
   endif()
 endif()
 
-add_subdirectory_unique(third_party/gtest)
+include(cmake/find_gtest.cmake)
 
 message(STATUS "AUB_STREAM_DIR = ${AUB_STREAM_DIR}")
 if(DEFINED AUB_STREAM_DIR)
@@ -451,8 +511,32 @@ endif()
 # We want to organize our IDE targets into folders
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-# Get available platfroms
+# Get available platforms
+if(DEFINED NEO_ALLOW_LEGACY_PLATFORMS_SUPPORT AND NOT DEFINED NEO_LEGACY_PLATFORMS_SUPPORT)
+  set(NEO_LEGACY_PLATFORMS_SUPPORT ${NEO_ALLOW_LEGACY_PLATFORMS_SUPPORT})
+endif()
+if(NOT DEFINED NEO_LEGACY_PLATFORMS_SUPPORT)
+  set(NEO_LEGACY_PLATFORMS_SUPPORT FALSE)
+endif()
+if(NOT DEFINED NEO_CURRENT_PLATFORMS_SUPPORT)
+  set(NEO_CURRENT_PLATFORMS_SUPPORT TRUE)
+endif()
+set(NEO__LEGACY_NAME_SUFFIX "_legacy1")
+if(NEO_LEGACY_PLATFORMS_SUPPORT AND NOT NEO_CURRENT_PLATFORMS_SUPPORT)
+  if(NOT DEFINED NEO_OCLOC_VERSION_MODE)
+    set(NEO_OCLOC_VERSION_MODE "0")
+  endif()
+  set(NEO__SO_NAME_SUFFIX ${NEO__LEGACY_NAME_SUFFIX})
+endif()
+if(NOT DEFINED NEO_OCLOC_VERSION_MODE)
+  set(NEO_OCLOC_VERSION_MODE "1")
+endif()
 include(platforms.cmake)
+list(LENGTH ALL_PRODUCT_FAMILY_LIST ALL_PRODUCT_FAMILY_LIST_COUNT)
+if(1 EQUAL ${ALL_PRODUCT_FAMILY_LIST_COUNT})
+  SET(NEO_SINGLE_SKU_BUILD TRUE)
+  message(STATUS "Single Sku Build detected")
+endif()
 
 if(WIN32)
   set(DISABLE_WDDM_LINUX TRUE)
@@ -493,30 +577,43 @@ if(WIN32 OR NOT DISABLE_WDDM_LINUX)
 endif()
 
 if(UNIX)
-  # prelim headers detection
+  # i915 prelim detection
   if(NOT ("${BRANCH_TYPE}" STREQUAL ""))
-    set(NEO_ENABLE_i915_PRELIM_DETECTION TRUE)
-  elseif(NOT DEFINED NEO_ENABLE_i915_PRELIM_DETECTION)
-    set(NEO_ENABLE_i915_PRELIM_DETECTION FALSE)
+    set(NEO_ENABLE_I915_PRELIM_DETECTION TRUE)
+  elseif(NOT DEFINED NEO_ENABLE_I915_PRELIM_DETECTION)
+    set(NEO_ENABLE_I915_PRELIM_DETECTION FALSE)
   endif()
-  message(STATUS "i915 prelim headers detection: ${NEO_ENABLE_i915_PRELIM_DETECTION}")
+  message(STATUS "i915 prelim headers detection: ${NEO_ENABLE_I915_PRELIM_DETECTION}")
 
-  # drm-xe support
+  # xe prelim detection
   if(NOT ("${BRANCH_TYPE}" STREQUAL ""))
-    set(NEO_ENABLE_XE_DRM_DETECTION TRUE)
-  elseif(NOT DEFINED NEO_ENABLE_XE_DRM_DETECTION)
-    set(NEO_ENABLE_XE_DRM_DETECTION FALSE)
+    set(NEO_ENABLE_XE_PRELIM_DETECTION TRUE)
+  elseif(NOT DEFINED NEO_ENABLE_XE_PRELIM_DETECTION)
+    set(NEO_ENABLE_XE_PRELIM_DETECTION FALSE)
   endif()
-  message(STATUS "Xe drm detection: ${NEO_ENABLE_XE_DRM_DETECTION}")
+  message(STATUS "xe prelim headers detection: ${NEO_ENABLE_XE_PRELIM_DETECTION}")
 
-  get_filename_component(THIRD_PARTY_DIR "${NEO_SOURCE_DIR}/third_party${BRANCH_DIR_SUFFIX}" ABSOLUTE)
-  include_directories(BEFORE ${THIRD_PARTY_DIR})
+  # xe eudebug support
+  if(NOT ("${BRANCH_TYPE}" STREQUAL ""))
+    set(NEO_ENABLE_XE_EU_DEBUG_SUPPORT TRUE)
+  elseif(NOT DEFINED NEO_ENABLE_XE_EU_DEBUG_SUPPORT)
+    set(NEO_ENABLE_XE_EU_DEBUG_SUPPORT FALSE)
+  endif()
+  message(STATUS "Xe EU Debug support: ${NEO_ENABLE_XE_EU_DEBUG_SUPPORT}")
 
+  if(NEO_ENABLE_XE_EU_DEBUG_SUPPORT)
+    # xe eudebug exp upstream support
+    if(NOT ("${BRANCH_TYPE}" STREQUAL ""))
+      set(NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM TRUE)
+    elseif(NOT DEFINED NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM)
+      set(NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM FALSE)
+    endif()
+    message(STATUS "Xe EU Debug support for upstream: ${NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM}")
+    message(STATUS "Xe EU Debug support for prelim: ${NEO_ENABLE_XE_PRELIM_DETECTION}")
+  endif()
 endif()
-if(NOT DEFINED I915_HEADERS_DIR OR I915_HEADERS_DIR STREQUAL "")
-  get_filename_component(I915_HEADERS_DIR "${NEO_SOURCE_DIR}/third_party${BRANCH_DIR_SUFFIX}uapi" ABSOLUTE)
-endif()
-message(STATUS "i915 includes dir: ${I915_HEADERS_DIR}")
+
+include(cmake${BRANCH_DIR_SUFFIX}/find_drm.cmake)
 
 # Enable/Disable BuiltIns compilation during build
 set(COMPILE_BUILT_INS TRUE CACHE BOOL "Enable built-in kernels compilation")
@@ -541,35 +638,41 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 option(APPVERIFIER_ALLOWED "allow use of AppVerifier" OFF)
 
 option(CCACHE_ALLOWED "allow use of ccache" TRUE)
-find_program(CCACHE_EXE_FOUND ccache)
-if(CCACHE_EXE_FOUND AND CCACHE_ALLOWED)
-  message(STATUS "Found ccache: ${CCACHE_EXE_FOUND}")
+if((CMAKE_HOST_UNIX OR("${CMAKE_GENERATOR}" STREQUAL "Ninja")) AND CCACHE_ALLOWED)
+  find_program(CCACHE_EXE_FOUND ccache)
+  if(CCACHE_EXE_FOUND)
+    message(STATUS "Found ccache: ${CCACHE_EXE_FOUND}")
 
-  if(NOT NEO_DONT_SET_CCACHE_BASEDIR AND NOT DEFINED ENV{CCACHE_BASEDIR})
-    get_filename_component(__tmp_dir "../infra" ABSOLUTE)
-    if(IS_DIRECTORY ${__tmp_dir})
-      get_filename_component(NEO_CCACHE_BASEDIR ".." ABSOLUTE)
-      list(APPEND NEO_RULE_LAUNCH_LIST "CCACHE_BASEDIR=${NEO_CCACHE_BASEDIR}")
-      message(STATUS "using ccache base dir: ${NEO_CCACHE_BASEDIR}")
+    if(NOT NEO_DONT_SET_CCACHE_BASEDIR AND NOT DEFINED ENV{CCACHE_BASEDIR})
+      get_filename_component(__tmp_dir "../infra" ABSOLUTE)
+      if(IS_DIRECTORY ${__tmp_dir})
+        get_filename_component(NEO_CCACHE_BASEDIR ".." ABSOLUTE)
+        if(CMAKE_HOST_WIN32)
+          list(APPEND NEO_RULE_LAUNCH_LIST "\"${CMAKE_COMMAND}\" -E env CCACHE_BASEDIR=${NEO_CCACHE_BASEDIR}")
+        else()
+          list(APPEND NEO_RULE_LAUNCH_LIST "CCACHE_BASEDIR=${NEO_CCACHE_BASEDIR}")
+        endif()
+
+        message(STATUS "setting ccache base dir: ${NEO_CCACHE_BASEDIR}")
+      endif()
+    elseif(DEFINED ENV{CCACHE_BASEDIR})
+      message(STATUS "Using ccache base dir: $ENV{CCACHE_BASEDIR}")
     endif()
-  elseif(DEFINED ENV{CCACHE_BASEDIR})
-    message(STATUS "Using ccache base dir: $ENV{CCACHE_BASEDIR}")
-  endif()
-  list(APPEND NEO_RULE_LAUNCH_LIST "ccache")
-  string(REPLACE ";" " " NEO_RULE_LAUNCH_STR "${NEO_RULE_LAUNCH_LIST}")
-  message(STATUS "Using rule: ${NEO_RULE_LAUNCH_STR}")
+    list(APPEND NEO_RULE_LAUNCH_LIST "${CCACHE_EXE_FOUND}")
+    string(REPLACE ";" " " NEO_RULE_LAUNCH_STR "${NEO_RULE_LAUNCH_LIST}")
+    message(STATUS "Using rule: ${NEO_RULE_LAUNCH_STR}")
 
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ${NEO_RULE_LAUNCH_STR})
-  if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ${NEO_RULE_LAUNCH_STR})
-  else()
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ${NEO_RULE_LAUNCH_STR})
+    if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
+      set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ${NEO_RULE_LAUNCH_STR})
+    else()
+      set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CCACHE_EXE_FOUND}")
+    endif()
   endif()
 endif()
 
 # Miscs options
 option(IGDRCL_GCOV "generate gcov report" OFF)
-set(CL_CACHE_LOCATION "cl_cache" CACHE STRING "OpenCL program binary cache location")
 
 option(NEO_SHOW_VERBOSE_ULT_RESULTS "Use the default/verbose test output" OFF)
 
@@ -577,11 +680,6 @@ if(NOT NEO_SHOW_VERBOSE_ULT_RESULTS)
   set(NEO_TESTS_LISTENER_OPTION "--disable_default_listener")
 else()
   set(NEO_TESTS_LISTENER_OPTION "--enable_default_listener")
-endif()
-
-# Put profiling enable flag into define
-if(KMD_PROFILING)
-  add_definitions(-DKMD_PROFILING=${KMD_PROFILING})
 endif()
 
 if(MSVC)
@@ -661,6 +759,10 @@ if(MSVC)
     string(REGEX REPLACE "/Zi" "" CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASEINTERNAL}")
     string(REGEX REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
   endif()
+elseif(WIN32 AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND NOT NO_PDB)
+  add_compile_options(-gcodeview)
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g")
+  set(CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASEINTERNAL} -g")
 endif()
 
 # spectre mitigation
@@ -715,7 +817,7 @@ if(NOT MSVC)
 endif()
 
 if(NOT MSVC)
-  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftemplate-depth=1024")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftemplate-depth=1024")
 endif()
 
 # intrinsics (_mm_clflushopt and waitpkg) support
@@ -739,38 +841,28 @@ endif()
 
 # Compiler warning flags
 if(NOT MSVC)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wempty-body")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wignored-qualifiers")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wtype-limits")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wuninitialized")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wno-unused-parameter -Wno-missing-field-initializers")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Winvalid-pch")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat -Wformat-security")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wvla")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas") # needed for pragmas in case of MSVC
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-parameter") # needed for unused function arguments
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-field-initializers") # needed for dependencies, e.g. gmmlib
 
   if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
     # clang only
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wshorten-64-to-32 -Wno-extern-c-compat -Wno-instantiation-after-specialization")
     if(NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 3.6))
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-local-typedefs -DSANITIZER_BUILD")
-    endif()
-    if(NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 4.0))
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-register") # Added for htons()
-    endif()
-    if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 10.0)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-copy")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DSANITIZER_BUILD")
     endif()
   else()
     # gcc only
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-local-typedefs -Wno-unused-but-set-variable")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wclobbered")
-    if(CMAKE_C_COMPILER_VERSION VERSION_LESS 7.0)
-    else()
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wimplicit-fallthrough=4")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-noexcept-type") # Added for gtest
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 13)
+      # Disable specific warnings due to GCC bug for versions >= 13
+      # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111073
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-stringop-overflow")
     endif()
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Werror=vla")
 
   if(USE_SANITIZE_UB)
     check_cxx_compiler_flag(-fsanitize=undefined COMPILER_SUPPORTS_UNDEFINED_BEHAVIOR_SANITIZER)
@@ -795,19 +887,15 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
       set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /SafeSEH")
     endif()
   else()
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong")
+    string(FIND ${CMAKE_CXX_FLAGS} "-D_FORTIFY_SOURCE=3" __FORTIFY_SOURCE_3_SET)
+    if(${__FORTIFY_SOURCE_3_SET} LESS 0)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -D_FORTIFY_SOURCE=2")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat -Wformat-security")
+    endif()
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong")
+    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
     else()
       # gcc, g++ only
-      if(CMAKE_C_COMPILER_VERSION VERSION_LESS 4.9)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector")
-      else()
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong")
-      endif()
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -D_FORTIFY_SOURCE=2")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat -Wformat-security")
       set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -Wl,-z,noexecstack")
       set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -Wl,-z,relro")
       set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -Wl,-z,now")
@@ -830,7 +918,7 @@ include_directories(${NEO_SHARED_DIRECTORY}/gen_common${BRANCH_DIR_SUFFIX})
 if(WIN32)
   include_directories(${NEO_SHARED_DIRECTORY}/gmm_helper/windows/gmm_memory${BRANCH_DIR_SUFFIX})
 else()
-  include_directories(${I915_HEADERS_DIR}
+  include_directories(${NEO_LINUX_KMD_HEADERS_DIR}
                       ${NEO_SHARED_DIRECTORY}/gmm_helper/windows/gmm_memory
   )
   if("${BRANCH_TYPE}" STREQUAL "")
@@ -844,7 +932,10 @@ include_directories(${NEO_SHARED_DIRECTORY}/sku_info/definitions${BRANCH_DIR_SUF
 
 macro(macro_for_each_platform)
   string(TOLOWER ${PLATFORM_IT} PLATFORM_IT_LOWER)
-  foreach(PLATFORM_DIRECTORY ${NEO_SHARED_DIRECTORY}/${CORE_TYPE_LOWER}/${PLATFORM_IT_LOWER}/definitions${BRANCH_DIR_SUFFIX})
+  foreach(PLATFORM_DIRECTORY
+            ${NEO_SHARED_DIRECTORY}/${CORE_TYPE_LOWER}/${PLATFORM_IT_LOWER}/definitions${BRANCH_DIR_SUFFIX}
+            ${NEO_SHARED_DIRECTORY}/ail/${CORE_TYPE_LOWER}/${PLATFORM_IT_LOWER}/definitions${BRANCH_DIR_SUFFIX}
+    )
     if(EXISTS ${PLATFORM_DIRECTORY})
       include_directories(${PLATFORM_DIRECTORY})
     endif()
@@ -871,6 +962,7 @@ if(MSVC)
   endif()
 endif()
 
+add_subdirectory_unique(shared/source/release_helper)
 add_subdirectory_unique(${OCLOC_DIRECTORY} ${NEO_BUILD_DIR}/offline_compiler)
 target_compile_definitions(ocloc_lib
                            PRIVATE MOCKABLE_VIRTUAL=
@@ -894,10 +986,9 @@ set(BUILTINS_BINARIES_STATELESS_HEAPLESS_LIB_NAME "builtins_binaries_stateless_h
 set(BUILTINS_BINARIES_BINDFUL_LIB_NAME "builtins_binaries_bindful")
 set(BUILTINS_BINARIES_BINDLESS_LIB_NAME "builtins_binaries_bindless")
 set(BUILTINS_SPIRV_LIB_NAME "builtins_spirv")
-set(BUILTINS_VME_LIB_NAME "builtins_vme")
 
 if(WIN32)
-  set(NEO_EXTRA_LIBS Ws2_32)
+  set(NEO_EXTRA_LIBS Ws2_32 winmm)
 else()
   set(NEO_EXTRA_LIBS dl pthread rt)
 endif()

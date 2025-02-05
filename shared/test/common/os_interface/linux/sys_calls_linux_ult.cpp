@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -48,6 +48,7 @@ int fstatFuncRetVal = 0;
 int flockRetVal = 0;
 uint32_t preadFuncCalled = 0u;
 uint32_t pwriteFuncCalled = 0u;
+uint32_t writeFuncCalled = 0u;
 bool isInvalidAILTest = false;
 const char *drmVersion = "i915";
 int passedFileDescriptorFlagsToSet = 0;
@@ -62,15 +63,18 @@ int flockCalled = 0;
 int opendirCalled = 0;
 int readdirCalled = 0;
 int closedirCalled = 0;
+int fsyncCalled = 0;
+int fsyncArgPassed = 0;
+int fsyncRetVal = 0;
 
 std::vector<void *> mmapVector(64);
 std::vector<void *> mmapCapturedExtendedPointers(64);
 bool mmapCaptureExtendedPointers = false;
-bool pathExistsMock = false;
 bool mmapAllowExtendedPointers = false;
 bool failMmap = false;
 uint32_t mmapFuncCalled = 0u;
 uint32_t munmapFuncCalled = 0u;
+bool failMunmap = false;
 
 int (*sysCallsOpen)(const char *pathname, int flags) = nullptr;
 int (*sysCallsClose)(int fileDescriptor) = nullptr;
@@ -82,7 +86,7 @@ int (*sysCallsReadlink)(const char *path, char *buf, size_t bufsize) = nullptr;
 int (*sysCallsIoctl)(int fileDescriptor, unsigned long int request, void *arg) = nullptr;
 int (*sysCallsPoll)(struct pollfd *pollFd, unsigned long int numberOfFds, int timeout) = nullptr;
 ssize_t (*sysCallsRead)(int fd, void *buf, size_t count) = nullptr;
-ssize_t (*sysCallsWrite)(int fd, void *buf, size_t count) = nullptr;
+ssize_t (*sysCallsWrite)(int fd, const void *buf, size_t count) = nullptr;
 int (*sysCallsPipe)(int pipeFd[2]) = nullptr;
 int (*sysCallsFstat)(int fd, struct stat *buf) = nullptr;
 char *(*sysCallsRealpath)(const char *path, char *buf) = nullptr;
@@ -96,13 +100,15 @@ int (*sysCallsUnlink)(const std::string &pathname) = nullptr;
 int (*sysCallsStat)(const std::string &filePath, struct stat *statbuf) = nullptr;
 int (*sysCallsMkstemp)(char *fileName) = nullptr;
 int (*sysCallsMkdir)(const std::string &dir) = nullptr;
-bool (*sysCallsPathExists)(const std::string &path) = nullptr;
 DIR *(*sysCallsOpendir)(const char *name) = nullptr;
 struct dirent *(*sysCallsReaddir)(DIR *dir) = nullptr;
 int (*sysCallsClosedir)(DIR *dir) = nullptr;
 int (*sysCallsGetDevicePath)(int deviceFd, char *buf, size_t &bufSize) = nullptr;
 off_t lseekReturn = 4096u;
 std::atomic<int> lseekCalledCount(0);
+long sysconfReturn = 1ull << 30;
+std::string dlOpenFilePathPassed;
+bool captureDlOpenFilePath = false;
 
 int mkdir(const std::string &path) {
     if (sysCallsMkdir != nullptr) {
@@ -110,14 +116,6 @@ int mkdir(const std::string &path) {
     }
 
     return 0;
-}
-
-bool pathExists(const std::string &path) {
-    if (sysCallsPathExists != nullptr) {
-        return sysCallsPathExists(path);
-    }
-
-    return pathExistsMock;
 }
 
 void exit(int code) {
@@ -129,6 +127,12 @@ int close(int fileDescriptor) {
     closeFuncCalled++;
     closeFuncArgPassed = fileDescriptor;
     return closeFuncRetVal;
+}
+
+int fsync(int fd) {
+    fsyncCalled++;
+    fsyncArgPassed = fd;
+    return fsyncRetVal;
 }
 
 int open(const char *file, int flags) {
@@ -166,6 +170,13 @@ int openWithMode(const char *file, int flags, int mode) {
 void *dlopen(const char *filename, int flag) {
     dlOpenFlags = flag;
     dlOpenCalled = true;
+    if (captureDlOpenFilePath) {
+        if (filename) {
+            dlOpenFilePathPassed = filename;
+        } else {
+            dlOpenFilePathPassed = {};
+        }
+    }
     return ::dlopen(filename, flag);
 }
 
@@ -204,6 +215,10 @@ int ioctl(int fileDescriptor, unsigned long int request, void *arg) {
 }
 
 unsigned int getProcessId() {
+    return 0xABCEDF;
+}
+
+unsigned int getCurrentProcessId() {
     return 0xABCEDF;
 }
 
@@ -319,6 +334,10 @@ void *mmap(void *addr, size_t size, int prot, int flags, int fd, off_t off) noex
 
 int munmap(void *addr, size_t size) noexcept {
     munmapFuncCalled++;
+    if (failMunmap) {
+        return -1;
+    }
+
     auto ptrIt = std::find(mmapVector.begin(), mmapVector.end(), addr);
     if (ptrIt != mmapVector.end()) {
         mmapVector.erase(ptrIt);
@@ -334,10 +353,11 @@ ssize_t read(int fd, void *buf, size_t count) {
     return 0;
 }
 
-ssize_t write(int fd, void *buf, size_t count) {
+ssize_t write(int fd, const void *buf, size_t count) {
     if (sysCallsWrite != nullptr) {
         return sysCallsWrite(fd, buf, count);
     }
+    writeFuncCalled++;
     return 0;
 }
 
@@ -462,6 +482,9 @@ int closedir(DIR *dir) {
 off_t lseek(int fd, off_t offset, int whence) noexcept {
     lseekCalledCount++;
     return lseekReturn;
+}
+long sysconf(int name) {
+    return sysconfReturn;
 }
 
 } // namespace SysCalls

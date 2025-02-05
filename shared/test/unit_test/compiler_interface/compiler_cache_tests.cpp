@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,15 +7,21 @@
 
 #include "shared/source/compiler_interface/compiler_cache.h"
 #include "shared/source/compiler_interface/compiler_interface.h"
+#include "shared/source/compiler_interface/default_cache_config.h"
+#include "shared/source/compiler_interface/intermediate_representations.h"
 #include "shared/source/helpers/aligned_memory.h"
+#include "shared/source/helpers/array_count.h"
 #include "shared/source/helpers/hash.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/string.h"
+#include "shared/source/os_interface/sys_calls_common.h"
 #include "shared/source/utilities/io_functions.h"
+#include "shared/test/common/device_binary_format/patchtokens_tests.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/libult/global_environment.h"
 #include "shared/test/common/mocks/mock_compiler_cache.h"
+#include "shared/test/common/mocks/mock_compiler_interface.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_io_functions.h"
 #include "shared/test/common/test_macros/test.h"
@@ -153,6 +159,7 @@ TEST(CompilerCacheHashTests, GivenCompilingOptionsWhenGettingCacheThenCorrectCac
     w1.flags.wa4kAlignUVOffsetNV12LinearSurface = true;
     w2.flags.wa4kAlignUVOffsetNV12LinearSurface = false;
     const WorkaroundTable *was[] = {&w1, &w2};
+    const uint32_t ipVersionValues[] = {1, 2};
 
     std::array<std::string, 4> inputArray = {{std::string(""),
                                               std::string("12345678901234567890123456789012"),
@@ -180,45 +187,82 @@ TEST(CompilerCacheHashTests, GivenCompilingOptionsWhenGettingCacheThenCorrectCac
 
     CompilerCache cache(CompilerCacheConfig{});
 
-    for (size_t i0 = 0; i0 < igcRevisions.size(); i0++) {
-        strcpy_s(buf0.get(), bufSize, igcRevisions[i0].c_str());
+    strcpy_s(buf0.get(), bufSize, igcRevisions[0].c_str());
+    igcRevision = ArrayRef<char>(buf0.get(), strlen(buf0.get()));
+    strcpy_s(buf1.get(), bufSize, inputArray[0].c_str());
+    src = ArrayRef<char>(buf1.get(), strlen(buf1.get()));
+    strcpy_s(buf2.get(), bufSize, optionsArray[0].c_str());
+    apiOptions = ArrayRef<char>(buf2.get(), strlen(buf2.get()));
+    strcpy_s(buf3.get(), bufSize, internalOptionsArray[0].c_str());
+    internalOptions = ArrayRef<char>(buf3.get(), strlen(buf3.get()));
+    auto libSize = igcLibSizes[0];
+    auto libMTime = igcLibMTimes[0];
+    hwInfo.platform = *platforms[0];
+    hwInfo.featureTable = *skus[0];
+    hwInfo.workaroundTable = *was[0];
+    hwInfo.ipVersion.architecture = ipVersionValues[0];
+    hwInfo.ipVersion.release = ipVersionValues[0];
+    hwInfo.ipVersion.revision = ipVersionValues[0];
+
+    auto verifyHash = [&]() -> void {
+        std::string hash = cache.getCachedFileName(hwInfo, src, apiOptions, internalOptions, ArrayRef<const char>(), ArrayRef<const char>(), igcRevision, libSize, libMTime);
+
+        ASSERT_TRUE(hashes.find(hash) == hashes.end());
+        hashes.emplace(hash);
+    };
+    verifyHash();
+
+    for (size_t i = 1; i < igcRevisions.size(); i++) {
+        strcpy_s(buf0.get(), bufSize, igcRevisions[i].c_str());
         igcRevision = ArrayRef<char>(buf0.get(), strlen(buf0.get()));
-
-        for (auto libSize : igcLibSizes) {
-            for (auto libMTime : igcLibMTimes) {
-                for (auto platform : platforms) {
-                    hwInfo.platform = *platform;
-
-                    for (auto sku : skus) {
-                        hwInfo.featureTable = *sku;
-
-                        for (auto wa : was) {
-                            hwInfo.workaroundTable = *wa;
-
-                            for (size_t i1 = 0; i1 < inputArray.size(); i1++) {
-                                strcpy_s(buf1.get(), bufSize, inputArray[i1].c_str());
-                                src = ArrayRef<char>(buf1.get(), strlen(buf1.get()));
-                                for (size_t i2 = 0; i2 < optionsArray.size(); i2++) {
-                                    strcpy_s(buf2.get(), bufSize, optionsArray[i2].c_str());
-                                    apiOptions = ArrayRef<char>(buf2.get(), strlen(buf2.get()));
-                                    for (size_t i3 = 0; i3 < internalOptionsArray.size(); i3++) {
-                                        strcpy_s(buf3.get(), bufSize, internalOptionsArray[i3].c_str());
-                                        internalOptions = ArrayRef<char>(buf3.get(), strlen(buf3.get()));
-
-                                        std::string hash = cache.getCachedFileName(hwInfo, src, apiOptions, internalOptions, ArrayRef<const char>(), ArrayRef<const char>(), igcRevision, libSize, libMTime);
-
-                                        if (hashes.find(hash) != hashes.end()) {
-                                            FAIL() << "failed: " << i1 << ":" << i2 << ":" << i3;
-                                        }
-                                        hashes.emplace(hash);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(igcLibSizes); i++) {
+        libSize = igcLibSizes[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(igcLibMTimes); i++) {
+        libMTime = igcLibMTimes[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(platforms); i++) {
+        hwInfo.platform = *platforms[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(skus); i++) {
+        hwInfo.featureTable = *skus[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(was); i++) {
+        hwInfo.workaroundTable = *was[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(ipVersionValues); i++) {
+        hwInfo.ipVersion.architecture = ipVersionValues[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(ipVersionValues); i++) {
+        hwInfo.ipVersion.release = ipVersionValues[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < arrayCount(ipVersionValues); i++) {
+        hwInfo.ipVersion.revision = ipVersionValues[i];
+        verifyHash();
+    }
+    for (size_t i = 1; i < inputArray.size(); i++) {
+        strcpy_s(buf1.get(), bufSize, inputArray[i].c_str());
+        src = ArrayRef<char>(buf1.get(), strlen(buf1.get()));
+        verifyHash();
+    }
+    for (size_t i = 1; i < optionsArray.size(); i++) {
+        strcpy_s(buf2.get(), bufSize, optionsArray[i].c_str());
+        apiOptions = ArrayRef<char>(buf2.get(), strlen(buf2.get()));
+        verifyHash();
+    }
+    for (size_t i = 1; i < internalOptionsArray.size(); i++) {
+        strcpy_s(buf3.get(), bufSize, internalOptionsArray[i].c_str());
+        internalOptions = ArrayRef<char>(buf3.get(), strlen(buf3.get()));
+        verifyHash();
     }
 
     std::string hash = cache.getCachedFileName(hwInfo, src, apiOptions, internalOptions, ArrayRef<const char>(), ArrayRef<const char>(), igcRevision, igcLibSize, igcLibMTime);
@@ -414,6 +458,7 @@ TEST(CompilerInterfaceCachedTests, givenKernelWithoutIncludesAndBinaryInCacheWhe
 
     std::unique_ptr<CompilerCacheMock> cache(new CompilerCacheMock());
     cache->loadResult = true;
+    cache->config.enabled = true;
     auto compilerInterface = std::unique_ptr<CompilerInterface>(CompilerInterface::createInstance(std::move(cache), true));
     TranslationOutput translationOutput;
     inputArgs.allowCaching = true;
@@ -445,4 +490,481 @@ TEST(CompilerInterfaceCachedTests, givenKernelWithIncludesAndBinaryInCacheWhenCo
     EXPECT_EQ(TranslationOutput::ErrorCode::buildFailure, retVal);
 
     gEnvironment->fclPopDebugVars();
+}
+
+class CompilerInterfaceOclElfCacheTest : public ::testing::Test, public CompilerCacheHelper {
+  public:
+    using CompilerCacheHelper::processPackedCacheBinary;
+
+    void SetUp() override {
+        std::unique_ptr<CompilerCacheMock> cache(new CompilerCacheMock());
+        cache->config.enabled = true;
+        compilerInterface = std::make_unique<MockCompilerInterface>();
+        bool initRet = compilerInterface->initialize(std::move(cache), true);
+        ASSERT_TRUE(initRet);
+
+        mockCompilerCache = static_cast<CompilerCacheMock *>(compilerInterface->cache.get());
+
+        fclDebugVars.fileName = gEnvironment->fclGetMockFile();
+        gEnvironment->fclPushDebugVars(fclDebugVars);
+
+        igcFclDebugVarsForceBuildFailure.forceBuildFailure = true;
+
+        igcDebugVarsDeviceBinary.fileName = gEnvironment->igcGetMockFile();
+        igcDebugVarsDeviceBinary.forceBuildFailure = false;
+        igcDebugVarsDeviceBinary.binaryToReturn = patchtokensProgram.storage.data();
+        igcDebugVarsDeviceBinary.binaryToReturnSize = patchtokensProgram.storage.size();
+
+        igcDebugVarsInvalidDeviceBinary.fileName = gEnvironment->igcGetMockFile();
+        igcDebugVarsInvalidDeviceBinary.forceBuildFailure = false;
+        igcDebugVarsInvalidDeviceBinary.binaryToReturn = invalidBinary.data();
+        igcDebugVarsInvalidDeviceBinary.binaryToReturnSize = invalidBinary.size();
+
+        igcDebugVarsDeviceBinaryDebugData.fileName = gEnvironment->igcGetMockFile();
+        igcDebugVarsDeviceBinaryDebugData.forceBuildFailure = false;
+        igcDebugVarsDeviceBinaryDebugData.binaryToReturn = patchtokensProgram.storage.data();
+        igcDebugVarsDeviceBinaryDebugData.binaryToReturnSize = patchtokensProgram.storage.size();
+        igcDebugVarsDeviceBinaryDebugData.debugDataToReturn = debugDataToReturn.data();
+        igcDebugVarsDeviceBinaryDebugData.debugDataToReturnSize = debugDataToReturn.size();
+    }
+
+    void TearDown() override {
+        gEnvironment->fclPopDebugVars();
+    }
+
+    bool isPackedOclElf(const std::string &data) {
+        ArrayRef<const uint8_t> binary(reinterpret_cast<const uint8_t *>(data.data()), data.length());
+        return isDeviceBinaryFormat<DeviceBinaryFormat::oclElf>(binary);
+    }
+
+    MockCompilerDebugVars fclDebugVars;
+    MockCompilerDebugVars igcFclDebugVarsForceBuildFailure;
+    MockCompilerDebugVars igcDebugVarsDeviceBinary;
+    MockCompilerDebugVars igcDebugVarsInvalidDeviceBinary;
+    MockCompilerDebugVars igcDebugVarsDeviceBinaryDebugData;
+    PatchTokensTestData::ValidEmptyProgram patchtokensProgram;
+    std::string debugDataToReturn = "dbgdata";
+    std::string invalidBinary = "abcdefg";
+
+    std::unique_ptr<MockCompilerInterface> compilerInterface;
+    CompilerCacheMock *mockCompilerCache;
+};
+
+TEST_F(CompilerInterfaceOclElfCacheTest, givenIncorrectBinaryCausingPackDeviceBinaryToReturnEmptyVectorWhenPackAndCacheBinaryThenBinaryIsNotStoredInCache) {
+    TranslationOutput outputFromCompilation;
+
+    outputFromCompilation.deviceBinary.mem = makeCopy<char>(reinterpret_cast<const char *>(patchtokensProgram.storage.data()), patchtokensProgram.storage.size());
+    outputFromCompilation.deviceBinary.size = patchtokensProgram.storage.size();
+
+    std::string incorrectIr = "intermediateRepresentation";
+    outputFromCompilation.intermediateRepresentation.mem = makeCopy(incorrectIr.c_str(), incorrectIr.length());
+    outputFromCompilation.intermediateRepresentation.size = incorrectIr.length();
+
+    auto incorrectIrBinary = ArrayRef<const uint8_t>(reinterpret_cast<const uint8_t *>(outputFromCompilation.intermediateRepresentation.mem.get()), outputFromCompilation.intermediateRepresentation.size);
+    ASSERT_FALSE(NEO::isSpirVBitcode(incorrectIrBinary));
+    ASSERT_FALSE(NEO::isLlvmBitcode(incorrectIrBinary));
+
+    MockDevice device;
+    CompilerCacheHelper::packAndCacheBinary(*mockCompilerCache, "some_hash", NEO::getTargetDevice(device.getRootDeviceEnvironment()), outputFromCompilation);
+
+    EXPECT_EQ(0u, mockCompilerCache->hashToBinaryMap.size());
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, givenEmptyTranslationOutputWhenProcessPackedCacheBinaryThenDeviceBinaryAndDebugDataAndIrAreCorrectlyStored) {
+    TranslationOutput outputFromCompilation;
+
+    outputFromCompilation.deviceBinary.mem = makeCopy<char>(reinterpret_cast<const char *>(patchtokensProgram.storage.data()), patchtokensProgram.storage.size());
+    outputFromCompilation.deviceBinary.size = patchtokensProgram.storage.size();
+
+    const char *debugData = "dbgdata";
+    outputFromCompilation.debugData.mem = makeCopy(debugData, strlen(debugData));
+    outputFromCompilation.debugData.size = strlen(debugData);
+
+    std::string ir = NEO::spirvMagic.str() + "intermediateRepresentation";
+    outputFromCompilation.intermediateRepresentation.mem = makeCopy(ir.c_str(), ir.length());
+    outputFromCompilation.intermediateRepresentation.size = ir.length();
+
+    MockDevice device;
+    CompilerCacheHelper::packAndCacheBinary(*mockCompilerCache, "some_hash", NEO::getTargetDevice(device.getRootDeviceEnvironment()), outputFromCompilation);
+
+    auto cachedBinary = mockCompilerCache->hashToBinaryMap.begin()->second;
+    ArrayRef<const uint8_t> archive(reinterpret_cast<const uint8_t *>(cachedBinary.c_str()), cachedBinary.length());
+
+    TranslationOutput emptyTranslationOutput;
+    CompilerCacheHelper::processPackedCacheBinary(archive, emptyTranslationOutput, device);
+
+    EXPECT_EQ(0, memcmp(outputFromCompilation.deviceBinary.mem.get(), emptyTranslationOutput.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(0, memcmp(outputFromCompilation.debugData.mem.get(), emptyTranslationOutput.debugData.mem.get(), outputFromCompilation.debugData.size));
+    EXPECT_EQ(0, memcmp(outputFromCompilation.intermediateRepresentation.mem.get(), emptyTranslationOutput.intermediateRepresentation.mem.get(), outputFromCompilation.intermediateRepresentation.size));
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, givenNonEmptyTranslationOutputWhenProcessPackedCacheBinaryThenNonEmptyContainersAreNotOverwritten) {
+    TranslationOutput outputFromCompilation;
+
+    outputFromCompilation.deviceBinary.mem = makeCopy<char>(reinterpret_cast<const char *>(patchtokensProgram.storage.data()), patchtokensProgram.storage.size());
+    outputFromCompilation.deviceBinary.size = patchtokensProgram.storage.size();
+
+    const char *debugData = "dbgdata";
+    outputFromCompilation.debugData.mem = makeCopy(debugData, strlen(debugData));
+    outputFromCompilation.debugData.size = strlen(debugData);
+
+    std::string ir = NEO::spirvMagic.str() + "intermediateRepresentation";
+    outputFromCompilation.intermediateRepresentation.mem = makeCopy(ir.c_str(), ir.length());
+    outputFromCompilation.intermediateRepresentation.size = ir.length();
+
+    MockDevice device;
+    CompilerCacheHelper::packAndCacheBinary(*mockCompilerCache, "some_hash", NEO::getTargetDevice(device.getRootDeviceEnvironment()), outputFromCompilation);
+
+    auto cachedBinary = mockCompilerCache->hashToBinaryMap.begin()->second;
+    ArrayRef<const uint8_t> archive(reinterpret_cast<const uint8_t *>(cachedBinary.c_str()), cachedBinary.length());
+
+    TranslationOutput nonEmptyTranslationOutput;
+
+    const char *existingDeviceBinary = "existingDeviceBinary";
+    nonEmptyTranslationOutput.deviceBinary.mem = makeCopy(existingDeviceBinary, strlen(existingDeviceBinary));
+    const char *existingDebugData = "existingDebugData";
+    nonEmptyTranslationOutput.debugData.mem = makeCopy(existingDebugData, strlen(existingDebugData));
+    const char *existingIr = "existingIr";
+    nonEmptyTranslationOutput.intermediateRepresentation.mem = makeCopy(existingIr, strlen(existingIr));
+
+    CompilerCacheHelper::processPackedCacheBinary(archive, nonEmptyTranslationOutput, device);
+
+    EXPECT_EQ(0, memcmp(nonEmptyTranslationOutput.deviceBinary.mem.get(), existingDeviceBinary, strlen(existingDeviceBinary)));
+    EXPECT_EQ(0, memcmp(nonEmptyTranslationOutput.debugData.mem.get(), existingDebugData, strlen(existingDebugData)));
+    EXPECT_EQ(0, memcmp(nonEmptyTranslationOutput.intermediateRepresentation.mem.get(), existingIr, strlen(existingIr)));
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenKernelWithIncludesWhenBuildingThenPackBinaryOnCacheSaveAndUnpackBinaryOnLoadFromCache) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsDeviceBinary);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "#include \"header.h\"\n__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCompilation.debugData.mem.get());
+
+    EXPECT_EQ(1u, mockCompilerCache->hashToBinaryMap.size());
+    EXPECT_TRUE(isPackedOclElf(mockCompilerCache->hashToBinaryMap.begin()->second));
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force igc to fail compilation request
+    // at the end we expect CL_SUCCESS which means compilation ends in cache
+    gEnvironment->igcPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCache.deviceBinary.mem.get(), outputFromCache.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCache.debugData.mem.get());
+
+    gEnvironment->igcPopDebugVars();
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenKernelWithIncludesWhenLoadedCacheDoesNotUnpackCorrectlyThenDoNotEndInCacheAndContinueCompilation) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsInvalidDeviceBinary);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "#include \"header.h\"\n__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(invalidBinary.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCompilation.debugData.mem.get());
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force igc to fail compilation request
+    // at the end we expect buildFailure which means compilation does not end with loaded cache but continues in igc
+    gEnvironment->igcPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::buildFailure, err);
+
+    EXPECT_EQ(nullptr, outputFromCache.deviceBinary.mem.get());
+    EXPECT_EQ(nullptr, outputFromCache.debugData.mem.get());
+
+    gEnvironment->igcPopDebugVars();
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenKernelWithIncludesAndDebugDataWhenBuildingThenPackBinaryOnCacheSaveAndUnpackBinaryOnLoadFromCache) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsDeviceBinaryDebugData);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "#include \"header.h\"\n__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(0, std::strncmp(debugDataToReturn.c_str(), outputFromCompilation.debugData.mem.get(), debugDataToReturn.size()));
+
+    EXPECT_EQ(1u, mockCompilerCache->hashToBinaryMap.size());
+    EXPECT_TRUE(isPackedOclElf(mockCompilerCache->hashToBinaryMap.begin()->second));
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force igc to fail compilation request
+    // at the end we expect CL_SUCCESS which means compilation ends in cache
+    gEnvironment->igcPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCache.deviceBinary.mem.get(), outputFromCache.deviceBinary.size));
+    EXPECT_EQ(0, std::strncmp(debugDataToReturn.c_str(), outputFromCache.debugData.mem.get(), debugDataToReturn.size()));
+
+    gEnvironment->igcPopDebugVars();
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenBinaryWhenBuildingThenPackBinaryOnCacheSaveAndUnpackBinaryOnLoadFromCache) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsDeviceBinary);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCompilation.debugData.mem.get());
+
+    EXPECT_EQ(1u, mockCompilerCache->hashToBinaryMap.size());
+    EXPECT_TRUE(isPackedOclElf(mockCompilerCache->hashToBinaryMap.begin()->second));
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force fcl to fail compilation request
+    // at the end we expect CL_SUCCESS which means compilation ends in cache
+    gEnvironment->fclPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCache.deviceBinary.mem.get(), outputFromCache.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCache.debugData.mem.get());
+
+    gEnvironment->fclPopDebugVars();
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenBinaryWhenLoadedCacheDoesNotUnpackCorrectlyThenDoNotEndInCacheAndContinueCompilation) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsInvalidDeviceBinary);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(invalidBinary.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(nullptr, outputFromCompilation.debugData.mem.get());
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force fcl to fail compilation request
+    // at the end we expect buildFailure which means compilation does not end with loaded cache but continues in fcl
+    gEnvironment->fclPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::buildFailure, err);
+
+    gEnvironment->fclPopDebugVars();
+}
+
+TEST_F(CompilerInterfaceOclElfCacheTest, GivenBinaryAndDebugDataWhenBuildingThenPackBinaryOnCacheSaveAndUnpackBinaryOnLoadFromCache) {
+    gEnvironment->igcPushDebugVars(igcDebugVarsDeviceBinaryDebugData);
+
+    TranslationInput inputArgs{IGC::CodeType::oclC, IGC::CodeType::oclGenBin};
+
+    auto src = "__kernel k() {}";
+    inputArgs.src = ArrayRef<const char>(src, strlen(src));
+
+    TranslationOutput outputFromCompilation;
+    MockDevice device;
+    auto err = compilerInterface->build(device, inputArgs, outputFromCompilation);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCompilation.deviceBinary.mem.get(), outputFromCompilation.deviceBinary.size));
+    EXPECT_EQ(0, std::strncmp(debugDataToReturn.c_str(), outputFromCompilation.debugData.mem.get(), debugDataToReturn.size()));
+
+    EXPECT_EQ(1u, mockCompilerCache->hashToBinaryMap.size());
+    EXPECT_TRUE(isPackedOclElf(mockCompilerCache->hashToBinaryMap.begin()->second));
+
+    gEnvironment->igcPopDebugVars();
+
+    // we force fcl to fail compilation request
+    // at the end we expect CL_SUCCESS which means compilation ends in cache
+    gEnvironment->fclPushDebugVars(igcFclDebugVarsForceBuildFailure);
+
+    TranslationOutput outputFromCache;
+    err = compilerInterface->build(device, inputArgs, outputFromCache);
+    EXPECT_EQ(TranslationOutput::ErrorCode::success, err);
+    EXPECT_EQ(0, memcmp(patchtokensProgram.storage.data(), outputFromCache.deviceBinary.mem.get(), outputFromCache.deviceBinary.size));
+    EXPECT_EQ(0, std::strncmp(debugDataToReturn.c_str(), outputFromCache.debugData.mem.get(), debugDataToReturn.size()));
+
+    gEnvironment->fclPopDebugVars();
+}
+
+class CompilerCacheHelperWhitelistedTest : public ::testing::Test, public CompilerCacheHelper {
+  public:
+    using CompilerCacheHelper::whitelistedIncludes;
+
+    bool isValidIncludeFormat(const std::string_view &entry) {
+        size_t spacePos = entry.find(' ');
+        if (spacePos == std::string_view::npos) {
+            return false;
+        }
+
+        std::string_view firstWord = entry.substr(0, spacePos);
+        if (firstWord != "#include") {
+            return false;
+        }
+
+        std::string_view secondPart = entry.substr(spacePos + 1);
+        if (secondPart.empty()) {
+            return false;
+        }
+
+        return true;
+    }
+};
+
+TEST_F(CompilerCacheHelperWhitelistedTest, GivenWhitelistedIncludesWhenCheckingFormatThenExpectValidIncludeFormat) {
+    for (const auto &entry : whitelistedIncludes) {
+        EXPECT_TRUE(isValidIncludeFormat(entry))
+            << "Invalid format in whitelisted include: " << entry;
+    }
+}
+
+TEST_F(CompilerCacheHelperWhitelistedTest, GivenWhitelistedIncludesWhenCheckingContentsThenExpectCorrectEntries) {
+    std::vector<std::string_view> expectedEntries{
+        "#include <cm/cm.h>",
+        "#include <cm/cmtl.h>"};
+
+    for (const auto &expectedEntry : expectedEntries) {
+        auto it = std::find(whitelistedIncludes.begin(), whitelistedIncludes.end(), expectedEntry);
+        EXPECT_NE(it, whitelistedIncludes.end())
+            << "Expected entry '" << expectedEntry << "' not found in whitelistedIncludes.";
+    }
+
+    EXPECT_EQ(whitelistedIncludes.size(), expectedEntries.size())
+        << "whitelistedIncludes contains unexpected entries.";
+}
+
+class CompilerCacheHelperMockedWhitelistedIncludesTests : public ::testing::Test, public CompilerCacheHelper {
+  public:
+    using CompilerCacheHelper::whitelistedIncludes;
+
+    CompilerCacheHelperMockedWhitelistedIncludesTests() : backup(&whitelistedIncludes, {"#include <whitelisted>"}) {}
+
+    void SetUp() override {}
+    void TearDown() override {}
+
+    VariableBackup<decltype(whitelistedIncludes)> backup;
+};
+
+TEST_F(CompilerCacheHelperMockedWhitelistedIncludesTests, GivenSourceWithWhitelistedIncludeWhenCheckingWhitelistedIncludesThenReturnsTrue) {
+    const StackVec<const char *, 6> sources = {
+        "__kernel void k() {}",                                                 // no includes
+        "#include <whitelisted>\n__kernel void k() {}",                         // whitelisted include
+        "",                                                                     // empty source
+        "    #include <whitelisted>\n__kernel void k() {}",                     // leading spaces
+        "\t#include <whitelisted>\n__kernel void k() {}",                       // leading tabs
+        "#include <whitelisted>\n#include <whitelisted>\n__kernel void k() {}", // multiple whitelisted
+        "\n#include <whitelisted>\n__kernel void k() {}",                       // leading newline
+        "\r\n#include <whitelisted>\n__kernel void k() {}"                      // leading carriage return + newline
+    };
+
+    for (const auto &source : sources) {
+        ArrayRef<const char> sourceRef(source, strlen(source));
+        EXPECT_TRUE(CompilerCacheHelper::validateIncludes(sourceRef, CompilerCacheHelper::whitelistedIncludes))
+            << "Failed for source: " << source;
+    }
+}
+
+TEST_F(CompilerCacheHelperMockedWhitelistedIncludesTests, GivenSourceWithNonWhitelistedIncludeWhenCheckingWhitelistedIncludesThenReturnsFalse) {
+    const StackVec<const char *, 3> sources = {
+        "#include <unknown/unknown.h>\n__kernel void k() {}",                         // non-whitelisted include
+        "#include <whitelisted>\n#include <unknown/unknown.h>\n__kernel void k() {}", // mixed includes - first whitelisted, second non-whitelisted
+        "#include <unknown/unknown.h>\n#include <whitelisted>\n__kernel void k() {}"  // mixed includes - first non-whitelisted, second whitelisted
+    };
+
+    for (const auto &source : sources) {
+        ArrayRef<const char> sourceRef(source, strlen(source));
+        EXPECT_FALSE(CompilerCacheHelper::validateIncludes(sourceRef, CompilerCacheHelper::whitelistedIncludes))
+            << "Failed for source: " << source;
+    }
+}
+
+TEST_F(CompilerCacheHelperMockedWhitelistedIncludesTests, GivenDisabledOrNullCacheWhenGettingCachingModeThenReturnsCachingModeNone) {
+    CompilerCache cache(CompilerCacheConfig{false, "", "", 0});
+    const StackVec<std::pair<const char *, IGC::CodeType::CodeType_t>, 3> testCases = {
+        {"#include <whitelisted>\n__kernel void k() {}", IGC::CodeType::oclC},      // disabled cache
+        {"__kernel void k() {}", IGC::CodeType::oclC},                              // disabled cache, no includes
+        {"#include <unknown/unknown.h>\n__kernel void k() {}", IGC::CodeType::oclC} // disabled cache, non-whitelisted include
+    };
+
+    for (const auto &testCase : testCases) {
+        ArrayRef<const char> sourceRef(testCase.first, strlen(testCase.first));
+        EXPECT_EQ(CachingMode::none, CompilerCacheHelper::getCachingMode(&cache, testCase.second, sourceRef))
+            << "Failed for source: " << testCase.first;
+    }
+
+    EXPECT_EQ(CachingMode::none, CompilerCacheHelper::getCachingMode(nullptr, IGC::CodeType::oclC, ArrayRef<const char>()))
+        << "Failed for nullptr CompilerCache";
+}
+
+TEST_F(CompilerCacheHelperMockedWhitelistedIncludesTests, GivenEnabledCacheAndOclCWithWhitelistedIncludesWhenGettingCachingModeThenReturnsCachingModeDirect) {
+    CompilerCache cache(CompilerCacheConfig{true, "", "", 0});
+    const StackVec<std::pair<const char *, IGC::CodeType::CodeType_t>, 2> testCases = {
+        {"__kernel void k() {}", IGC::CodeType::oclC},                        // no includes
+        {"#include <whitelisted>\n__kernel void k() {}", IGC::CodeType::oclC} // only whitelisted include
+    };
+
+    for (const auto &testCase : testCases) {
+        ArrayRef<const char> sourceRef(testCase.first, strlen(testCase.first));
+        EXPECT_EQ(CachingMode::direct, CompilerCacheHelper::getCachingMode(&cache, testCase.second, sourceRef))
+            << "Failed for source: " << testCase.first;
+    }
+}
+
+TEST_F(CompilerCacheHelperMockedWhitelistedIncludesTests, GivenEnabledCacheAndNonWhitelistedIncludesOrNonOclCWhenGettingCachingModeThenReturnsCachingModePreProcess) {
+    CompilerCache cache(CompilerCacheConfig{true, "", "", 0});
+    const StackVec<std::pair<const char *, IGC::CodeType::CodeType_t>, 6> testCases = {
+        {"#include <unknown/unknown.h>\n__kernel void k() {}", IGC::CodeType::oclC},                         // non-whitelisted include
+        {"#include <whitelisted>\n#include <unknown/unknown.h>\n__kernel void k() {}", IGC::CodeType::oclC}, // mixed includes
+        {"#include <unknown/unknown.h>\n#include <whitelisted>\n__kernel void k() {}", IGC::CodeType::oclC}, // mixed includes different order
+        {"__kernel void k() {}", IGC::CodeType::spirV},                                                      // non-oclC type
+        {"#include <whitelisted>\n__kernel void k() {}", IGC::CodeType::spirV},                              // non-oclC type with whitelisted include
+        {"#include <unknown/unknown.h>\n__kernel void k() {}", IGC::CodeType::spirV}                         // non-oclC type with non-whitelisted include
+    };
+
+    for (const auto &testCase : testCases) {
+        ArrayRef<const char> sourceRef(testCase.first, strlen(testCase.first));
+        EXPECT_EQ(CachingMode::preProcess, CompilerCacheHelper::getCachingMode(&cache, testCase.second, sourceRef))
+            << "Failed for source: " << testCase.first;
+    }
 }

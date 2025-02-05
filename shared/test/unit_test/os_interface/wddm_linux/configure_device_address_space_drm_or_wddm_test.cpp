@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -62,6 +62,7 @@ struct MockWddmLinux : NEO::Wddm {
     std::vector<void *> validAddressRangeReleases;
 
     using Wddm::featureTable;
+    using Wddm::getReadOnlyFlagValue;
     using Wddm::gfxPartition;
     using Wddm::gfxPlatform;
     using Wddm::gmmMemory;
@@ -82,8 +83,8 @@ struct MockWddmLinuxMemoryManager : NEO::WddmMemoryManager {
     using WddmMemoryManager::allocatePhysicalLocalDeviceMemory;
     using WddmMemoryManager::createPhysicalAllocation;
     using WddmMemoryManager::localMemorySupported;
-    using WddmMemoryManager::mapPhysicalToVirtualMemory;
-    using WddmMemoryManager::unMapPhysicalToVirtualMemory;
+    using WddmMemoryManager::mapPhysicalDeviceMemoryToVirtualMemory;
+    using WddmMemoryManager::unMapPhysicalDeviceMemoryFromVirtualMemory;
     using WddmMemoryManager::WddmMemoryManager;
     NTSTATUS createInternalNTHandle(D3DKMT_HANDLE *resourceHandle, HANDLE *ntHandle, uint32_t rootDeviceIndex) override {
         if (failCreateInternalNTHandle) {
@@ -793,6 +794,13 @@ TEST_F(WddmLinuxTest, whenCheckedIfResourcesCleanupCanBeSkippedAndDeviceIsLostTh
     EXPECT_EQ(0, this->wddm->getGdi()->destroyDevice(nullptr));
     EXPECT_EQ(0, this->wddm->getGdi()->closeAdapter(nullptr));
     EXPECT_EQ(1, gdiMockConfig.getDeviceStateClb.callCount);
+}
+
+TEST_F(WddmLinuxTest, whenGettingReadOnlyFlagThenAlwaysReturnFalse) {
+    void *ptr = reinterpret_cast<void *>(0x1000);
+    EXPECT_FALSE(wddm->getReadOnlyFlagValue(ptr));
+
+    EXPECT_FALSE(wddm->getReadOnlyFlagValue(nullptr));
 }
 
 class MockOsTimeLinux : public NEO::OSTimeLinux {

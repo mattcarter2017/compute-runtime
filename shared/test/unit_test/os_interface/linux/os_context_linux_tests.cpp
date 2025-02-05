@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,11 +22,11 @@ using namespace NEO;
 
 TEST(OSContextLinux, givenReinitializeContextWhenContextIsInitThenContextIsStillIinitializedAfter) {
     MockExecutionEnvironment executionEnvironment;
-    std::unique_ptr<DrmMockCustom> mock(new DrmMockCustom(*executionEnvironment.rootDeviceEnvironments[0]));
+    auto mock = DrmMockCustom::create(*executionEnvironment.rootDeviceEnvironments[0]);
     executionEnvironment.rootDeviceEnvironments[0]->memoryOperationsInterface = DrmMemoryOperationsHandler::create(*mock.get(), 0u, false);
     OsContextLinux osContext(*mock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
     EXPECT_NO_THROW(osContext.reInitializeContext());
-    EXPECT_NO_THROW(osContext.ensureContextInitialized());
+    EXPECT_NO_THROW(osContext.ensureContextInitialized(false));
 }
 
 TEST(OSContextLinux, givenInitializeContextWhenContextCreateIoctlFailsThenContextNotInitialized) {
@@ -36,13 +36,13 @@ TEST(OSContextLinux, givenInitializeContextWhenContextCreateIoctlFailsThenContex
     EXPECT_EQ(-1, pDrm->createDrmContext(1, false, false));
 
     OsContextLinux osContext(*pDrm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    EXPECT_EQ(false, osContext.ensureContextInitialized());
+    EXPECT_EQ(false, osContext.ensureContextInitialized(false));
     delete pDrm;
 }
 
 TEST(OSContextLinux, givenOsContextLinuxWhenQueryingForOfflineDumpContextIdThenCorrectValueIsReturned) {
     MockExecutionEnvironment executionEnvironment;
-    std::unique_ptr<DrmMockCustom> mock(new DrmMockCustom(*executionEnvironment.rootDeviceEnvironments[0]));
+    auto mock = DrmMockCustom::create(*executionEnvironment.rootDeviceEnvironments[0]);
     executionEnvironment.rootDeviceEnvironments[0]->memoryOperationsInterface = DrmMemoryOperationsHandler::create(*mock.get(), 0u, false);
     MockOsContextLinux osContext(*mock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
 
@@ -76,7 +76,7 @@ TEST(OSContextLinux, givenPerContextVmsAndBindNotCompleteWhenWaitForPagingFenceT
     drm.requirePerContextVM = true;
 
     MockOsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     drm.pagingFence[0] = 26u;
     drm.fenceVal[0] = 31u;
@@ -107,7 +107,7 @@ TEST(OSContextLinux, givenPerContextVmsAndBindCompleteWhenWaitForPagingFenceThen
     drm.requirePerContextVM = true;
 
     MockOsContextLinux osContext(drm, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
-    osContext.ensureContextInitialized();
+    osContext.ensureContextInitialized(false);
 
     osContext.pagingFence[0] = 3u;
     osContext.fenceVal[0] = 3u;

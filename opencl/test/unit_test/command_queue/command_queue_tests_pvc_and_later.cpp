@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -206,7 +206,12 @@ HWTEST2_F(CommandQueuePvcAndLaterTests, givenAdditionalBcsWhenCreatingCommandQue
     MockClDevice clDevice{device};
     MockContext context{&clDevice};
 
-    const auto familyIndex = device->getEngineGroupIndexFromEngineGroupType(EngineGroupType::linkedCopy);
+    const auto &productHelper = device->getExecutionEnvironment()->rootDeviceEnvironments[0]->getProductHelper();
+    auto engineGroupType = EngineGroupType::linkedCopy;
+    if (aub_stream::EngineType::ENGINE_BCS != productHelper.getDefaultCopyEngine()) {
+        engineGroupType = EngineGroupType::copy;
+    }
+    const auto familyIndex = device->getEngineGroupIndexFromEngineGroupType(engineGroupType);
     cl_command_queue_properties queueProperties[5] = {
         CL_QUEUE_FAMILY_INTEL,
         familyIndex,
@@ -226,9 +231,11 @@ HWTEST2_F(CommandQueuePvcAndLaterTests, givenAdditionalBcsWhenCreatingCommandQue
     EXPECT_EQ(1u, queue->countBcsEngines());
 
     queueProperties[3] = 7;
-    queue = std::make_unique<MockCommandQueue>(&context, context.getDevice(0), queueProperties, false);
-    EXPECT_EQ(aub_stream::EngineType::ENGINE_BCS8, queue->bcsEngines[EngineHelpers::getBcsIndex(aub_stream::ENGINE_BCS8)]->getEngineType());
-    EXPECT_EQ(1u, queue->countBcsEngines());
+    if (queueProperties[3] < clDevice.device.getRegularEngineGroups()[familyIndex].engines.size()) {
+        queue = std::make_unique<MockCommandQueue>(&context, context.getDevice(0), queueProperties, false);
+        EXPECT_EQ(aub_stream::EngineType::ENGINE_BCS8, queue->bcsEngines[EngineHelpers::getBcsIndex(aub_stream::ENGINE_BCS8)]->getEngineType());
+        EXPECT_EQ(1u, queue->countBcsEngines());
+    }
 }
 
 HWTEST2_F(CommandQueuePvcAndLaterTests, givenDeferCmdQBcsInitializationEnabledWhenCreateCommandQueueThenBcsCountIsZero, IsAtLeastXeHpcCore) {
@@ -563,7 +570,7 @@ struct BcsCsrSelectionCommandQueueTests : ::testing::Test {
         context = std::make_unique<MockContext>(clDevice.get());
     }
 
-    std::unique_ptr<MockCommandQueue> createQueueWithEngines(std::initializer_list<aub_stream::EngineType> engineTypes) {
+    std::unique_ptr<MockCommandQueue> createQueueWithEngines(std::vector<aub_stream::EngineType> engineTypes) {
         auto queue = createQueue(nullptr);
         queue->clearBcsEngines();
         for (auto engineType : engineTypes) {
@@ -573,10 +580,33 @@ struct BcsCsrSelectionCommandQueueTests : ::testing::Test {
         return queue;
     }
 
+    std::vector<aub_stream::EngineType> getAllRegularBcsEngines() {
+        std::vector<aub_stream::EngineType> bcsEngines;
+        for (const auto &engine : device->getAllEngines()) {
+            if (EngineHelpers::isBcs(engine.getEngineType()) && engine.getEngineUsage() == EngineUsage::regular) {
+                bcsEngines.push_back(engine.getEngineType());
+            }
+        }
+        return bcsEngines;
+    }
+
+    std::vector<aub_stream::EngineType> getHalfOfRegularBcsEngines() {
+        std::vector<aub_stream::EngineType> bcsEngines = getAllRegularBcsEngines();
+        auto count = bcsEngines.size() / 2;
+        bcsEngines.erase(bcsEngines.begin(), bcsEngines.begin() + count);
+
+        return bcsEngines;
+    }
+
     std::unique_ptr<MockCommandQueue> createQueueWithLinkBcsSelectedWithQueueFamilies(size_t linkBcsIndex) {
+        const auto &productHelper = device->getRootDeviceEnvironment().getProductHelper();
+        auto engineGroupType = EngineGroupType::linkedCopy;
+        if (aub_stream::EngineType::ENGINE_BCS != productHelper.getDefaultCopyEngine()) {
+            engineGroupType = EngineGroupType::copy;
+        }
         cl_command_queue_properties queueProperties[5] = {};
         queueProperties[0] = CL_QUEUE_FAMILY_INTEL;
-        queueProperties[1] = device->getEngineGroupIndexFromEngineGroupType(EngineGroupType::linkedCopy);
+        queueProperties[1] = device->getEngineGroupIndexFromEngineGroupType(engineGroupType);
         queueProperties[2] = CL_QUEUE_INDEX_INTEL;
         queueProperties[3] = linkBcsIndex;
         auto queue = createQueue(queueProperties);
@@ -598,13 +628,10 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenBcsSelectedWithQueueFamiliesWhe
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
 
     constexpr auto linkBcsType = aub_stream::ENGINE_BCS6;
     constexpr auto linkBcsIndex = 5;
@@ -647,13 +674,10 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenBcsSelectedWithForceBcsEngineIn
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
 
     constexpr auto linkBcsType = aub_stream::ENGINE_BCS5;
     constexpr auto linkBcsIndex = 5;
@@ -696,13 +720,10 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenBcsSelectedWithQueueFamiliesAnd
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
 
     constexpr auto linkBcsType = aub_stream::ENGINE_BCS6;
     constexpr auto linkBcsIndex = 5;
@@ -746,13 +767,10 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenOneBcsEngineInQueueWhenSelectin
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
 
     constexpr auto linkBcsType = aub_stream::ENGINE_BCS6;
     auto queue = createQueueWithEngines({linkBcsType});
@@ -793,47 +811,26 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenMultipleEnginesInQueueWhenSelec
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
     srcGraphicsAllocation.memoryPool = MemoryPool::localMemory;
     dstGraphicsAllocation.memoryPool = MemoryPool::localMemory;
     CsrSelectionArgs args{CL_COMMAND_COPY_BUFFER, &srcMemObj, &dstMemObj, 0u, nullptr};
 
-    const auto &productHelper = device->getRootDeviceEnvironment().getProductHelper();
-    auto isBCS0Enabled = (aub_stream::ENGINE_BCS == productHelper.getDefaultCopyEngine());
     {
-        auto queue = isBCS0Enabled ? createQueueWithEngines({aub_stream::ENGINE_BCS,
-                                                             aub_stream::ENGINE_BCS1,
-                                                             aub_stream::ENGINE_BCS2,
-                                                             aub_stream::ENGINE_BCS3,
-                                                             aub_stream::ENGINE_BCS4,
-                                                             aub_stream::ENGINE_BCS5,
-                                                             aub_stream::ENGINE_BCS6,
-                                                             aub_stream::ENGINE_BCS7,
-                                                             aub_stream::ENGINE_BCS8})
-                                   : createQueueWithEngines({aub_stream::ENGINE_BCS1,
-                                                             aub_stream::ENGINE_BCS2,
-                                                             aub_stream::ENGINE_BCS3,
-                                                             aub_stream::ENGINE_BCS4,
-                                                             aub_stream::ENGINE_BCS5,
-                                                             aub_stream::ENGINE_BCS6,
-                                                             aub_stream::ENGINE_BCS7,
-                                                             aub_stream::ENGINE_BCS8});
+        auto &&allEngines = getAllRegularBcsEngines();
+        EXPECT_LE(2u, allEngines.size());
+        auto queue = createQueueWithEngines(allEngines);
+
         CommandStreamReceiver &selectedCsr = queue->selectCsrForBuiltinOperation(args);
         EXPECT_EQ(&queue->getGpgpuCommandStreamReceiver(), &selectedCsr);
     }
     {
-        auto queue = createQueueWithEngines({
-            aub_stream::ENGINE_BCS5,
-            aub_stream::ENGINE_BCS6,
-            aub_stream::ENGINE_BCS7,
-            aub_stream::ENGINE_BCS8,
-        });
+        auto &&halfEngines = getHalfOfRegularBcsEngines();
+        EXPECT_LE(2u, halfEngines.size());
+        auto queue = createQueueWithEngines(halfEngines);
         CommandStreamReceiver &selectedCsr = queue->selectCsrForBuiltinOperation(args);
         EXPECT_EQ(&queue->getGpgpuCommandStreamReceiver(), &selectedCsr);
     }
@@ -843,13 +840,51 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenMultipleEnginesInQueueWhenSelec
     DebugManagerStateRestore restore{};
     debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
 
-    BuiltinOpParams builtinOpParams{};
     MockGraphicsAllocation srcGraphicsAllocation{};
     MockGraphicsAllocation dstGraphicsAllocation{};
     MockBuffer srcMemObj{srcGraphicsAllocation};
     MockBuffer dstMemObj{dstGraphicsAllocation};
-    builtinOpParams.srcMemObj = &srcMemObj;
-    builtinOpParams.dstMemObj = &dstMemObj;
+    srcGraphicsAllocation.memoryPool = MemoryPool::system4KBPages;
+    dstGraphicsAllocation.memoryPool = MemoryPool::localMemory;
+    CsrSelectionArgs args{CL_COMMAND_COPY_BUFFER, &srcMemObj, &dstMemObj, 0u, nullptr};
+
+    const auto &productHelper = device->getRootDeviceEnvironment().getProductHelper();
+    auto isBCS0Enabled = (aub_stream::ENGINE_BCS == productHelper.getDefaultCopyEngine());
+    {
+        auto &&allEngines = getAllRegularBcsEngines();
+        EXPECT_LE(2u, allEngines.size());
+        auto queue = createQueueWithEngines(allEngines);
+
+        queue->bcsInitialized = false;
+
+        const auto nextCopyEngine = isBCS0Enabled ? aub_stream::ENGINE_BCS1 : aub_stream::ENGINE_BCS4;
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(aub_stream::ENGINE_BCS2), &queue->selectCsrForBuiltinOperation(args));
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(nextCopyEngine), &queue->selectCsrForBuiltinOperation(args));
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(aub_stream::ENGINE_BCS2), &queue->selectCsrForBuiltinOperation(args));
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(nextCopyEngine), &queue->selectCsrForBuiltinOperation(args));
+    }
+}
+
+HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenHighPriorityQueueAndNoHpCopyEngineWhenSelectingCsrForNonLocalToLocalOperationThenRegularBcsIsUsed, IsAtLeastXeHpcCore) {
+    context.reset(nullptr);
+    clDevice.reset(nullptr);
+
+    DebugManagerStateRestore restore{};
+    debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
+    debugManager.flags.ContextGroupSize.set(0);
+
+    HardwareInfo hwInfo = *::defaultHwInfo;
+    hwInfo.capabilityTable.blitterOperationsSupported = true;
+    hwInfo.featureTable.ftrBcsInfo = maxNBitValue(5);
+
+    device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo);
+    clDevice = std::make_unique<MockClDevice>(device);
+    context = std::make_unique<MockContext>(clDevice.get());
+
+    MockGraphicsAllocation srcGraphicsAllocation{};
+    MockGraphicsAllocation dstGraphicsAllocation{};
+    MockBuffer srcMemObj{srcGraphicsAllocation};
+    MockBuffer dstMemObj{dstGraphicsAllocation};
     srcGraphicsAllocation.memoryPool = MemoryPool::system4KBPages;
     dstGraphicsAllocation.memoryPool = MemoryPool::localMemory;
     CsrSelectionArgs args{CL_COMMAND_COPY_BUFFER, &srcMemObj, &dstMemObj, 0u, nullptr};
@@ -861,31 +896,93 @@ HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenMultipleEnginesInQueueWhenSelec
                                                              aub_stream::ENGINE_BCS1,
                                                              aub_stream::ENGINE_BCS2,
                                                              aub_stream::ENGINE_BCS3,
-                                                             aub_stream::ENGINE_BCS4,
-                                                             aub_stream::ENGINE_BCS5,
-                                                             aub_stream::ENGINE_BCS6,
-                                                             aub_stream::ENGINE_BCS7,
-                                                             aub_stream::ENGINE_BCS8})
+                                                             aub_stream::ENGINE_BCS4})
                                    : createQueueWithEngines({aub_stream::ENGINE_BCS1,
                                                              aub_stream::ENGINE_BCS2,
                                                              aub_stream::ENGINE_BCS3,
-                                                             aub_stream::ENGINE_BCS4,
-                                                             aub_stream::ENGINE_BCS5,
-                                                             aub_stream::ENGINE_BCS6,
-                                                             aub_stream::ENGINE_BCS7,
-                                                             aub_stream::ENGINE_BCS8});
+                                                             aub_stream::ENGINE_BCS4});
         queue->bcsInitialized = false;
+        queue->priority = QueuePriority::high;
+
+        const auto &gfxCoreHelper = *device->getRootDeviceEnvironment().gfxCoreHelper.get();
+        auto hpEngine = gfxCoreHelper.getDefaultHpCopyEngine(*device->getRootDeviceEnvironment().getMutableHardwareInfo());
+        EXPECT_EQ(hpEngine, aub_stream::EngineType::NUM_ENGINES);
 
         const auto nextCopyEngine = isBCS0Enabled ? aub_stream::ENGINE_BCS1 : aub_stream::ENGINE_BCS4;
-        EXPECT_EQ(queue->getBcsCommandStreamReceiver(aub_stream::ENGINE_BCS2), &queue->selectCsrForBuiltinOperation(args));
-        EXPECT_EQ(queue->getBcsCommandStreamReceiver(nextCopyEngine), &queue->selectCsrForBuiltinOperation(args));
-        EXPECT_EQ(queue->getBcsCommandStreamReceiver(aub_stream::ENGINE_BCS2), &queue->selectCsrForBuiltinOperation(args));
-        EXPECT_EQ(queue->getBcsCommandStreamReceiver(nextCopyEngine), &queue->selectCsrForBuiltinOperation(args));
+        auto bcs2 = &queue->selectCsrForBuiltinOperation(args);
+        auto bcsNext = &queue->selectCsrForBuiltinOperation(args);
+
+        EXPECT_FALSE(bcs2->getOsContext().isHighPriority());
+        EXPECT_FALSE(bcs2->getOsContext().isLowPriority());
+        EXPECT_FALSE(bcsNext->getOsContext().isHighPriority());
+        EXPECT_FALSE(bcsNext->getOsContext().isLowPriority());
+
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(aub_stream::ENGINE_BCS2), bcs2);
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(nextCopyEngine), bcsNext);
+        EXPECT_EQ(bcs2, &queue->selectCsrForBuiltinOperation(args));
+        EXPECT_EQ(bcsNext, &queue->selectCsrForBuiltinOperation(args));
+    }
+}
+
+HWTEST2_F(BcsCsrSelectionCommandQueueTests, givenContextGroupAndHpQueueWhenSelectingCsrThenHpBcsCsrIsReturned, IsAtLeastXe2HpgCore) {
+    context.reset(nullptr);
+    clDevice.reset(nullptr);
+
+    DebugManagerStateRestore restore{};
+    debugManager.flags.EnableBlitterForEnqueueOperations.set(1);
+    debugManager.flags.ContextGroupSize.set(8);
+
+    HardwareInfo hwInfo = *::defaultHwInfo;
+    hwInfo.capabilityTable.blitterOperationsSupported = true;
+    hwInfo.featureTable.ftrBcsInfo = maxNBitValue(3);
+
+    device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo);
+    clDevice = std::make_unique<MockClDevice>(device);
+    context = std::make_unique<MockContext>(clDevice.get());
+
+    const auto &gfxCoreHelper = *device->getRootDeviceEnvironment().gfxCoreHelper.get();
+    auto hpEngine = gfxCoreHelper.getDefaultHpCopyEngine(hwInfo);
+    if (hpEngine == aub_stream::EngineType::NUM_ENGINES) {
+        GTEST_SKIP();
+    }
+
+    MockGraphicsAllocation srcGraphicsAllocation{};
+    MockGraphicsAllocation dstGraphicsAllocation{};
+    MockBuffer srcMemObj{srcGraphicsAllocation};
+    MockBuffer dstMemObj{dstGraphicsAllocation};
+    srcGraphicsAllocation.memoryPool = MemoryPool::system4KBPages;
+    dstGraphicsAllocation.memoryPool = MemoryPool::localMemory;
+    CsrSelectionArgs args{CL_COMMAND_COPY_BUFFER, &srcMemObj, &dstMemObj, 0u, nullptr};
+
+    {
+        auto queue = createQueue(nullptr);
+
+        queue->bcsInitialized = false;
+        queue->priority = QueuePriority::high;
+
+        auto &hpCsr1 = queue->selectCsrForBuiltinOperation(args);
+
+        EXPECT_EQ(queue->getBcsCommandStreamReceiver(hpEngine), &hpCsr1);
+
+        EXPECT_TRUE(hpCsr1.getOsContext().getIsPrimaryEngine());
+        EXPECT_TRUE(hpCsr1.getOsContext().isHighPriority());
+
+        auto queue2 = createQueue(nullptr);
+
+        queue2->bcsInitialized = false;
+        queue2->priority = QueuePriority::high;
+
+        auto &hpCsr2 = queue2->selectCsrForBuiltinOperation(args);
+
+        EXPECT_FALSE(hpCsr2.getOsContext().getIsPrimaryEngine());
+        EXPECT_TRUE(hpCsr2.getOsContext().isHighPriority());
+
+        ASSERT_NE(nullptr, hpCsr2.getOsContext().getPrimaryContext());
+        EXPECT_EQ(&hpCsr1.getOsContext(), hpCsr2.getOsContext().getPrimaryContext());
     }
 }
 
 HWTEST2_F(OoqCommandQueueHwBlitTest, givenBarrierBeforeFirstKernelWhenEnqueueNDRangeThenProgramBarrierBeforeGlobalAllocation, IsPVC) {
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using STATE_SYSTEM_MEM_FENCE_ADDRESS = typename FamilyType::STATE_SYSTEM_MEM_FENCE_ADDRESS;
     using MI_MEM_FENCE = typename FamilyType::MI_MEM_FENCE;
 

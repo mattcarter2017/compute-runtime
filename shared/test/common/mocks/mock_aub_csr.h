@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -60,6 +60,7 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
     using AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletionTaskCount;
     using AUBCommandStreamReceiverHw<GfxFamily>::getParametersForMemory;
     using AUBCommandStreamReceiverHw<GfxFamily>::writeMemory;
+    using AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletion;
     using AUBCommandStreamReceiverHw<GfxFamily>::AUBCommandStreamReceiverHw;
 
     CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
@@ -68,6 +69,14 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
         recordedDispatchFlags = dispatchFlags;
 
         return AUBCommandStreamReceiverHw<GfxFamily>::flushTask(commandStream, commandStreamStart, dsh, ioh, ssh, taskLevel, dispatchFlags, device);
+    }
+
+    CompletionStamp flushTaskStateless(LinearStream &commandStream, size_t commandStreamStart,
+                                       const IndirectHeap *dsh, const IndirectHeap *ioh, const IndirectHeap *ssh,
+                                       TaskCountType taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
+        recordedDispatchFlags = dispatchFlags;
+
+        return AUBCommandStreamReceiverHw<GfxFamily>::flushTaskStateless(commandStream, commandStreamStart, dsh, ioh, ssh, taskLevel, dispatchFlags, device);
     }
 
     DispatchMode peekDispatchMode() const {
@@ -93,6 +102,10 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
         AUBCommandStreamReceiverHw<GfxFamily>::writeMemory(gpuAddress, cpuAddress, size, memoryBank, entryBits);
         writeMemoryCalled = true;
     }
+    bool writeMemory(GraphicsAllocation &gfxAllocation) override {
+        writeMemoryGfxAllocCalled = true;
+        return AUBCommandStreamReceiverHw<GfxFamily>::writeMemory(gfxAllocation);
+    }
     void writeMMIO(uint32_t offset, uint32_t value) override {
         AUBCommandStreamReceiverHw<GfxFamily>::writeMMIO(offset, value);
         writeMMIOCalled = true;
@@ -108,10 +121,12 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
         writeMemoryWithAubManagerCalled = true;
     }
 
-    void pollForCompletion() override {
-        AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletion();
+    void pollForCompletion(bool skipTaskCountCheck) override {
+        AUBCommandStreamReceiverHw<GfxFamily>::pollForCompletion(skipTaskCountCheck);
         pollForCompletionCalled = true;
+        skipTaskCountCheckForCompletionPoll = skipTaskCountCheck;
     }
+
     bool expectMemoryEqual(void *gfxAddress, const void *srcAddress, size_t length) override {
         expectMemoryEqualCalled = true;
         return AUBCommandStreamReceiverHw<GfxFamily>::expectMemoryEqual(gfxAddress, srcAddress, length);
@@ -146,6 +161,7 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
     bool initProgrammingFlagsCalled = false;
     bool initializeEngineCalled = false;
     bool writeMemoryCalled = false;
+    bool writeMemoryGfxAllocCalled = false;
     bool writeMemoryWithAubManagerCalled = false;
     bool writeMMIOCalled = false;
     bool submitBatchBufferCalled = false;
@@ -155,6 +171,7 @@ struct MockAubCsr : public AUBCommandStreamReceiverHw<GfxFamily> {
     bool expectMemoryCompressedCalled = false;
     bool addAubCommentCalled = false;
     bool dumpAllocationCalled = false;
+    bool skipTaskCountCheckForCompletionPoll = false;
 
     void initFile(const std::string &fileName) override {
         fileIsOpen = true;

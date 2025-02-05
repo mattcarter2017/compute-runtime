@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020-2023 Intel Corporation
+# Copyright (C) 2020-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -29,7 +29,11 @@ if(NOT DEFINED L0_BLACK_BOX_OCLOC_HEADER_DIR)
 endif()
 
 target_link_libraries(${L0_BLACK_BOX_TEST_SHARED_LIB} PUBLIC ocloc_lib)
-target_include_directories(${L0_BLACK_BOX_TEST_SHARED_LIB} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/common ${L0_BLACK_BOX_OCLOC_HEADER_DIR})
+target_include_directories(${L0_BLACK_BOX_TEST_SHARED_LIB} PUBLIC
+                           ${CMAKE_CURRENT_SOURCE_DIR}/common
+                           ${L0_BLACK_BOX_OCLOC_HEADER_DIR}
+                           ${NEO_SOURCE_DIR}/level_zero/include
+)
 
 set_target_properties(${L0_BLACK_BOX_TEST_SHARED_LIB} PROPERTIES FOLDER ${L0_BLACK_BOX_TEST_PROJECT_FOLDER})
 
@@ -95,7 +99,13 @@ foreach(TEST_NAME ${TEST_TARGETS})
     endif()
   endif()
 
-  add_executable(${TEST_NAME} ${TEST_NAME}.cpp)
+  if(${TEST_NAME} STREQUAL "zello_bindless_kernel")
+    set(EXTRA_SOURCES ${NEO_SOURCE_DIR}/level_zero/core/source/image/image_format_desc_helper.cpp)
+  endif()
+
+  add_executable(${TEST_NAME} ${TEST_NAME}.cpp
+                 ${EXTRA_SOURCES}
+  )
 
   set_target_properties(${TEST_NAME}
                         PROPERTIES
@@ -104,7 +114,6 @@ foreach(TEST_NAME ${TEST_TARGETS})
                         VS_DEBUGGER_WORKING_DIRECTORY "${TargetDir}"
   )
 
-  add_dependencies(${TEST_NAME} ${TARGET_NAME_L0})
   target_link_libraries(${TEST_NAME} PUBLIC ${TARGET_NAME_L0})
 
   set_target_properties(${TEST_NAME} PROPERTIES FOLDER ${L0_BLACK_BOX_TEST_PROJECT_FOLDER})

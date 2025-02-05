@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -54,6 +54,26 @@ bool AILConfigurationHw<IGFX_DG2>::useLegacyValidationLogic() {
         return this->processName == appName;
     });
     return it != applicationsLegacyValidationPathDg2.end() ? true : false;
+}
+
+template <>
+inline void AILConfigurationHw<IGFX_DG2>::applyExt(HardwareInfo &hwInfo) {
+    auto search = applicationsForceRcsDg2.find(processName);
+    if (search != applicationsForceRcsDg2.end()) {
+        shouldForceRcs = true;
+    }
+}
+
+template <>
+bool AILConfigurationHw<IGFX_DG2>::isBufferPoolEnabled() {
+    auto iterator = applicationsBufferPoolDisabledXe.find(processName);
+    return iterator == applicationsBufferPoolDisabledXe.end();
+}
+
+template <>
+inline bool AILConfigurationHw<IGFX_DG2>::isFallbackToPatchtokensRequired() {
+    auto iterator = applicationsFallbackToPatchtokensRequiredDg2.find(processName);
+    return iterator != applicationsFallbackToPatchtokensRequiredDg2.end();
 }
 
 template class AILConfigurationHw<IGFX_DG2>;

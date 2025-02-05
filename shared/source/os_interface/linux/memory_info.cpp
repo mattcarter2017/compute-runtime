@@ -15,6 +15,7 @@
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/linux/numa_library.h"
+#include "shared/source/os_interface/product_helper.h"
 
 #include <iostream>
 
@@ -31,7 +32,12 @@ MemoryInfo::MemoryInfo(const RegionContainer &regionInfo, const Drm &inputDrm)
                      return (memoryRegionInfo.region.memoryClass == memoryClassDevice);
                  });
 
-    memPolicySupported = Linux::NumaLibrary::init() && debugManager.flags.EnableHostAllocationMemPolicy.get();
+    populateTileToLocalMemoryRegionIndexMap();
+
+    memPolicySupported = false;
+    if (debugManager.flags.EnableHostAllocationMemPolicy.get()) {
+        memPolicySupported = Linux::NumaLibrary::init();
+    }
     memPolicyMode = debugManager.flags.OverrideHostAllocationMemPolicyMode.get();
 }
 
@@ -63,60 +69,64 @@ void MemoryInfo::assignRegionsFromDistances(const std::vector<DistanceInfo> &dis
 int MemoryInfo::createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) {
     std::vector<unsigned long> memPolicyNodeMask;
     int mode = -1;
+    auto &productHelper = this->drm.getRootDeviceEnvironment().getHelper<ProductHelper>();
+    auto isCoherent = productHelper.isCoherentAllocation(patIndex);
     if (memPolicySupported &&
         isUSMHostAllocation &&
         Linux::NumaLibrary::getMemPolicy(&mode, memPolicyNodeMask)) {
         if (memPolicyMode != -1) {
             mode = memPolicyMode;
         }
-        return this->drm.getIoctlHelper()->createGemExt(memClassInstances, allocSize, handle, patIndex, vmId, pairHandle, isChunked, numOfChunks, mode, memPolicyNodeMask);
+        return this->drm.getIoctlHelper()->createGemExt(memClassInstances, allocSize, handle, patIndex, vmId, pairHandle, isChunked, numOfChunks, mode, memPolicyNodeMask, isCoherent);
     } else {
-        return this->drm.getIoctlHelper()->createGemExt(memClassInstances, allocSize, handle, patIndex, vmId, pairHandle, isChunked, numOfChunks, std::nullopt, std::nullopt);
+        return this->drm.getIoctlHelper()->createGemExt(memClassInstances, allocSize, handle, patIndex, vmId, pairHandle, isChunked, numOfChunks, std::nullopt, std::nullopt, isCoherent);
     }
 }
 
-uint32_t MemoryInfo::getTileIndex(uint32_t memoryBank) {
+uint32_t MemoryInfo::getLocalMemoryRegionIndex(DeviceBitfield deviceBitfield) const {
+    UNRECOVERABLE_IF(deviceBitfield.count() != 1u);
     auto &hwInfo = *this->drm.getRootDeviceEnvironment().getHardwareInfo();
     auto &gfxCoreHelper = this->drm.getRootDeviceEnvironment().getHelper<GfxCoreHelper>();
     auto &productHelper = this->drm.getRootDeviceEnvironment().getHelper<ProductHelper>();
+    bool bankOverrideRequired{gfxCoreHelper.isBankOverrideRequired(hwInfo, productHelper)};
 
-    auto tileIndex = Math::log2(memoryBank);
-    tileIndex = gfxCoreHelper.isBankOverrideRequired(hwInfo, productHelper) ? 0 : tileIndex;
+    uint32_t tileIndex{bankOverrideRequired ? 0u : Math::log2(static_cast<uint64_t>(deviceBitfield.to_ulong()))};
     if (debugManager.flags.OverrideDrmRegion.get() != -1) {
         tileIndex = debugManager.flags.OverrideDrmRegion.get();
     }
-    return tileIndex;
+    UNRECOVERABLE_IF(tileIndex >= tileToLocalMemoryRegionIndexMap.size());
+    return tileToLocalMemoryRegionIndexMap[tileIndex];
 }
 
-MemoryClassInstance MemoryInfo::getMemoryRegionClassAndInstance(uint32_t memoryBank, const HardwareInfo &hwInfo) {
+MemoryClassInstance MemoryInfo::getMemoryRegionClassAndInstance(DeviceBitfield deviceBitfield, const HardwareInfo &hwInfo) {
 
     auto &gfxCoreHelper = this->drm.getRootDeviceEnvironment().getHelper<GfxCoreHelper>();
     if (!gfxCoreHelper.getEnableLocalMemory(hwInfo)) {
-        memoryBank = 0;
+        deviceBitfield = 0u;
     }
 
-    return getMemoryRegion(memoryBank).region;
+    return getMemoryRegion(deviceBitfield).region;
 }
 
-const MemoryRegion &MemoryInfo::getMemoryRegion(uint32_t memoryBank) {
-    if (memoryBank == 0) {
+const MemoryRegion &MemoryInfo::getMemoryRegion(DeviceBitfield deviceBitfield) const {
+    if (deviceBitfield.count() == 0) {
         return systemMemoryRegion;
     }
 
-    auto index = getTileIndex(memoryBank);
+    auto index = getLocalMemoryRegionIndex(deviceBitfield);
 
     UNRECOVERABLE_IF(index >= localMemoryRegions.size());
     return localMemoryRegions[index];
 }
 
-size_t MemoryInfo::getMemoryRegionSize(uint32_t memoryBank) {
+size_t MemoryInfo::getMemoryRegionSize(uint32_t memoryBank) const {
     if (debugManager.flags.PrintMemoryRegionSizes.get()) {
         printRegionSizes();
     }
     return getMemoryRegion(memoryBank).probedSize;
 }
 
-void MemoryInfo::printRegionSizes() {
+void MemoryInfo::printRegionSizes() const {
     for (auto &region : drmQueryRegions) {
         std::cout << "Memory type: " << region.region.memoryClass
                   << ", memory instance: " << region.region.memoryInstance
@@ -124,14 +134,14 @@ void MemoryInfo::printRegionSizes() {
     }
 }
 
-int MemoryInfo::createGemExtWithSingleRegion(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isUSMHostAllocation) {
+int MemoryInfo::createGemExtWithSingleRegion(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isUSMHostAllocation) {
     auto pHwInfo = this->drm.getRootDeviceEnvironment().getHardwareInfo();
     auto regionClassAndInstance = getMemoryRegionClassAndInstance(memoryBanks, *pHwInfo);
     MemRegionsVec region = {regionClassAndInstance};
     std::optional<uint32_t> vmId;
     if (!this->drm.isPerContextVMRequired()) {
-        if (memoryBanks != 0 && debugManager.flags.EnablePrivateBO.get()) {
-            auto tileIndex = getTileIndex(memoryBanks);
+        if (memoryBanks.count() && debugManager.flags.EnablePrivateBO.get()) {
+            auto tileIndex = getLocalMemoryRegionIndex(memoryBanks);
             vmId = this->drm.getVirtualMemoryAddressSpace(tileIndex);
         }
     }
@@ -140,7 +150,7 @@ int MemoryInfo::createGemExtWithSingleRegion(uint32_t memoryBanks, size_t allocS
     return ret;
 }
 
-int MemoryInfo::createGemExtWithMultipleRegions(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, bool isUSMHostAllocation) {
+int MemoryInfo::createGemExtWithMultipleRegions(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, bool isUSMHostAllocation) {
     auto pHwInfo = this->drm.getRootDeviceEnvironment().getHardwareInfo();
     auto banks = std::bitset<4>(memoryBanks);
     MemRegionsVec memRegions{};
@@ -159,14 +169,13 @@ int MemoryInfo::createGemExtWithMultipleRegions(uint32_t memoryBanks, size_t all
     return ret;
 }
 
-int MemoryInfo::createGemExtWithMultipleRegions(uint32_t memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) {
+int MemoryInfo::createGemExtWithMultipleRegions(DeviceBitfield memoryBanks, size_t allocSize, uint32_t &handle, uint64_t patIndex, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, bool isUSMHostAllocation) {
     auto pHwInfo = this->drm.getRootDeviceEnvironment().getHardwareInfo();
-    auto banks = std::bitset<4>(memoryBanks);
     MemRegionsVec memRegions{};
     size_t currentBank = 0;
     size_t i = 0;
-    while (i < banks.count()) {
-        if (banks.test(currentBank)) {
+    while (i < memoryBanks.count()) {
+        if (memoryBanks.test(currentBank)) {
             auto regionClassAndInstance = getMemoryRegionClassAndInstance(1u << currentBank, *pHwInfo);
             memRegions.push_back(regionClassAndInstance);
             i++;

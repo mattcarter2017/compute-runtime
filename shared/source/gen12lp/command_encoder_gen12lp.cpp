@@ -6,6 +6,12 @@
  */
 
 #include "shared/source/command_container/command_encoder.h"
+#include "shared/source/command_container/command_encoder.inl"
+#include "shared/source/command_container/command_encoder_bdw_and_later.inl"
+#include "shared/source/command_container/command_encoder_from_gen12lp_to_xe2_hpg.inl"
+#include "shared/source/command_container/command_encoder_gen12lp_and_xe_hpg.inl"
+#include "shared/source/command_container/command_encoder_pre_xe2_hpg_core.inl"
+#include "shared/source/command_container/command_encoder_tgllp_and_later.inl"
 #include "shared/source/command_stream/stream_properties.h"
 #include "shared/source/gen12lp/hw_cmds_base.h"
 #include "shared/source/gen12lp/reg_configs.h"
@@ -17,12 +23,7 @@
 
 using Family = NEO::Gen12LpFamily;
 
-#include "shared/source/command_container/command_encoder.inl"
-#include "shared/source/command_container/command_encoder_bdw_and_later.inl"
-#include "shared/source/command_container/command_encoder_tgllp_and_later.inl"
-#include "shared/source/command_container/encode_compute_mode_tgllp_and_later.inl"
-#include "shared/source/command_container/image_surface_state/compression_params_bdw_and_later.inl"
-#include "shared/source/command_container/image_surface_state/compression_params_tgllp_and_later.inl"
+#include "shared/source/command_container/command_encoder_heap_addressing.inl"
 #include "shared/source/command_stream/command_stream_receiver.h"
 
 namespace NEO {
@@ -86,11 +87,6 @@ void EncodeSurfaceState<Family>::encodeExtraBufferParams(EncodeSurfaceStateArgs 
 }
 
 template <>
-bool EncodeSurfaceState<Family>::isBindingTablePrefetchPreferred() {
-    return false;
-}
-
-template <>
 void EncodeL3State<Family>::encode(CommandContainer &container, bool enableSLM) {
 }
 
@@ -100,15 +96,19 @@ void EncodeStoreMMIO<Family>::appendFlags(MI_STORE_REGISTER_MEM *storeRegMem, bo
 }
 
 template <>
-void EncodeComputeMode<Family>::adjustPipelineSelect(CommandContainer &container, const NEO::KernelDescriptor &kernelDescriptor) {
+void EncodeSurfaceState<Family>::appendImageCompressionParams(R_SURFACE_STATE *surfaceState, GraphicsAllocation *allocation,
+                                                              GmmHelper *gmmHelper, bool imageFromBuffer, GMM_YUV_PLANE_ENUM plane) {
+}
 
-    PipelineSelectArgs pipelineSelectArgs;
-    pipelineSelectArgs.systolicPipelineSelectMode = kernelDescriptor.kernelAttributes.flags.usesSystolicPipelineSelectMode;
-    pipelineSelectArgs.systolicPipelineSelectSupport = container.systolicModeSupportRef();
+template <>
+inline void EncodeSurfaceState<Family>::encodeExtraCacheSettings(R_SURFACE_STATE *surfaceState, const EncodeSurfaceStateArgs &args) {}
 
-    PreambleHelper<Family>::programPipelineSelect(container.getCommandStream(),
-                                                  pipelineSelectArgs,
-                                                  container.getDevice()->getRootDeviceEnvironment());
+template <>
+inline void EncodeWA<Family>::setAdditionalPipeControlFlagsForNonPipelineStateCommand(PipeControlArgs &args) {}
+
+template <>
+bool EncodeEnableRayTracing<Family>::is48bResourceNeededForRayTracing() {
+    return true;
 }
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,6 +20,7 @@ namespace L0 {
 struct StructuresLookupTable;
 struct DriverHandleImp;
 struct Device;
+struct IpcCounterBasedEventData;
 
 struct ContextImp : Context {
     ContextImp(DriverHandle *driverHandle);
@@ -66,6 +67,7 @@ struct ContextImp : Context {
                                  void **ptr) override;
     ze_result_t getIpcHandleFromFd(uint64_t handle, ze_ipc_mem_handle_t *pIpcHandle) override;
     ze_result_t getFdFromIpcHandle(ze_ipc_mem_handle_t ipcHandle, uint64_t *pHandle) override;
+    ze_result_t lockMemory(ze_device_handle_t hDevice, void *ptr, size_t size) override;
 
     ze_result_t
     getIpcMemHandles(
@@ -135,6 +137,9 @@ struct ContextImp : Context {
                                              size_t *outSize) override;
     ze_result_t openEventPoolIpcHandle(const ze_ipc_event_pool_handle_t &ipcEventPoolHandle,
                                        ze_event_pool_handle_t *eventPoolHandle) override;
+
+    ze_result_t openCounterBasedIpcHandle(const IpcCounterBasedEventData &ipcData, ze_event_handle_t *phEvent);
+
     ze_result_t createEventPool(const ze_event_pool_desc_t *desc,
                                 uint32_t numDevices,
                                 ze_device_handle_t *phDevices,
@@ -174,6 +179,13 @@ struct ContextImp : Context {
     }
     NEO::VirtualMemoryReservation *findSupportedVirtualReservation(const void *ptr, size_t size);
     ze_result_t checkMemSizeLimit(Device *inDevice, size_t size, bool relaxedSizeAllowed, void **ptr);
+
+    ze_result_t getPitchFor2dImage(
+        ze_device_handle_t hDevice,
+        size_t imageWidth,
+        size_t imageHeight,
+        unsigned int elementSizeInBytes,
+        size_t *rowPitch) override;
 
   protected:
     ze_result_t getIpcMemHandlesImpl(const void *ptr, uint32_t *numIpcHandles, ze_ipc_mem_handle_t *pIpcHandles);

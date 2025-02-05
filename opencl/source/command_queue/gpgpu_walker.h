@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,18 +28,12 @@ class GpgpuWalkerHelper {
     using DefaultWalkerType = typename GfxFamily::DefaultWalkerType;
 
   public:
-    static void applyWADisableLSQCROPERFforOCL(LinearStream *pCommandStream,
-                                               const Kernel &kernel,
-                                               bool disablePerfMode);
-
-    static size_t getSizeForWADisableLSQCROPERFforOCL(const Kernel *pKernel);
     static size_t getSizeForWaDisableRccRhwoOptimization(const Kernel *pKernel);
 
     template <typename WalkerType>
     static size_t setGpgpuWalkerThreadData(
         WalkerType *walkerCmd,
         const KernelDescriptor &kernelDescriptor,
-        const size_t globalOffsets[3],
         const size_t startWorkGroups[3],
         const size_t numWorkGroups[3],
         const size_t localWorkSizesIn[3],
@@ -80,11 +74,8 @@ class GpgpuWalkerHelper {
   private:
     using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
 
-    static void addAluReadModifyWriteRegister(
-        LinearStream *pCommandStream,
-        uint32_t aluRegister,
-        AluRegisters operation,
-        uint32_t mask);
+    template <typename WalkerType>
+    static void setSystolicModeEnable(WalkerType *walkerCmd);
 };
 
 template <typename GfxFamily>

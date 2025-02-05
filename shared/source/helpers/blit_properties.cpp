@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,6 +12,18 @@
 #include "shared/source/memory_manager/surface.h"
 
 namespace NEO {
+
+BlitProperties BlitProperties::constructPropertiesForMemoryFill(GraphicsAllocation *dstAllocation, size_t size, uint32_t *pattern, size_t patternSize, size_t offset) {
+    return {
+        .blitDirection = BlitterConstants::BlitDirection::fill,
+        .dstAllocation = dstAllocation,
+        .fillPattern = pattern,
+        .copySize = {size, 1, 1},
+        .dstOffset = {offset, 0, 0},
+        .srcOffset = {0, 0, 0},
+        .fillPatternSize = patternSize,
+        .isSystemMemoryPoolUsed = MemoryPoolHelper::isSystemMemoryPool(dstAllocation->getMemoryPool())};
+}
 
 BlitProperties BlitProperties::constructPropertiesForReadWrite(BlitterConstants::BlitDirection blitDirection,
                                                                CommandStreamReceiver &commandStreamReceiver,
@@ -42,51 +54,48 @@ BlitProperties BlitProperties::constructPropertiesForReadWrite(BlitterConstants:
     if (BlitterConstants::BlitDirection::hostPtrToBuffer == blitDirection ||
         BlitterConstants::BlitDirection::hostPtrToImage == blitDirection) {
         return {
-            nullptr,                       // outputTimestampPacket
-            nullptr,                       // multiRootDeviceEventSync
-            blitDirection,                 // blitDirection
-            {},                            // csrDependencies
-            AuxTranslationDirection::none, // auxTranslationDirection
-            memObjAllocation,              // dstAllocation
-            hostAllocation,                // srcAllocation
-            clearColorAllocation,          // clearColorAllocation
-            memObjGpuVa,                   // dstGpuAddress
-            hostAllocGpuVa,                // srcGpuAddress
-            copySize,                      // copySize
-            copyOffset,                    // dstOffset
-            hostPtrOffset,                 // srcOffset
-            true,
-            gpuRowPitch,    // dstRowPitch
-            gpuSlicePitch,  // dstSlicePitch
-            hostRowPitch,   // srcRowPitch
-            hostSlicePitch, // srcSlicePitch
-            copySize,       // dstSize
-            copySize        // srcSize
-        };
-
+            .blitSyncProperties = {},
+            .csrDependencies = {},
+            .multiRootDeviceEventSync = nullptr,
+            .blitDirection = blitDirection,
+            .auxTranslationDirection = AuxTranslationDirection::none,
+            .dstAllocation = memObjAllocation,
+            .srcAllocation = hostAllocation,
+            .clearColorAllocation = clearColorAllocation,
+            .dstGpuAddress = memObjGpuVa,
+            .srcGpuAddress = hostAllocGpuVa,
+            .copySize = copySize,
+            .dstOffset = copyOffset,
+            .srcOffset = hostPtrOffset,
+            .dstRowPitch = gpuRowPitch,
+            .dstSlicePitch = gpuSlicePitch,
+            .srcRowPitch = hostRowPitch,
+            .srcSlicePitch = hostSlicePitch,
+            .dstSize = copySize,
+            .srcSize = copySize,
+            .isSystemMemoryPoolUsed = true};
     } else {
         return {
-            nullptr,                       // outputTimestampPacket
-            nullptr,                       // multiRootDeviceEventSync
-            blitDirection,                 // blitDirection
-            {},                            // csrDependencies
-            AuxTranslationDirection::none, // auxTranslationDirection
-            hostAllocation,                // dstAllocation
-            memObjAllocation,              // srcAllocation
-            clearColorAllocation,          // clearColorAllocation
-            hostAllocGpuVa,                // dstGpuAddress
-            memObjGpuVa,                   // srcGpuAddress
-            copySize,                      // copySize
-            hostPtrOffset,                 // dstOffset
-            copyOffset,                    // srcOffset
-            true,
-            hostRowPitch,   // dstRowPitch
-            hostSlicePitch, // dstSlicePitch
-            gpuRowPitch,    // srcRowPitch
-            gpuSlicePitch,  // srcSlicePitch
-            copySize,       // dstSize
-            copySize        // srcSize
-        };
+            .blitSyncProperties = {},
+            .csrDependencies = {},
+            .multiRootDeviceEventSync = nullptr,
+            .blitDirection = blitDirection,
+            .auxTranslationDirection = AuxTranslationDirection::none,
+            .dstAllocation = hostAllocation,
+            .srcAllocation = memObjAllocation,
+            .clearColorAllocation = clearColorAllocation,
+            .dstGpuAddress = hostAllocGpuVa,
+            .srcGpuAddress = memObjGpuVa,
+            .copySize = copySize,
+            .dstOffset = hostPtrOffset,
+            .srcOffset = copyOffset,
+            .dstRowPitch = hostRowPitch,
+            .dstSlicePitch = hostSlicePitch,
+            .srcRowPitch = gpuRowPitch,
+            .srcSlicePitch = gpuSlicePitch,
+            .dstSize = copySize,
+            .srcSize = copySize,
+            .isSystemMemoryPoolUsed = true};
     };
 }
 
@@ -98,24 +107,24 @@ BlitProperties BlitProperties::constructPropertiesForCopy(GraphicsAllocation *ds
     copySize.z = copySize.z ? copySize.z : 1;
 
     return {
-        nullptr,                                         // outputTimestampPacket
-        nullptr,                                         // multiRootDeviceEventSync
-        BlitterConstants::BlitDirection::bufferToBuffer, // blitDirection
-        {},                                              // csrDependencies
-        AuxTranslationDirection::none,                   // auxTranslationDirection
-        dstAllocation,                                   // dstAllocation
-        srcAllocation,                                   // srcAllocation
-        clearColorAllocation,                            // clearColorAllocation
-        dstAllocation->getGpuAddress(),                  // dstGpuAddress
-        srcAllocation->getGpuAddress(),                  // srcGpuAddress
-        copySize,                                        // copySize
-        dstOffset,                                       // dstOffset
-        srcOffset,                                       // srcOffset
-        MemoryPoolHelper::isSystemMemoryPool(dstAllocation->getMemoryPool(), srcAllocation->getMemoryPool()),
-        dstRowPitch,    // dstRowPitch
-        dstSlicePitch,  // dstSlicePitch
-        srcRowPitch,    // srcRowPitch
-        srcSlicePitch}; // srcSlicePitch
+        .blitSyncProperties = {},
+        .csrDependencies = {},
+        .multiRootDeviceEventSync = nullptr,
+        .blitDirection = BlitterConstants::BlitDirection::bufferToBuffer,
+        .auxTranslationDirection = AuxTranslationDirection::none,
+        .dstAllocation = dstAllocation,
+        .srcAllocation = srcAllocation,
+        .clearColorAllocation = clearColorAllocation,
+        .dstGpuAddress = dstAllocation->getGpuAddress(),
+        .srcGpuAddress = srcAllocation->getGpuAddress(),
+        .copySize = copySize,
+        .dstOffset = dstOffset,
+        .srcOffset = srcOffset,
+        .dstRowPitch = dstRowPitch,
+        .dstSlicePitch = dstSlicePitch,
+        .srcRowPitch = srcRowPitch,
+        .srcSlicePitch = srcSlicePitch,
+        .isSystemMemoryPoolUsed = MemoryPoolHelper::isSystemMemoryPool(dstAllocation->getMemoryPool(), srcAllocation->getMemoryPool())};
 }
 
 BlitProperties BlitProperties::constructPropertiesForAuxTranslation(AuxTranslationDirection auxTranslationDirection,
@@ -123,20 +132,18 @@ BlitProperties BlitProperties::constructPropertiesForAuxTranslation(AuxTranslati
 
     auto allocationSize = allocation->getUnderlyingBufferSize();
     return {
-        nullptr,                                         // outputTimestampPacket
-        nullptr,                                         // multiRootDeviceEventSync
-        BlitterConstants::BlitDirection::bufferToBuffer, // blitDirection
-        {},                                              // csrDependencies
-        auxTranslationDirection,                         // auxTranslationDirection
-        allocation,                                      // dstAllocation
-        allocation,                                      // srcAllocation
-        clearColorAllocation,                            // clearColorAllocation
-        allocation->getGpuAddress(),                     // dstGpuAddress
-        allocation->getGpuAddress(),                     // srcGpuAddress
-        {allocationSize, 1, 1},                          // copySize
-        0,                                               // dstOffset
-        0,                                               // srcOffset
-        MemoryPoolHelper::isSystemMemoryPool(allocation->getMemoryPool())};
+        .blitSyncProperties = {},
+        .csrDependencies = {},
+        .multiRootDeviceEventSync = nullptr,
+        .blitDirection = BlitterConstants::BlitDirection::bufferToBuffer,
+        .auxTranslationDirection = auxTranslationDirection,
+        .dstAllocation = allocation,
+        .srcAllocation = allocation,
+        .clearColorAllocation = clearColorAllocation,
+        .dstGpuAddress = allocation->getGpuAddress(),
+        .srcGpuAddress = allocation->getGpuAddress(),
+        .copySize = {allocationSize, 1, 1},
+        .isSystemMemoryPoolUsed = MemoryPoolHelper::isSystemMemoryPool(allocation->getMemoryPool())};
 }
 
 void BlitProperties::setupDependenciesForAuxTranslation(BlitPropertiesContainer &blitPropertiesContainer, TimestampPacketDependencies &timestampPacketDependencies,
@@ -145,8 +152,11 @@ void BlitProperties::setupDependenciesForAuxTranslation(BlitPropertiesContainer 
     auto numObjects = blitPropertiesContainer.size() / 2;
 
     for (size_t i = 0; i < numObjects; i++) {
-        blitPropertiesContainer[i].outputTimestampPacket = timestampPacketDependencies.auxToNonAuxNodes.peekNodes()[i];
-        blitPropertiesContainer[i + numObjects].outputTimestampPacket = timestampPacketDependencies.nonAuxToAuxNodes.peekNodes()[i];
+        blitPropertiesContainer[i].blitSyncProperties.outputTimestampPacket = timestampPacketDependencies.auxToNonAuxNodes.peekNodes()[i];
+        blitPropertiesContainer[i].blitSyncProperties.syncMode = BlitSyncMode::immediate;
+
+        blitPropertiesContainer[i + numObjects].blitSyncProperties.outputTimestampPacket = timestampPacketDependencies.nonAuxToAuxNodes.peekNodes()[i];
+        blitPropertiesContainer[i + numObjects].blitSyncProperties.syncMode = BlitSyncMode::immediate;
     }
 
     auto nodesAllocator = gpguCsr.getTimestampPacketAllocator();

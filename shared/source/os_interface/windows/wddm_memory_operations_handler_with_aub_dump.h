@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,7 +27,7 @@ class WddmMemoryOperationsHandlerWithAubDump : public BaseOperationsHandler {
             auto hardwareInfo = rootDeviceEnvironment.getMutableHardwareInfo();
             auto localMemoryEnabled = gfxCoreHelper.getEnableLocalMemory(*hardwareInfo);
             rootDeviceEnvironment.initGmm();
-            rootDeviceEnvironment.initAubCenter(localMemoryEnabled, "", static_cast<CommandStreamReceiverType>(CommandStreamReceiverType::CSR_HW_WITH_AUB));
+            rootDeviceEnvironment.initAubCenter(localMemoryEnabled, "", static_cast<CommandStreamReceiverType>(CommandStreamReceiverType::hardwareWithAub));
         }
 
         const auto aubCenter = rootDeviceEnvironment.aubCenter.get();
@@ -36,14 +36,19 @@ class WddmMemoryOperationsHandlerWithAubDump : public BaseOperationsHandler {
 
     ~WddmMemoryOperationsHandlerWithAubDump() override = default;
 
-    MemoryOperationsStatus makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) override {
-        aubMemoryOperationsHandler->makeResident(device, gfxAllocations);
-        return BaseOperationsHandler::makeResident(device, gfxAllocations);
+    MemoryOperationsStatus makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations, bool isDummyExecNeeded) override {
+        aubMemoryOperationsHandler->makeResident(device, gfxAllocations, isDummyExecNeeded);
+        return BaseOperationsHandler::makeResident(device, gfxAllocations, isDummyExecNeeded);
     }
 
     MemoryOperationsStatus evict(Device *device, GraphicsAllocation &gfxAllocation) override {
         aubMemoryOperationsHandler->evict(device, gfxAllocation);
         return BaseOperationsHandler::evict(device, gfxAllocation);
+    }
+
+    MemoryOperationsStatus free(Device *device, GraphicsAllocation &gfxAllocation) override {
+        aubMemoryOperationsHandler->free(device, gfxAllocation);
+        return BaseOperationsHandler::free(device, gfxAllocation);
     }
 
     MemoryOperationsStatus isResident(Device *device, GraphicsAllocation &gfxAllocation) override {
@@ -59,6 +64,10 @@ class WddmMemoryOperationsHandlerWithAubDump : public BaseOperationsHandler {
     MemoryOperationsStatus evictWithinOsContext(OsContext *osContext, GraphicsAllocation &gfxAllocation) override {
         aubMemoryOperationsHandler->evictWithinOsContext(osContext, gfxAllocation);
         return BaseOperationsHandler::evictWithinOsContext(osContext, gfxAllocation);
+    }
+
+    void processFlushResidency(CommandStreamReceiver *csr) override {
+        aubMemoryOperationsHandler->processFlushResidency(csr);
     }
 
   protected:

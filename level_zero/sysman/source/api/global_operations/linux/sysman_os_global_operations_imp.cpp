@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,10 +19,10 @@
 
 #include "level_zero/sysman/source/api/global_operations/sysman_global_operations_imp.h"
 #include "level_zero/sysman/source/shared/firmware_util/sysman_firmware_util.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/pmt/sysman_pmt.h"
 #include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/sysman_const.h"
 
 #include <chrono>
@@ -39,8 +39,6 @@ const std::string LinuxGlobalOperationsImp::subsystemVendorFile("device/subsyste
 const std::string LinuxGlobalOperationsImp::driverFile("device/driver");
 const std::string LinuxGlobalOperationsImp::functionLevelReset("/reset");
 const std::string LinuxGlobalOperationsImp::clientsDir("clients");
-const std::string LinuxGlobalOperationsImp::srcVersionFile("/sys/module/i915/srcversion");
-const std::string LinuxGlobalOperationsImp::agamaVersionFile("/sys/module/i915/agama_version");
 const std::string LinuxGlobalOperationsImp::ueventWedgedFile("/var/lib/libze_intel_gpu/wedged_file");
 
 // Map engine entries(numeric values) present in /sys/class/drm/card<n>/clients/<client_n>/busy,
@@ -54,55 +52,20 @@ static const std::map<int, zes_engine_type_flags_t> engineMap = {
     {3, ZES_ENGINE_TYPE_FLAG_MEDIA},
     {4, ZES_ENGINE_TYPE_FLAG_COMPUTE}};
 
-bool LinuxGlobalOperationsImp::getTelemOffsetAndTelemDir(uint64_t &telemOffset, const std::string &key, std::string &telemDir) {
-    std::string &rootPath = pLinuxSysmanImp->getPciRootPath();
-    if (rootPath.empty()) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Root path has no value \n", __FUNCTION__);
-        return false;
-    }
-
-    std::map<uint32_t, std::string> telemPciPath;
-    NEO::PmtUtil::getTelemNodesInPciPath(std::string_view(rootPath), telemPciPath);
-    uint32_t subDeviceCount = pLinuxSysmanImp->getSubDeviceCount() + 1;
-    if (telemPciPath.size() < subDeviceCount) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Number of telemetry nodes:%d is lessthan %d \n", __FUNCTION__, telemPciPath.size(), subDeviceCount);
-        return false;
-    }
-
-    auto iterator = telemPciPath.begin();
-    telemDir = iterator->second;
-
-    std::array<char, NEO::PmtUtil::guidStringSize> guidString = {};
-    if (!NEO::PmtUtil::readGuid(telemDir, guidString)) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to read GUID from %s \n", __FUNCTION__, telemDir.c_str());
-        return false;
-    }
-
-    uint64_t offset = ULONG_MAX;
-    if (!NEO::PmtUtil::readOffset(telemDir, offset)) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to read offset from %s\n", __FUNCTION__, telemDir.c_str());
-        return false;
-    }
-
-    std::map<std::string, uint64_t> keyOffsetMap;
-    if (ZE_RESULT_SUCCESS == PlatformMonitoringTech::getKeyOffsetMap(guidString.data(), keyOffsetMap)) {
-        auto keyOffset = keyOffsetMap.find(key.c_str());
-        if (keyOffset != keyOffsetMap.end()) {
-            telemOffset = keyOffset->second + offset;
-            return true;
-        }
-    }
-    NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to find keyOffset in keyOffsetMap \n", __FUNCTION__);
-    return false;
-}
-
 bool LinuxGlobalOperationsImp::getSerialNumber(char (&serialNumber)[ZES_STRING_PROPERTY_SIZE]) {
     uint64_t offset = 0;
     std::string telemDir = {};
-    if (!LinuxGlobalOperationsImp::getTelemOffsetAndTelemDir(offset, "PPIN", telemDir)) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to get telemetry offset and directory for PPIN \n", __FUNCTION__);
+
+    if (!PlatformMonitoringTech::getTelemOffsetAndTelemDir(pLinuxSysmanImp, offset, telemDir)) {
         return false;
     }
+
+    uint64_t containerOffset = 0;
+    if (!PlatformMonitoringTech::getTelemOffsetForContainer(pLinuxSysmanImp->getSysmanProductHelper(), telemDir, "PPIN", containerOffset)) {
+        return false;
+    }
+
+    offset += containerOffset;
 
     uint64_t value;
     ssize_t bytesRead = NEO::PmtUtil::readTelem(telemDir.data(), sizeof(uint64_t), offset, &value);
@@ -119,11 +82,19 @@ bool LinuxGlobalOperationsImp::getSerialNumber(char (&serialNumber)[ZES_STRING_P
 bool LinuxGlobalOperationsImp::getBoardNumber(char (&boardNumber)[ZES_STRING_PROPERTY_SIZE]) {
     uint64_t offset = 0;
     std::string telemDir = {};
-    constexpr uint32_t boardNumberSize = 32;
-    if (!LinuxGlobalOperationsImp::getTelemOffsetAndTelemDir(offset, "BoardNumber", telemDir)) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to get telemetry offset and directory for BoardNumber \n", __FUNCTION__);
+
+    if (!PlatformMonitoringTech::getTelemOffsetAndTelemDir(pLinuxSysmanImp, offset, telemDir)) {
         return false;
     }
+
+    uint64_t containerOffset = 0;
+    if (!PlatformMonitoringTech::getTelemOffsetForContainer(pLinuxSysmanImp->getSysmanProductHelper(), telemDir, "BoardNumber", containerOffset)) {
+        return false;
+    }
+
+    offset += containerOffset;
+
+    constexpr uint32_t boardNumberSize = 32;
     std::array<uint8_t, boardNumberSize> value;
     ssize_t bytesRead = NEO::PmtUtil::readTelem(telemDir.data(), boardNumberSize, offset, value.data());
     if (bytesRead == boardNumberSize) {
@@ -148,13 +119,13 @@ void LinuxGlobalOperationsImp::getBrandName(char (&brandName)[ZES_STRING_PROPERT
     std::string strVal;
     ze_result_t result = pSysfsAccess->read(subsystemVendorFile, strVal);
     if (ZE_RESULT_SUCCESS != result) {
-        std::strncpy(brandName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
         return;
     }
     if (strVal.compare(intelPciId) == 0) {
-        std::strncpy(brandName, vendorIntel.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, vendorIntel.data(), ZES_STRING_PROPERTY_SIZE);
     } else {
-        std::strncpy(brandName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(brandName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     }
 }
 
@@ -176,36 +147,22 @@ void LinuxGlobalOperationsImp::getVendorName(char (&vendorName)[ZES_STRING_PROPE
     std::string strVal;
     ze_result_t result = pSysfsAccess->read(vendorFile, strVal);
     if (ZE_RESULT_SUCCESS != result) {
-        std::strncpy(vendorName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(vendorName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
         return;
     }
     if (strVal.compare(intelPciId) == 0) {
-        std::strncpy(vendorName, vendorIntel.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(vendorName, vendorIntel.data(), ZES_STRING_PROPERTY_SIZE);
     } else {
-        std::strncpy(vendorName, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
+        std::strncpy(vendorName, unknown.data(), ZES_STRING_PROPERTY_SIZE);
     }
 }
 
 void LinuxGlobalOperationsImp::getDriverVersion(char (&driverVersion)[ZES_STRING_PROPERTY_SIZE]) {
-    std::string strVal;
-    std::strncpy(driverVersion, unknown.c_str(), ZES_STRING_PROPERTY_SIZE);
-    ze_result_t result = pFsAccess->read(agamaVersionFile, strVal);
-    if (ZE_RESULT_SUCCESS != result) {
-        if (ZE_RESULT_ERROR_NOT_AVAILABLE != result) {
-            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to read driver version from %s and returning error:0x%x \n", __FUNCTION__, agamaVersionFile.c_str(), result);
-            return;
-        }
-        result = pFsAccess->read(srcVersionFile, strVal);
-        if (ZE_RESULT_SUCCESS != result) {
-            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to read driver version from %s and returning error:0x%x\n", __FUNCTION__, srcVersionFile.c_str(), result);
-            return;
-        }
-    }
-    std::strncpy(driverVersion, strVal.c_str(), ZES_STRING_PROPERTY_SIZE);
-    return;
+    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
+    pSysmanKmdInterface->getDriverVersion(driverVersion);
 }
 
-bool LinuxGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
+bool LinuxGlobalOperationsImp::generateUuidFromPciAndSubDeviceInfo(uint32_t subDeviceID, const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
     if (pciBusInfo.pciDomain != NEO::PhysicalDevicePciBusInfo::invalidValue) {
         uuid.fill(0);
 
@@ -243,7 +200,7 @@ bool LinuxGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDev
         deviceUUID.pciBus = static_cast<uint8_t>(pciBusInfo.pciBus);
         deviceUUID.pciDev = static_cast<uint8_t>(pciBusInfo.pciDevice);
         deviceUUID.pciFunc = static_cast<uint8_t>(pciBusInfo.pciFunction);
-        deviceUUID.subDeviceID = 0;
+        deviceUUID.subDeviceID = subDeviceID;
 
         static_assert(sizeof(DeviceUUID) == NEO::ProductHelper::uuidSize);
 
@@ -254,28 +211,81 @@ bool LinuxGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDev
     return false;
 }
 
+bool LinuxGlobalOperationsImp::generateUuidFromPciBusInfo(const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
+    return generateUuidFromPciAndSubDeviceInfo(0, pciBusInfo, uuid);
+}
+
 bool LinuxGlobalOperationsImp::getUuid(std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
-    auto driverModel = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osInterface->getDriverModel();
-    auto &gfxCoreHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHelper<NEO::GfxCoreHelper>();
-    auto &productHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHelper<NEO::ProductHelper>();
-    auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
-    if (NEO::debugManager.flags.EnableChipsetUniqueUUID.get() != 0) {
-        if (gfxCoreHelper.isChipsetUniqueUUIDSupported()) {
-            auto hwDeviceId = pLinuxSysmanImp->getSysmanHwDeviceIdInstance();
-            this->uuid.isValid = productHelper.getUuid(driverModel, subDeviceCount, 0u, this->uuid.id);
+    return this->getUuidFromSubDeviceInfo(0, uuid);
+}
+
+bool LinuxGlobalOperationsImp::getUuidFromSubDeviceInfo(uint32_t subDeviceID, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) {
+    if (this->uuid[subDeviceID].isValid) {
+        uuid = this->uuid[subDeviceID].id;
+        return this->uuid[subDeviceID].isValid;
+    }
+    if (pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osInterface != nullptr) {
+        auto driverModel = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osInterface->getDriverModel();
+        auto &gfxCoreHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHelper<NEO::GfxCoreHelper>();
+        auto &productHelper = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().getHelper<NEO::ProductHelper>();
+        auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
+        if (NEO::debugManager.flags.EnableChipsetUniqueUUID.get() != 0) {
+            if (gfxCoreHelper.isChipsetUniqueUUIDSupported()) {
+                auto hwDeviceId = pLinuxSysmanImp->getSysmanHwDeviceIdInstance();
+                this->uuid[subDeviceID].isValid = productHelper.getUuid(driverModel, subDeviceCount, subDeviceID, this->uuid[subDeviceID].id);
+            }
+        }
+
+        if (!this->uuid[subDeviceID].isValid) {
+            NEO::PhysicalDevicePciBusInfo pciBusInfo = driverModel->getPciBusInfo();
+            this->uuid[subDeviceID].isValid = generateUuidFromPciAndSubDeviceInfo(subDeviceID, pciBusInfo, this->uuid[subDeviceID].id);
+        }
+
+        if (this->uuid[subDeviceID].isValid) {
+            uuid = this->uuid[subDeviceID].id;
         }
     }
 
-    if (!this->uuid.isValid && pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osInterface != nullptr) {
-        NEO::PhysicalDevicePciBusInfo pciBusInfo = driverModel->getPciBusInfo();
-        this->uuid.isValid = generateUuidFromPciBusInfo(pciBusInfo, this->uuid.id);
+    return this->uuid[subDeviceID].isValid;
+}
+
+ze_bool_t LinuxGlobalOperationsImp::getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) {
+    auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
+    for (uint32_t index = 0; index < (subDeviceCount + 1); index++) {
+        std::array<uint8_t, NEO::ProductHelper::uuidSize> deviceUuid;
+        bool uuidValid = getUuidFromSubDeviceInfo(index, deviceUuid);
+        if (uuidValid) {
+            if (0 == std::memcmp(uuid.id, deviceUuid.data(), ZE_MAX_DEVICE_UUID_SIZE)) {
+                *onSubdevice = (index > 0);
+                *subdeviceId = (*onSubdevice == true) ? (index - 1) : 0;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+ze_result_t LinuxGlobalOperationsImp::getSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) {
+    auto subDeviceCount = pLinuxSysmanImp->getSubDeviceCount();
+    if (*pCount == 0) {
+        *pCount = subDeviceCount;
+        return ZE_RESULT_SUCCESS;
+    }
+    if (*pCount > subDeviceCount) {
+        *pCount = subDeviceCount;
     }
 
-    if (this->uuid.isValid) {
-        uuid = this->uuid.id;
+    for (uint32_t subDeviceIndex = 0; subDeviceIndex < *pCount; subDeviceIndex++) {
+        pSubdeviceProps[subDeviceIndex].subdeviceId = subDeviceIndex;
+        std::array<uint8_t, NEO::ProductHelper::uuidSize> subDeviceUuid;
+        bool uuidValid = getUuidFromSubDeviceInfo(subDeviceIndex + 1, subDeviceUuid);
+        if (uuidValid) {
+            std::copy_n(std::begin(subDeviceUuid), ZE_MAX_DEVICE_UUID_SIZE, std::begin(pSubdeviceProps[subDeviceIndex].uuid.id));
+        } else {
+            return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+        }
     }
-
-    return this->uuid.isValid;
+    return ZE_RESULT_SUCCESS;
 }
 
 ze_result_t LinuxGlobalOperationsImp::reset(ze_bool_t force) {
@@ -290,6 +300,8 @@ ze_result_t LinuxGlobalOperationsImp::resetExt(zes_reset_properties_t *pProperti
 }
 
 ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_t resetType) {
+
+    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
     if (!pSysfsAccess->isRootUser()) {
         NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Not running as root user and returning error:0x%x \n", __FUNCTION__, ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS);
         return ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;
@@ -311,11 +323,12 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
     std::string flrPath = resetName + functionLevelReset;
     resetName = pFsAccess->getBaseName(resetName);
 
-    // Unbind the device from the kernel driver.
-    result = pSysfsAccess->unbindDevice(resetName);
-    if (ZE_RESULT_SUCCESS != result) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to unbind device:%s and returning error:0x%x \n", __FUNCTION__, resetName.c_str(), result);
-        return result;
+    if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+        result = pSysfsAccess->unbindDevice(pSysmanKmdInterface->getGpuUnBindEntry(), resetName);
+        if (ZE_RESULT_SUCCESS != result) {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to unbind device:%s and returning error:0x%x \n", __FUNCTION__, resetName.c_str(), result);
+            return result;
+        }
     }
 
     std::vector<::pid_t> processes;
@@ -344,6 +357,21 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
     for (auto &&pid : deviceUsingPids) {
         while (pProcfsAccess->isAlive(pid)) {
             if (std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() > resetTimeout) {
+
+                if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+                    result = pSysfsAccess->bindDevice(pSysmanKmdInterface->getGpuBindEntry(), resetName);
+                    if (ZE_RESULT_SUCCESS != result) {
+                        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to bind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
+                        return result;
+                    }
+                }
+
+                result = pLinuxSysmanImp->reInitSysmanDeviceResources();
+                if (ZE_RESULT_SUCCESS != result) {
+                    NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to init the device and returning error:0x%x \n", __FUNCTION__, result);
+                    return result;
+                }
+
                 NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Timeout reached, device still in use and returning error:0x%x \n", __FUNCTION__, ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE);
                 return ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE;
             }
@@ -372,11 +400,12 @@ ze_result_t LinuxGlobalOperationsImp::resetImpl(ze_bool_t force, zes_reset_type_
         return result;
     }
 
-    // Rebind the device to the kernel driver.
-    result = pSysfsAccess->bindDevice(resetName);
-    if (ZE_RESULT_SUCCESS != result) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to rebind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
-        return result;
+    if (resetType == ZES_RESET_TYPE_FLR || resetType == ZES_RESET_TYPE_COLD) {
+        result = pSysfsAccess->bindDevice(pSysmanKmdInterface->getGpuBindEntry(), resetName);
+        if (ZE_RESULT_SUCCESS != result) {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "Error@ %s(): Failed to bind the device to the kernel driver and returning error:0x%x \n", __FUNCTION__, result);
+            return result;
+        }
     }
 
     return pLinuxSysmanImp->reInitSysmanDeviceResources();
@@ -423,30 +452,20 @@ ze_result_t LinuxGlobalOperationsImp::getMemoryStatsUsedByProcess(std::vector<st
 }
 
 ze_result_t LinuxGlobalOperationsImp::getListOfEnginesUsedByProcess(std::vector<std::string> &fdFileContents, uint32_t &activeEngines) {
-    // Map engine entries present in /proc/<pid>>/fdinfo/<fd>,
-    // with engine enum defined in leve-zero spec
-    // Note that entries with int "video" and "video_enhance"(represented as CLASS_VIDEO and CLASS_VIDEO_ENHANCE)
-    // are both mapped to MEDIA, as CLASS_VIDEO represents any media fixed-function hardware.
-    const std::map<std::string, zes_engine_type_flags_t> engineMap = {
-        {"drm-engine-render", ZES_ENGINE_TYPE_FLAG_RENDER},
-        {"drm-engine-copy", ZES_ENGINE_TYPE_FLAG_DMA},
-        {"drm-engine-video", ZES_ENGINE_TYPE_FLAG_MEDIA},
-        {"drm-engine-video-enhance", ZES_ENGINE_TYPE_FLAG_MEDIA},
-        {"drm-engine-compute", ZES_ENGINE_TYPE_FLAG_COMPUTE}};
 
-    const std::string engineStringPrefix("drm-engine-");
+    const std::string stringPrefix("drm-cycles-");
     for (const auto &fileContents : fdFileContents) {
         std::istringstream iss(fileContents);
         std::string label;
         uint64_t value;
         iss >> label >> value;
-        // Example: consider "fileContents = "drm-engine-render:      25662044495 ns""
-        // Then if we are here, then label would be "drm-engine-render:". So remove `:` from label
         label = label.substr(0, label.length() - 1);
 
-        if ((label.substr(0, engineStringPrefix.length()) == engineStringPrefix) && (value != 0)) {
-            auto it = engineMap.find(label);
-            if (it == engineMap.end()) {
+        if ((label.substr(0, stringPrefix.length()) == stringPrefix) && (value != 0)) {
+
+            std::string engineClass = label.substr(stringPrefix.length());
+            auto it = sysfsEngineMapToLevel0EngineType.find(engineClass);
+            if (it == sysfsEngineMapToLevel0EngineType.end()) {
                 NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
                                       "Error@ %s(): unknown engine type: %s and returning error:0x%x \n", __FUNCTION__, label.c_str(),
                                       ZE_RESULT_ERROR_UNKNOWN);
@@ -464,29 +483,38 @@ ze_result_t LinuxGlobalOperationsImp::getListOfEnginesUsedByProcess(std::vector<
 // # cat /proc/1383/fdinfo/8
 // pos:    0
 // flags:  02100002
-// mnt_id: 21
-// ino:    397
-// drm-driver:     i915
-// drm-client-id:  18
-// drm-pdev:       0000:00:02.0
-// drm-total-vram0:        512
-// drm-total-vram1:        512 KiB
-// drm-shared-vram0:       512 KiB
-// drm-shared-vram1:       128 MiB
-// drm-total-system:       125 MiB
-// drm-shared-system:      16 MiB
-// drm-active-system:      110 MiB
-// drm-resident-system:    125 MiB
-// drm-purgeable-system:   2 MiB
-// drm-total-stolen-system:        0
-// drm-shared-stolen-system:       0
-// drm-active-stolen-system:       0
-// drm-resident-stolen-system:     0
-// drm-purgeable-stolen-system:    0
-// drm-engine-render:      25662044495 ns
-// drm-engine-copy:        0 ns
-// drm-engine-video:       0 ns
-// drm-engine-video-enhance:       0 ns
+// mnt_id: 27
+// ino:    1386
+// drm-driver:     xe
+// drm-client-id:  173
+// drm-pdev:       0000:4d:00.0
+// drm-total-system:       0
+// drm-shared-system:      0
+// drm-active-system:      0
+// drm-resident-system:    0
+// drm-purgeable-system:   0
+// drm-total-gtt:  264 KiB
+// drm-shared-gtt: 0
+// drm-active-gtt: 72 KiB
+// drm-resident-gtt:       264 KiB
+// drm-total-vram0:        65072580 KiB
+// drm-shared-vram0:       0
+// drm-active-vram0:       65069124 KiB
+// drm-resident-vram0:     65072580 KiB
+// drm-total-vram1:        63753540 KiB
+// drm-shared-vram1:       0
+// drm-active-vram1:       63751556 KiB
+// drm-resident-vram1:     63753540 KiB
+// drm-total-stolen:       0
+// drm-shared-stolen:      0
+// drm-active-stolen:      0
+// drm-resident-stolen:    0
+// drm-cycles-bcs: 395
+// drm-total-cycles-bcs:   24339816184
+// drm-engine-capacity-bcs:        16
+// drm-cycles-ccs: 326
+// drm-total-cycles-ccs:   24339816184
+// drm-engine-capacity-ccs:        2
 ze_result_t LinuxGlobalOperationsImp::readClientInfoFromFdInfo(std::map<uint64_t, EngineMemoryPairType> &pidClientMap) {
     std::map<::pid_t, std::vector<int>> gpuClientProcessMap; // This map contains processes and their opened gpu File descriptors
     ze_result_t result = ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
@@ -707,22 +735,6 @@ ze_result_t LinuxGlobalOperationsImp::scanProcessesState(std::vector<zes_process
     return result;
 }
 
-void LinuxGlobalOperationsImp::getWedgedStatus(zes_device_state_t *pState) {
-    NEO::GemContextCreateExt gcc{};
-    auto hwDeviceId = pLinuxSysmanImp->getSysmanHwDeviceIdInstance();
-    auto pDrm = pLinuxSysmanImp->getDrm();
-    // Device is said to be in wedged if context creation returns EIO.
-    auto ret = pDrm->getIoctlHelper()->ioctl(NEO::DrmIoctl::gemContextCreateExt, &gcc);
-    if (ret == 0) {
-        pDrm->destroyDrmContext(gcc.contextId);
-        return;
-    }
-
-    if (pDrm->getErrno() == EIO) {
-        pState->reset |= ZES_RESET_REASON_FLAG_WEDGED;
-    }
-}
-
 void LinuxGlobalOperationsImp::getRepairStatus(zes_device_state_t *pState) {
     SysmanProductHelper *pSysmanProductHelper = pLinuxSysmanImp->getSysmanProductHelper();
     if (pSysmanProductHelper->isRepairStatusSupported()) {
@@ -741,10 +753,16 @@ void LinuxGlobalOperationsImp::getRepairStatus(zes_device_state_t *pState) {
     }
 }
 
+void LinuxGlobalOperationsImp::getTimerResolution(double *pTimerResolution) {
+    auto hwDeviceId = pLinuxSysmanImp->getSysmanHwDeviceIdInstance();
+    *pTimerResolution = pLinuxSysmanImp->getParentSysmanDeviceImp()->getTimerResolution();
+}
+
 ze_result_t LinuxGlobalOperationsImp::deviceGetState(zes_device_state_t *pState) {
     memset(pState, 0, sizeof(zes_device_state_t));
     pState->repaired = ZES_REPAIR_STATUS_UNSUPPORTED;
-    getWedgedStatus(pState);
+    auto pSysmanKmdInterface = pLinuxSysmanImp->getSysmanKmdInterface();
+    pSysmanKmdInterface->getWedgedStatus(pLinuxSysmanImp, pState);
     getRepairStatus(pState);
     return ZE_RESULT_SUCCESS;
 }
@@ -757,7 +775,6 @@ LinuxGlobalOperationsImp::LinuxGlobalOperationsImp(OsSysman *pOsSysman) {
     pFsAccess = &pLinuxSysmanImp->getFsAccess();
     devicePciBdf = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osInterface->getDriverModel()->as<NEO::Drm>()->getPciPath();
     rootDeviceIndex = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceIndex();
-    uuid.isValid = false;
 }
 
 OsGlobalOperations *OsGlobalOperations::create(OsSysman *pOsSysman) {

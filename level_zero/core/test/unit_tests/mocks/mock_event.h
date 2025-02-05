@@ -22,11 +22,13 @@ struct WhiteBox<::L0::Event> : public ::L0::Event {
     using BaseClass::counterBasedMode;
     using BaseClass::csrs;
     using BaseClass::Event;
+    using BaseClass::eventPoolAllocation;
     using BaseClass::gpuHangCheckPeriod;
-    using BaseClass::hostAddress;
+    using BaseClass::hostAddressFromPool;
     using BaseClass::isFromIpcPool;
     using BaseClass::l3FlushAppliedOnKernel;
     using BaseClass::maxKernelCount;
+    using BaseClass::maxPacketCount;
     using BaseClass::signalAllEventPackets;
     using BaseClass::signalScope;
     using BaseClass::waitScope;
@@ -39,11 +41,12 @@ struct WhiteBox<::L0::EventImp<TagSizeT>> : public L0::EventImp<TagSizeT> {
     using BaseClass = ::L0::EventImp<TagSizeT>;
     using BaseClass::csrs;
     using BaseClass::gpuHangCheckPeriod;
-    using BaseClass::hostAddress;
+    using BaseClass::hostAddressFromPool;
     using BaseClass::hostEventSetValueTimestamps;
     using BaseClass::isFromIpcPool;
     using BaseClass::l3FlushAppliedOnKernel;
     using BaseClass::maxKernelCount;
+    using BaseClass::maxPacketCount;
     using BaseClass::signalAllEventPackets;
     using BaseClass::signalScope;
     using BaseClass::waitScope;
@@ -73,7 +76,7 @@ struct Mock<Event> : public Event {
     ~Mock() override;
 
     ADDMETHOD_NOBASE(destroy, ze_result_t, ZE_RESULT_SUCCESS, ());
-    ADDMETHOD_NOBASE(hostSignal, ze_result_t, ZE_RESULT_SUCCESS, ());
+    ADDMETHOD_NOBASE(hostSignal, ze_result_t, ZE_RESULT_SUCCESS, (bool allowCounterBased));
     ADDMETHOD_NOBASE(hostSynchronize, ze_result_t, ZE_RESULT_SUCCESS, (uint64_t timeout));
     ADDMETHOD_NOBASE(queryStatus, ze_result_t, ZE_RESULT_SUCCESS, ());
     ADDMETHOD_NOBASE(reset, ze_result_t, ZE_RESULT_SUCCESS, ());
@@ -106,12 +109,14 @@ class MockEvent : public ::L0::Event {
     using ::L0::Event::isFromIpcPool;
     using ::L0::Event::l3FlushAppliedOnKernel;
     using ::L0::Event::maxKernelCount;
+    using ::L0::Event::maxPacketCount;
     using ::L0::Event::signalAllEventPackets;
     using ::L0::Event::signalScope;
     using ::L0::Event::waitScope;
 
     MockEvent() : Event(0, nullptr) {
         mockAllocation.reset(new NEO::MockGraphicsAllocation(0,
+                                                             1u /*num gmms*/,
                                                              NEO::AllocationType::internalHostMemory,
                                                              reinterpret_cast<void *>(0x1234),
                                                              0x1000,
@@ -129,8 +134,8 @@ class MockEvent : public ::L0::Event {
         this->maxKernelCount = EventPacketsCount::maxKernelSplit;
         this->maxPacketCount = EventPacketsCount::eventPackets;
     }
-    NEO::GraphicsAllocation &getAllocation(L0::Device *device) const override {
-        return *mockAllocation.get();
+    NEO::GraphicsAllocation *getAllocation(L0::Device *device) const override {
+        return mockAllocation.get();
     }
 
     uint64_t getGpuAddress(L0::Device *device) const override {
@@ -140,7 +145,7 @@ class MockEvent : public ::L0::Event {
     ze_result_t destroy() override {
         return ZE_RESULT_SUCCESS;
     }
-    ze_result_t hostSignal() override {
+    ze_result_t hostSignal(bool allowCounterBased) override {
         return ZE_RESULT_SUCCESS;
     }
     ze_result_t hostSynchronize(uint64_t timeout) override {
@@ -159,6 +164,18 @@ class MockEvent : public ::L0::Event {
         return ZE_RESULT_SUCCESS;
     }
     ze_result_t queryKernelTimestampsExt(L0::Device *device, uint32_t *count, ze_event_query_kernel_timestamps_results_ext_properties_t *pResults) override {
+        return ZE_RESULT_SUCCESS;
+    }
+    ze_result_t getEventPool(ze_event_pool_handle_t *phEventPool) override {
+        return ZE_RESULT_SUCCESS;
+    }
+    ze_result_t getSignalScope(ze_event_scope_flags_t *pSignalScope) override {
+        return ZE_RESULT_SUCCESS;
+    }
+    ze_result_t getWaitScope(ze_event_scope_flags_t *pWaitScope) override {
+        return ZE_RESULT_SUCCESS;
+    }
+    ze_result_t hostEventSetValue(State eventState) override {
         return ZE_RESULT_SUCCESS;
     }
     uint32_t getPacketsUsedInLastKernel() override { return 1; }

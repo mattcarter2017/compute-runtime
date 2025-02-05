@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,15 +9,21 @@
 
 #include "shared/source/command_stream/preemption_mode.h"
 #include "shared/source/os_interface/product_helper.h"
+#include "shared/source/utilities/tag_allocator.h"
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zet_api.h>
 
 #include <memory>
+#include <mutex>
 
 static_assert(NEO::ProductHelper::uuidSize == ZE_MAX_DEVICE_UUID_SIZE);
 
-struct _ze_device_handle_t {};
+struct _ze_device_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_DEVICE;
+};
 namespace NEO {
 class CommandStreamReceiver;
 class DebuggerL0;
@@ -26,6 +32,7 @@ class GfxCoreHelper;
 class MemoryManager;
 struct DeviceInfo;
 class CompilerProductHelper;
+class TagAllocatorBase;
 enum class AllocationType;
 } // namespace NEO
 
@@ -104,7 +111,7 @@ struct Device : _ze_device_handle_t {
         return implicitScalingCapable;
     }
     virtual const NEO::HardwareInfo &getHwInfo() const = 0;
-    virtual NEO::OSInterface &getOsInterface() = 0;
+    virtual NEO::OSInterface *getOsInterface() = 0;
     virtual uint32_t getPlatformInfo() const = 0;
     virtual MetricDeviceContext &getMetricDeviceContext() = 0;
     virtual DebugSession *getDebugSession(const zet_debug_config_t &config) = 0;
@@ -138,17 +145,29 @@ struct Device : _ze_device_handle_t {
     virtual NEO::GraphicsAllocation *allocateMemoryFromHostPtr(const void *buffer, size_t size, bool hostCopyAllowed) = 0;
     virtual void setSysmanHandle(SysmanDevice *pSysmanDevice) = 0;
     virtual SysmanDevice *getSysmanHandle() = 0;
-    virtual ze_result_t getCsrForOrdinalAndIndex(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index) = 0;
-    virtual ze_result_t getCsrForOrdinalAndIndexWithPriority(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority) = 0;
-    virtual ze_result_t getCsrForLowPriority(NEO::CommandStreamReceiver **csr) = 0;
+    virtual ze_result_t getCsrForOrdinalAndIndex(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority, bool allocateInterrupt) = 0;
+    virtual ze_result_t getCsrForLowPriority(NEO::CommandStreamReceiver **csr, bool copyOnly) = 0;
     virtual NEO::GraphicsAllocation *obtainReusableAllocation(size_t requiredSize, NEO::AllocationType type) = 0;
     virtual void storeReusableAllocation(NEO::GraphicsAllocation &alloc) = 0;
     virtual ze_result_t getFabricVertex(ze_fabric_vertex_handle_t *phVertex) = 0;
     virtual uint32_t getEventMaxPacketCount() const = 0;
     virtual uint32_t getEventMaxKernelCount() const = 0;
+    NEO::TagAllocatorBase *getDeviceInOrderCounterAllocator();
+    NEO::TagAllocatorBase *getHostInOrderCounterAllocator();
+    NEO::TagAllocatorBase *getInOrderTimestampAllocator();
+    NEO::GraphicsAllocation *getSyncDispatchTokenAllocation() const { return syncDispatchTokenAllocation; }
+    uint32_t getNextSyncDispatchQueueId();
+    void ensureSyncDispatchTokenAllocation();
 
   protected:
     NEO::Device *neoDevice = nullptr;
+    std::unique_ptr<NEO::TagAllocatorBase> deviceInOrderCounterAllocator;
+    std::unique_ptr<NEO::TagAllocatorBase> hostInOrderCounterAllocator;
+    std::unique_ptr<NEO::TagAllocatorBase> inOrderTimestampAllocator;
+    NEO::GraphicsAllocation *syncDispatchTokenAllocation = nullptr;
+    std::mutex inOrderAllocatorMutex;
+    std::mutex syncDispatchTokenMutex;
+    std::atomic<uint32_t> syncDispatchQueueIdAllocator = 0;
     bool implicitScalingCapable = false;
 };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/os_interface/device_factory.h"
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/os_interface.h"
+#include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/os_interface/linux/sys_calls_linux_ult.h"
@@ -20,8 +21,8 @@
 #include "level_zero/sysman/source/device/sysman_device.h"
 #include "level_zero/sysman/source/driver/sysman_driver.h"
 #include "level_zero/sysman/source/driver/sysman_driver_handle_imp.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 #include "level_zero/sysman/source/shared/linux/zes_os_sysman_driver_imp.h"
 #include "level_zero/sysman/source/shared/linux/zes_os_sysman_imp.h"
 #include "level_zero/sysman/test/unit_tests/sources/firmware_util/mock_fw_util_fixture.h"
@@ -37,7 +38,6 @@ namespace ult {
 
 class PublicLinuxSysmanImp : public L0::Sysman::LinuxSysmanImp {
   public:
-    using LinuxSysmanImp::mapOfSubDeviceIdToPmtObject;
     using LinuxSysmanImp::pFsAccess;
     using LinuxSysmanImp::pFwUtilInterface;
     using LinuxSysmanImp::pPmuInterface;
@@ -51,6 +51,7 @@ class PublicLinuxSysmanImp : public L0::Sysman::LinuxSysmanImp {
 class SysmanDeviceFixture : public ::testing::Test {
   public:
     void SetUp() override {
+        debugManager.flags.IgnoreProductSpecificIoctlHelper.set(true);
         VariableBackup<decltype(NEO::SysCalls::sysCallsRealpath)> mockRealPath(&NEO::SysCalls::sysCallsRealpath, [](const char *path, char *buf) -> char * {
             constexpr size_t sizeofPath = sizeof("/sys/devices/pci0000:00/0000:00:02.0");
             strcpy_s(buf, sizeofPath, "/sys/devices/pci0000:00/0000:00:02.0");
@@ -62,8 +63,6 @@ class SysmanDeviceFixture : public ::testing::Test {
             std::memcpy(buf, str.c_str(), str.size());
             return static_cast<int>(str.size());
         });
-        NEO::HardwareInfo hwInfo = *NEO::defaultHwInfo.get();
-        hwInfo.capabilityTable.levelZeroSupported = true;
         execEnv = new NEO::ExecutionEnvironment();
         execEnv->prepareRootDeviceEnvironments(numRootDevices);
         for (auto i = 0u; i < execEnv->rootDeviceEnvironments.size(); i++) {
@@ -96,6 +95,7 @@ class SysmanDeviceFixture : public ::testing::Test {
     NEO::ExecutionEnvironment *execEnv = nullptr;
     std::unique_ptr<L0::Sysman::SysmanDriverHandleImp> driverHandle;
     const uint32_t numRootDevices = 1u;
+    DebugManagerStateRestore restore;
 };
 
 class SysmanMultiDeviceFixture : public ::testing::Test {
@@ -113,8 +113,6 @@ class SysmanMultiDeviceFixture : public ::testing::Test {
             return static_cast<int>(str.size());
         });
 
-        NEO::HardwareInfo hwInfo = *NEO::defaultHwInfo.get();
-        hwInfo.capabilityTable.levelZeroSupported = true;
         execEnv = new NEO::ExecutionEnvironment();
         execEnv->prepareRootDeviceEnvironments(numRootDevices);
         debugManager.flags.CreateMultipleSubDevices.set(numSubDevices);
@@ -127,6 +125,7 @@ class SysmanMultiDeviceFixture : public ::testing::Test {
         driverHandle = std::make_unique<L0::Sysman::SysmanDriverHandleImp>();
         driverHandle->initialize(*execEnv);
         pSysmanDevice = driverHandle->sysmanDevices[0];
+        L0::Sysman::globalSysmanDriver = driverHandle.get();
 
         L0::Sysman::sysmanOnlyInit = true;
 
@@ -136,6 +135,7 @@ class SysmanMultiDeviceFixture : public ::testing::Test {
         pLinuxSysmanImp->pFwUtilInterface = new MockFwUtilInterface();
     }
     void TearDown() override {
+        L0::Sysman::globalSysmanDriver = nullptr;
         L0::Sysman::sysmanOnlyInit = false;
     }
 
@@ -159,13 +159,6 @@ class PublicLinuxSysmanDriverImp : public L0::Sysman::LinuxSysmanDriverImp {
     PublicLinuxSysmanDriverImp() : LinuxSysmanDriverImp() {}
     using LinuxSysmanDriverImp::pLinuxEventsUtil;
     using LinuxSysmanDriverImp::pUdevLib;
-};
-
-class PublicSysmanKmdInterfaceI915 : public L0::Sysman::SysmanKmdInterfaceI915Upstream {
-  public:
-    PublicSysmanKmdInterfaceI915(const PRODUCT_FAMILY productFamily) : L0::Sysman::SysmanKmdInterfaceI915Upstream(productFamily) {}
-    ~PublicSysmanKmdInterfaceI915() override = default;
-    using L0::Sysman::SysmanKmdInterface::pSysfsAccess;
 };
 
 } // namespace ult

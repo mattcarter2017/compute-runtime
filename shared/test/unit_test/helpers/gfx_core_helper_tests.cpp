@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2024 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #include "shared/test/common/helpers/gfx_core_helper_tests.h"
 
 #include "shared/source/aub_mem_dump/aub_mem_dump.h"
+#include "shared/source/command_container/command_encoder.h"
 #include "shared/source/command_container/encode_surface_state.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/helpers/aligned_memory.h"
@@ -18,6 +19,7 @@
 #include "shared/source/kernel/kernel_descriptor.h"
 #include "shared/source/memory_manager/allocation_type.h"
 #include "shared/source/os_interface/os_interface.h"
+#include "shared/test/common/cmd_parse/hw_parse.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
@@ -115,12 +117,12 @@ HWTEST2_F(GfxCoreHelperTest, WhenSettingRenderSurfaceStateForBufferThenL1CachePo
     gfxCoreHelper.setRenderSurfaceStateForScratchResource(rootDeviceEnvironment, stateBuffer, size, addr, offset, pitch, nullptr, false, type, false,
                                                           false);
 
-    EXPECT_NE(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB, surfaceState->getL1CachePolicyL1CacheControl());
+    EXPECT_NE(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB, surfaceState->getL1CacheControlCachePolicy());
 
     gfxCoreHelper.setRenderSurfaceStateForScratchResource(rootDeviceEnvironment, stateBuffer, size, addr, offset, pitch, nullptr, false, type, false,
                                                           true);
 
-    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB, surfaceState->getL1CachePolicyL1CacheControl());
+    EXPECT_EQ(FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB, surfaceState->getL1CacheControlCachePolicy());
 
     alignedFree(stateBuffer);
 }
@@ -217,7 +219,7 @@ using LriHelperTests = ::testing::Test;
 
 HWTEST_F(LriHelperTests, givenAddressAndOffsetWhenHelperIsUsedThenProgramCmdStream) {
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint32_t address = 0x8888;
@@ -227,7 +229,7 @@ HWTEST_F(LriHelperTests, givenAddressAndOffsetWhenHelperIsUsedThenProgramCmdStre
     expectedLri.setRegisterOffset(address);
     expectedLri.setDataDword(data);
 
-    LriHelper<FamilyType>::program(&stream, address, data, false);
+    LriHelper<FamilyType>::program(&stream, address, data, false, false);
     auto lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(stream.getCpuBase());
     ASSERT_NE(nullptr, lri);
 
@@ -236,11 +238,74 @@ HWTEST_F(LriHelperTests, givenAddressAndOffsetWhenHelperIsUsedThenProgramCmdStre
     EXPECT_EQ(data, lri->getDataDword());
 }
 
+HWTEST_F(LriHelperTests, givenAddressAndOffsetAndRemapAndNotBlitterWhenHelperIsUsedThenProgramCmdStream) {
+    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
+    auto buffer = std::make_unique<uint8_t[]>(128);
+
+    LinearStream stream(buffer.get(), 128);
+    uint32_t address = 0x8888;
+    uint32_t data = 0x1234;
+
+    auto expectedLri = FamilyType::cmdInitLoadRegisterImm;
+    expectedLri.setRegisterOffset(address);
+    expectedLri.setDataDword(data);
+
+    LriHelper<FamilyType>::program(&stream, address, data, true, false);
+    auto lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(stream.getCpuBase());
+    ASSERT_NE(nullptr, lri);
+
+    EXPECT_EQ(sizeof(MI_LOAD_REGISTER_IMM), stream.getUsed());
+    EXPECT_EQ(address, lri->getRegisterOffset());
+    EXPECT_EQ(data, lri->getDataDword());
+}
+
+HWTEST_F(LriHelperTests, givenAddressAndOffsetAndNotRemapAndBlitterWhenHelperIsUsedThenProgramCmdStream) {
+    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
+    auto buffer = std::make_unique<uint8_t[]>(128);
+
+    LinearStream stream(buffer.get(), 128);
+    uint32_t address = 0x8888;
+    uint32_t data = 0x1234;
+
+    auto expectedLri = FamilyType::cmdInitLoadRegisterImm;
+    expectedLri.setRegisterOffset(address);
+    expectedLri.setDataDword(data);
+
+    LriHelper<FamilyType>::program(&stream, address, data, false, true);
+    auto lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(stream.getCpuBase());
+    ASSERT_NE(nullptr, lri);
+
+    EXPECT_EQ(sizeof(MI_LOAD_REGISTER_IMM), stream.getUsed());
+    EXPECT_EQ(address, lri->getRegisterOffset());
+    EXPECT_EQ(data, lri->getDataDword());
+}
+
+HWTEST_F(LriHelperTests, givenAddressAndOffsetAndRemapAndBlitterWhenHelperIsUsedThenProgramCmdStream) {
+    using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
+    auto buffer = std::make_unique<uint8_t[]>(128);
+
+    LinearStream stream(buffer.get(), 128);
+    uint32_t address = 0x8888;
+    uint32_t data = 0x1234;
+
+    auto expectedLri = FamilyType::cmdInitLoadRegisterImm;
+    expectedLri.setRegisterOffset(address);
+    expectedLri.setDataDword(data);
+
+    LriHelper<FamilyType>::program(&stream, address, data, true, true);
+    auto lri = genCmdCast<MI_LOAD_REGISTER_IMM *>(stream.getCpuBase());
+    ASSERT_NE(nullptr, lri);
+
+    EXPECT_EQ(sizeof(MI_LOAD_REGISTER_IMM), stream.getUsed());
+    EXPECT_EQ(address + RegisterOffsets::bcs0Base, lri->getRegisterOffset());
+    EXPECT_EQ(data, lri->getDataDword());
+}
+
 using PipeControlHelperTests = ::testing::Test;
 
 HWTEST_F(PipeControlHelperTests, givenPostSyncWriteTimestampModeWhenHelperIsUsedThenProperFieldsAreProgrammed) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint64_t address = 0x1234567887654321;
@@ -260,8 +325,11 @@ HWTEST_F(PipeControlHelperTests, givenPostSyncWriteTimestampModeWhenHelperIsUsed
         stream, PostSyncMode::timestamp, address, immediateData, rootDeviceEnvironment, args);
     auto additionalPcSize = MemorySynchronizationCommands<FamilyType>::getSizeForBarrierWithPostSyncOperation(rootDeviceEnvironment, false) - sizeof(PIPE_CONTROL);
     auto pipeControlLocationSize = additionalPcSize - MemorySynchronizationCommands<FamilyType>::getSizeForSingleAdditionalSynchronization(rootDeviceEnvironment);
-    auto pipeControl = genCmdCast<PIPE_CONTROL *>(ptrOffset(stream.getCpuBase(), pipeControlLocationSize));
+    void *cpuPipeControlBuffer = ptrOffset(stream.getCpuBase(), pipeControlLocationSize);
+    auto pipeControl = genCmdCast<PIPE_CONTROL *>(cpuPipeControlBuffer);
     ASSERT_NE(nullptr, pipeControl);
+
+    EXPECT_EQ(cpuPipeControlBuffer, args.postSyncCmd);
 
     EXPECT_EQ(sizeof(PIPE_CONTROL) + additionalPcSize, stream.getUsed());
     EXPECT_EQ(pipeControl->getCommandStreamerStallEnable(), expectedPipeControl.getCommandStreamerStallEnable());
@@ -279,7 +347,7 @@ HWTEST_F(PipeControlHelperTests, givenGfxCoreHelperwhenAskingForDcFlushThenRetur
 
 HWTEST_F(PipeControlHelperTests, givenDcFlushNotAllowedWhenProgrammingPipeControlThenDontSetDcFlush) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
 
@@ -296,7 +364,7 @@ HWTEST_F(PipeControlHelperTests, givenDcFlushNotAllowedWhenProgrammingPipeContro
 
 HWTEST_F(PipeControlHelperTests, givenPostSyncWriteImmediateDataModeWhenHelperIsUsedThenProperFieldsAreProgrammed) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint64_t address = 0x1234567887654321;
@@ -317,8 +385,11 @@ HWTEST_F(PipeControlHelperTests, givenPostSyncWriteImmediateDataModeWhenHelperIs
         stream, PostSyncMode::immediateData, address, immediateData, rootDeviceEnvironment, args);
     auto additionalPcSize = MemorySynchronizationCommands<FamilyType>::getSizeForBarrierWithPostSyncOperation(rootDeviceEnvironment, false) - sizeof(PIPE_CONTROL);
     auto pipeControlLocationSize = additionalPcSize - MemorySynchronizationCommands<FamilyType>::getSizeForSingleAdditionalSynchronization(rootDeviceEnvironment);
-    auto pipeControl = genCmdCast<PIPE_CONTROL *>(ptrOffset(stream.getCpuBase(), pipeControlLocationSize));
+    void *cpuPipeControlBuffer = ptrOffset(stream.getCpuBase(), pipeControlLocationSize);
+    auto pipeControl = genCmdCast<PIPE_CONTROL *>(cpuPipeControlBuffer);
     ASSERT_NE(nullptr, pipeControl);
+
+    EXPECT_EQ(cpuPipeControlBuffer, args.postSyncCmd);
 
     EXPECT_EQ(sizeof(PIPE_CONTROL) + additionalPcSize, stream.getUsed());
     EXPECT_EQ(pipeControl->getCommandStreamerStallEnable(), expectedPipeControl.getCommandStreamerStallEnable());
@@ -331,7 +402,7 @@ HWTEST_F(PipeControlHelperTests, givenPostSyncWriteImmediateDataModeWhenHelperIs
 
 HWTEST_F(PipeControlHelperTests, givenNotifyEnableArgumentIsTrueWhenHelperIsUsedThenNotifyEnableFlagIsTrue) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint64_t address = 0x1234567887654321;
@@ -370,11 +441,21 @@ HWTEST_F(PipeControlHelperTests, WhenIsDcFlushAllowedIsCalledThenCorrectResultIs
     auto &productHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<ProductHelper>();
     EXPECT_FALSE(MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(false, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
     EXPECT_EQ(productHelper.isDcFlushAllowed(), MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
+
+    DebugManagerStateRestore restorer;
+
+    debugManager.flags.AllowDcFlush.set(0);
+    EXPECT_FALSE(MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
+    EXPECT_EQ(productHelper.isDcFlushAllowed(), MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
+
+    debugManager.flags.AllowDcFlush.set(1);
+    EXPECT_TRUE(MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
+    EXPECT_EQ(productHelper.isDcFlushAllowed(), MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]));
 }
 
 HWTEST_F(PipeControlHelperTests, WhenPipeControlPostSyncTimestampUsedThenCorrectPostSyncUsed) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint64_t address = 0x1234567887654320;
@@ -392,7 +473,7 @@ HWTEST_F(PipeControlHelperTests, WhenPipeControlPostSyncTimestampUsedThenCorrect
 
 HWTEST_F(PipeControlHelperTests, WhenPipeControlPostSyncWriteImmediateDataUsedThenCorrectPostSyncUsed) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     uint64_t address = 0x1234567887654320;
@@ -450,7 +531,8 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenNoAllocationProvid
     EXPECT_EQ(length.surfaceState.depth + 1u, state->getDepth());
     EXPECT_EQ(length.surfaceState.width + 1u, state->getWidth());
     EXPECT_EQ(length.surfaceState.height + 1u, state->getHeight());
-    EXPECT_EQ(pitch, state->getSurfacePitch());
+    const auto &productHelper = getHelper<ProductHelper>();
+    EXPECT_EQ(pitch, EncodeSurfaceState<FamilyType>::getPitchForScratchInBytes(state, productHelper));
     addr += offset;
     EXPECT_EQ(addr, state->getSurfaceBaseAddress());
     EXPECT_EQ(type, state->getSurfaceType());
@@ -491,7 +573,7 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenNoAllocationProvid
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenAllocationProvidedThenUseAllocationAsInput) {
+HWTEST2_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenAllocationProvidedThenUseAllocationAsInput, MatchAny) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
@@ -513,7 +595,7 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenAllocationProvided
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
     length.length = static_cast<uint32_t>(allocSize - 1);
-    GraphicsAllocation allocation(0, AllocationType::unknown, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 0u);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::unknown, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 0u);
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
@@ -526,17 +608,18 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenAllocationProvided
     EXPECT_EQ(pitch, state->getSurfacePitch() - 1u);
     EXPECT_EQ(gpuAddr, state->getSurfaceBaseAddress());
 
-    EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    }
     EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE, state->getAuxiliarySurfaceMode());
 
     delete allocation.getDefaultGmm();
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCompressionEnabledAnNonAuxDisabledThenSetCoherencyToGpuAndAuxModeToCompression) {
+HWTEST2_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCompressionEnabledAnNonAuxDisabledThenSetCoherencyToGpuAndAuxModeToCompression, MatchAny) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
-    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
 
     auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
     void *stateBuffer = alignedMalloc(sizeof(RENDER_SURFACE_STATE), sizeof(RENDER_SURFACE_STATE));
@@ -553,22 +636,24 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCo
     void *cpuAddr = reinterpret_cast<void *>(0x4000);
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
-    GraphicsAllocation allocation(0, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 0u);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 0u);
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     allocation.setDefaultGmm(new Gmm(rootDeviceEnvironment.getGmmHelper(), allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    allocation.getDefaultGmm()->isCompressionEnabled = true;
+    allocation.getDefaultGmm()->setCompressionEnabled(true);
     SURFACE_TYPE type = RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_BUFFER;
     gfxCoreHelper.setRenderSurfaceStateForScratchResource(rootDeviceEnvironment, stateBuffer, size, addr, 0, pitch, &allocation, false, type, false, false);
-    EXPECT_EQ(RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT, state->getCoherencyType());
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(RENDER_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT, state->getCoherencyType());
+    }
     EXPECT_TRUE(EncodeSurfaceState<FamilyType>::isAuxModeEnabled(state, allocation.getDefaultGmm()));
 
     delete allocation.getDefaultGmm();
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmCompressionDisabledAndAllocationEnabledAnNonAuxDisabledThenSetCoherencyToIaAndAuxModeToNone) {
+HWTEST2_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmCompressionDisabledAndAllocationEnabledAnNonAuxDisabledThenSetCoherencyToIaAndAuxModeToNone, MatchAny) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
@@ -588,14 +673,16 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmCompressionDisa
     void *cpuAddr = reinterpret_cast<void *>(0x4000);
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
-    GraphicsAllocation allocation(0, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     allocation.setDefaultGmm(new Gmm(rootDeviceEnvironment.getGmmHelper(), allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
     SURFACE_TYPE type = RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_BUFFER;
     gfxCoreHelper.setRenderSurfaceStateForScratchResource(rootDeviceEnvironment, stateBuffer, size, addr, 0, pitch, &allocation, false, type, false, false);
-    EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    }
     EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE, state->getAuxiliarySurfaceMode());
 
     delete allocation.getDefaultGmm();
@@ -624,7 +711,7 @@ HWTEST_F(GfxCoreHelperTest, givenOverrideMocsIndexForScratchSpaceWhenSurfaceStat
     void *cpuAddr = reinterpret_cast<void *>(0x4000);
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
-    GraphicsAllocation allocation(0, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1);
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
@@ -639,7 +726,7 @@ HWTEST_F(GfxCoreHelperTest, givenOverrideMocsIndexForScratchSpaceWhenSurfaceStat
     alignedFree(stateBuffer);
 }
 
-HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCompressionEnabledAnNonAuxEnabledThenSetCoherencyToIaAndAuxModeToNone) {
+HWTEST2_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCompressionEnabledAnNonAuxEnabledThenSetCoherencyToIaAndAuxModeToNone, MatchAny) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
@@ -659,15 +746,17 @@ HWTEST_F(GfxCoreHelperTest, givenCreatedSurfaceStateBufferWhenGmmAndAllocationCo
     void *cpuAddr = reinterpret_cast<void *>(0x4000);
     uint64_t gpuAddr = 0x4000u;
     size_t allocSize = size;
-    GraphicsAllocation allocation(0, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1u);
+    GraphicsAllocation allocation(0, 1u /*num gmms*/, AllocationType::buffer, cpuAddr, gpuAddr, 0u, allocSize, MemoryPool::memoryNull, 1u);
     GmmRequirements gmmRequirements{};
     gmmRequirements.allowLargePages = true;
     gmmRequirements.preferCompressed = false;
     allocation.setDefaultGmm(new Gmm(rootDeviceEnvironment.getGmmHelper(), allocation.getUnderlyingBuffer(), allocation.getUnderlyingBufferSize(), 0, GMM_RESOURCE_USAGE_OCL_BUFFER, {}, gmmRequirements));
-    allocation.getDefaultGmm()->isCompressionEnabled = true;
+    allocation.getDefaultGmm()->setCompressionEnabled(true);
     SURFACE_TYPE type = RENDER_SURFACE_STATE::SURFACE_TYPE_SURFTYPE_BUFFER;
     gfxCoreHelper.setRenderSurfaceStateForScratchResource(rootDeviceEnvironment, stateBuffer, size, addr, 0, pitch, &allocation, false, type, true, false);
-    EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    if constexpr (IsAtMostXeHpcCore::isMatched<productFamily>()) {
+        EXPECT_EQ(UnitTestHelper<FamilyType>::getCoherencyTypeSupported(RENDER_SURFACE_STATE::COHERENCY_TYPE_IA_COHERENT), state->getCoherencyType());
+    }
     EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE, state->getAuxiliarySurfaceMode());
 
     delete allocation.getDefaultGmm();
@@ -811,7 +900,7 @@ TEST(GfxCoreHelperCacheFlushTest, givenEnableCacheFlushFlagIsReadPlatformSetting
     EXPECT_TRUE(GfxCoreHelper::cacheFlushAfterWalkerSupported(device->getHardwareInfo()));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, givenGfxCoreHelperWhenGettingGlobalTimeStampBitsThenCorrectValueIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, givenGfxCoreHelperWhenGettingGlobalTimeStampBitsThenCorrectValueIsReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_EQ(gfxCoreHelper.getGlobalTimeStampBits(), 36U);
 }
@@ -845,7 +934,7 @@ TEST_F(GfxCoreHelperTest, givenAUBDumpForceAllToLocalMemoryDebugVarWhenSetThenGe
     EXPECT_TRUE(gfxCoreHelper.getEnableLocalMemory(hardwareInfo));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, givenVariousCachesRequestThenCorrectMocsIndexesAreReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, givenVariousCachesRequestThenCorrectMocsIndexesAreReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto gmmHelper = this->pDevice->getGmmHelper();
     auto expectedMocsForL3off = gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED) >> 1;
@@ -917,19 +1006,19 @@ HWTEST_F(GfxCoreHelperTest, WhenIsBankOverrideRequiredIsCalledThenFalseIsReturne
     EXPECT_FALSE(gfxCoreHelper.isBankOverrideRequired(hardwareInfo, productHelper));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, GivenBarrierEncodingWhenCallingGetBarriersCountFromHasBarrierThenNumberOfBarriersIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, GivenBarrierEncodingWhenCallingGetBarriersCountFromHasBarrierThenNumberOfBarriersIsReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_EQ(0u, gfxCoreHelper.getBarriersCountFromHasBarriers(0u));
     EXPECT_EQ(1u, gfxCoreHelper.getBarriersCountFromHasBarriers(1u));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, GivenVariousValuesWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, GivenVariousValuesWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto result = gfxCoreHelper.calculateAvailableThreadCount(hardwareInfo, 0);
     EXPECT_EQ(hardwareInfo.gtSystemInfo.ThreadCount, result);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, GivenModifiedGtSystemInfoWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, GivenModifiedGtSystemInfoWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto hwInfo = hardwareInfo;
     for (auto threadCount : {1u, 5u, 9u}) {
@@ -955,7 +1044,7 @@ HWTEST_F(GfxCoreHelperTest, givenDefaultGfxCoreHelperHwWhenIsForceDefaultRCSEngi
     EXPECT_FALSE(GfxCoreHelperHw<FamilyType>::isForceDefaultRCSEngineWARequired(hardwareInfo));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, givenDefaultGfxCoreHelperHwWhenIsWorkaroundRequiredCalledThenFalseIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, givenDefaultGfxCoreHelperHwWhenIsWorkaroundRequiredCalledThenFalseIsReturned) {
     if (hardwareInfo.platform.eRenderCoreFamily == IGFX_GEN12LP_CORE) {
         GTEST_SKIP();
     }
@@ -973,7 +1062,7 @@ HWTEST_F(GfxCoreHelperTest, givenDefaultGfxCoreHelperHwWhenMinimalGrfSizeIsQueri
     EXPECT_EQ(128u, gfxCoreHelper.getMinimalGrfSize());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, WhenIsFusedEuDispatchEnabledIsCalledThenFalseIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, WhenIsFusedEuDispatchEnabledIsCalledThenFalseIsReturned) {
     if (hardwareInfo.platform.eRenderCoreFamily == IGFX_GEN12LP_CORE) {
         GTEST_SKIP();
     }
@@ -989,7 +1078,7 @@ HWTEST_F(PipeControlHelperTests, WhenGettingPipeControSizeForCacheFlushThenRetur
 
 HWTEST_F(PipeControlHelperTests, WhenProgrammingCacheFlushThenExpectBasicFieldsSet) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    std::unique_ptr<uint8_t> buffer(new uint8_t[128]);
+    auto buffer = std::make_unique<uint8_t[]>(128);
 
     LinearStream stream(buffer.get(), 128);
     MockExecutionEnvironment mockExecutionEnvironment{};
@@ -1008,9 +1097,28 @@ HWTEST_F(PipeControlHelperTests, WhenProgrammingCacheFlushThenExpectBasicFieldsS
     EXPECT_TRUE(pipeControl->getTlbInvalidate());
 }
 
+HWTEST_F(PipeControlHelperTests, WhenGettingPipeControSizeForInstructionCacheFlushThenReturnCorrectValue) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    size_t actualSize = MemorySynchronizationCommands<FamilyType>::getSizeForInstructionCacheFlush();
+    EXPECT_EQ(sizeof(PIPE_CONTROL), actualSize);
+}
+
+HWTEST_F(PipeControlHelperTests, WhenProgrammingInstructionCacheFlushThenExpectInstructionCacheInvalidateEnableFieldSet) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    auto buffer = std::make_unique<uint8_t[]>(128);
+
+    LinearStream stream(buffer.get(), 128);
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    MemorySynchronizationCommands<FamilyType>::addInstructionCacheFlush(stream);
+    PIPE_CONTROL *pipeControl = genCmdCast<PIPE_CONTROL *>(buffer.get());
+    ASSERT_NE(nullptr, pipeControl);
+
+    EXPECT_TRUE(pipeControl->getInstructionCacheInvalidateEnable());
+}
+
 using ProductHelperCommonTest = Test<DeviceFixture>;
 
-HWTEST2_F(ProductHelperCommonTest, givenBlitterPreferenceWhenEnablingBlitterOperationsSupportThenHonorThePreference, IsAtLeastGen12lp) {
+HWTEST2_F(ProductHelperCommonTest, givenBlitterPreferenceWhenEnablingBlitterOperationsSupportThenHonorThePreference, MatchAny) {
     HardwareInfo hardwareInfo = *defaultHwInfo;
     auto &productHelper = getHelper<ProductHelper>();
     productHelper.configureHardwareCustom(&hardwareInfo, nullptr);
@@ -1048,7 +1156,7 @@ TEST_F(GfxCoreHelperTest, givenInvalidEngineTypeWhenGettingEngineGroupTypeThenTh
     EXPECT_ANY_THROW(gfxCoreHelper.getEngineGroupType(aub_stream::EngineType::ENGINE_VECS, EngineUsage::regular, hardwareInfo));
 }
 
-HWTEST2_F(ProductHelperCommonTest, givenDebugFlagSetWhenEnablingBlitterOperationsSupportThenHonorTheFlag, IsAtLeastGen12lp) {
+HWTEST2_F(ProductHelperCommonTest, givenDebugFlagSetWhenEnablingBlitterOperationsSupportThenHonorTheFlag, MatchAny) {
     DebugManagerStateRestore restore{};
     HardwareInfo hardwareInfo = *defaultHwInfo;
     auto &productHelper = getHelper<ProductHelper>();
@@ -1062,87 +1170,43 @@ HWTEST2_F(ProductHelperCommonTest, givenDebugFlagSetWhenEnablingBlitterOperation
     EXPECT_FALSE(hardwareInfo.capabilityTable.blitterOperationsSupported);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, GivenVariousValuesWhenAlignSlmSizeIsCalledThenCorrectValueIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, GivenVariousValuesWhenAlignSlmSizeIsCalledThenCorrectValueIsReturned) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    if (::renderCoreFamily == IGFX_GEN8_CORE) {
-        EXPECT_EQ(0u, gfxCoreHelper.alignSlmSize(0));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(1));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(1024));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(1025));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(2048));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(2049));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(4096));
-        EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(4097));
-        EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(8192));
-        EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(8193));
-        EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(12288));
-        EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(16384));
-        EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(16385));
-        EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(24576));
-        EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(32768));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(32769));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(49152));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(65535));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(65536));
-    } else {
-        EXPECT_EQ(0u, gfxCoreHelper.alignSlmSize(0));
-        EXPECT_EQ(1024u, gfxCoreHelper.alignSlmSize(1));
-        EXPECT_EQ(1024u, gfxCoreHelper.alignSlmSize(1024));
-        EXPECT_EQ(2048u, gfxCoreHelper.alignSlmSize(1025));
-        EXPECT_EQ(2048u, gfxCoreHelper.alignSlmSize(2048));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(2049));
-        EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(4096));
-        EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(4097));
-        EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(8192));
-        EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(8193));
-        EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(16384));
-        EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(16385));
-        EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(32768));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(32769));
-        EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(65536));
-    }
+    EXPECT_EQ(0u, gfxCoreHelper.alignSlmSize(0));
+    EXPECT_EQ(1024u, gfxCoreHelper.alignSlmSize(1));
+    EXPECT_EQ(1024u, gfxCoreHelper.alignSlmSize(1024));
+    EXPECT_EQ(2048u, gfxCoreHelper.alignSlmSize(1025));
+    EXPECT_EQ(2048u, gfxCoreHelper.alignSlmSize(2048));
+    EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(2049));
+    EXPECT_EQ(4096u, gfxCoreHelper.alignSlmSize(4096));
+    EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(4097));
+    EXPECT_EQ(8192u, gfxCoreHelper.alignSlmSize(8192));
+    EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(8193));
+    EXPECT_EQ(16384u, gfxCoreHelper.alignSlmSize(16384));
+    EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(16385));
+    EXPECT_EQ(32768u, gfxCoreHelper.alignSlmSize(32768));
+    EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(32769));
+    EXPECT_EQ(65536u, gfxCoreHelper.alignSlmSize(65536));
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, GivenVariousValuesWhenComputeSlmSizeIsCalledThenCorrectValueIsReturned) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, GivenVariousValuesWhenComputeSlmSizeIsCalledThenCorrectValueIsReturned) {
     auto hwInfo = *defaultHwInfo;
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    if (::renderCoreFamily == IGFX_GEN8_CORE) {
-        EXPECT_EQ(0u, gfxCoreHelper.computeSlmValues(hwInfo, 0));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1024));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1025));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 2048));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 2049));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 4096));
-        EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 4097));
-        EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 8192));
-        EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 8193));
-        EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 12288));
-        EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 16384));
-        EXPECT_EQ(8u, gfxCoreHelper.computeSlmValues(hwInfo, 16385));
-        EXPECT_EQ(8u, gfxCoreHelper.computeSlmValues(hwInfo, 24576));
-        EXPECT_EQ(8u, gfxCoreHelper.computeSlmValues(hwInfo, 32768));
-        EXPECT_EQ(16u, gfxCoreHelper.computeSlmValues(hwInfo, 32769));
-        EXPECT_EQ(16u, gfxCoreHelper.computeSlmValues(hwInfo, 49152));
-        EXPECT_EQ(16u, gfxCoreHelper.computeSlmValues(hwInfo, 65535));
-        EXPECT_EQ(16u, gfxCoreHelper.computeSlmValues(hwInfo, 65536));
-    } else {
-        EXPECT_EQ(0u, gfxCoreHelper.computeSlmValues(hwInfo, 0));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1));
-        EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1024));
-        EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 1025));
-        EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 2048));
-        EXPECT_EQ(3u, gfxCoreHelper.computeSlmValues(hwInfo, 2049));
-        EXPECT_EQ(3u, gfxCoreHelper.computeSlmValues(hwInfo, 4096));
-        EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 4097));
-        EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 8192));
-        EXPECT_EQ(5u, gfxCoreHelper.computeSlmValues(hwInfo, 8193));
-        EXPECT_EQ(5u, gfxCoreHelper.computeSlmValues(hwInfo, 16384));
-        EXPECT_EQ(6u, gfxCoreHelper.computeSlmValues(hwInfo, 16385));
-        EXPECT_EQ(6u, gfxCoreHelper.computeSlmValues(hwInfo, 32768));
-        EXPECT_EQ(7u, gfxCoreHelper.computeSlmValues(hwInfo, 32769));
-        EXPECT_EQ(7u, gfxCoreHelper.computeSlmValues(hwInfo, 65536));
-    }
+    EXPECT_EQ(0u, gfxCoreHelper.computeSlmValues(hwInfo, 0));
+    EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1));
+    EXPECT_EQ(1u, gfxCoreHelper.computeSlmValues(hwInfo, 1024));
+    EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 1025));
+    EXPECT_EQ(2u, gfxCoreHelper.computeSlmValues(hwInfo, 2048));
+    EXPECT_EQ(3u, gfxCoreHelper.computeSlmValues(hwInfo, 2049));
+    EXPECT_EQ(3u, gfxCoreHelper.computeSlmValues(hwInfo, 4096));
+    EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 4097));
+    EXPECT_EQ(4u, gfxCoreHelper.computeSlmValues(hwInfo, 8192));
+    EXPECT_EQ(5u, gfxCoreHelper.computeSlmValues(hwInfo, 8193));
+    EXPECT_EQ(5u, gfxCoreHelper.computeSlmValues(hwInfo, 16384));
+    EXPECT_EQ(6u, gfxCoreHelper.computeSlmValues(hwInfo, 16385));
+    EXPECT_EQ(6u, gfxCoreHelper.computeSlmValues(hwInfo, 32768));
+    EXPECT_EQ(7u, gfxCoreHelper.computeSlmValues(hwInfo, 32769));
+    EXPECT_EQ(7u, gfxCoreHelper.computeSlmValues(hwInfo, 65536));
 }
 
 HWTEST_F(GfxCoreHelperTest, GivenZeroSlmSizeWhenComputeSlmSizeIsCalledThenCorrectValueIsReturned) {
@@ -1150,10 +1214,10 @@ HWTEST_F(GfxCoreHelperTest, GivenZeroSlmSizeWhenComputeSlmSizeIsCalledThenCorrec
     auto hwInfo = *defaultHwInfo;
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto receivedSlmSize = static_cast<SHARED_LOCAL_MEMORY_SIZE>(gfxCoreHelper.computeSlmValues(hwInfo, 0));
-    EXPECT_EQ(SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_0K, receivedSlmSize);
+    EXPECT_EQ(SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_0K, receivedSlmSize);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, GfxCoreHelperTest, givenGfxCoreHelperWhenGettingPlanarYuvHeightThenHelperReturnsCorrectValue) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, GfxCoreHelperTest, givenGfxCoreHelperWhenGettingPlanarYuvHeightThenHelperReturnsCorrectValue) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_EQ(gfxCoreHelper.getPlanarYuvMaxHeight(), 16352u);
 }
@@ -1162,19 +1226,6 @@ TEST_F(GfxCoreHelperTest, WhenGettingIsCpuImageTransferPreferredThenFalseIsRetur
     REQUIRE_IMAGES_OR_SKIP(defaultHwInfo);
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_FALSE(gfxCoreHelper.isCpuImageTransferPreferred(*defaultHwInfo));
-}
-
-TEST_F(GfxCoreHelperTest, whenFtrGpGpuMidThreadLevelPreemptFeatureDisabledThenFalseIsReturned) {
-    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    FeatureTable featureTable = {};
-    featureTable.flags.ftrGpGpuMidThreadLevelPreempt = false;
-    bool result = gfxCoreHelper.isAdditionalFeatureFlagRequired(&featureTable);
-    EXPECT_FALSE(result);
-}
-
-HWTEST_F(GfxCoreHelperTest, whenGettingNumberOfCacheRegionsThenReturnZero) {
-    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    EXPECT_EQ(0u, gfxCoreHelper.getNumCacheRegions());
 }
 
 HWTEST_F(GfxCoreHelperTest, whenSetCompressedFlagThenProperFlagSet) {
@@ -1224,7 +1275,7 @@ HWTEST2_F(GfxCoreHelperTest, givenXeHPAndBelowPlatformPlatformWhenCheckingIfEngi
     EXPECT_FALSE(gfxCoreHelper.isEngineTypeRemappingToHwSpecificRequired());
 }
 
-HWTEST2_F(GfxCoreHelperTest, givenAtMostGen12lpPlatformiWhenCheckingIfScratchSpaceSurfaceStateAccessibleThenFalseIsReturned, IsAtMostGen12lp) {
+HWTEST2_F(GfxCoreHelperTest, givenAtMostGen12lpPlatformiWhenCheckingIfScratchSpaceSurfaceStateAccessibleThenFalseIsReturned, IsGen12LP) {
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_FALSE(gfxCoreHelper.isScratchSpaceSurfaceStateAccessible());
 }
@@ -1249,9 +1300,10 @@ HWTEST_F(GfxCoreHelperTest, givenGetRenderSurfaceStatePitchCalledThenCorrectValu
 
     RENDER_SURFACE_STATE renderSurfaceState;
     uint32_t expectedPitch = 0x400;
-    renderSurfaceState.setSurfacePitch(expectedPitch);
+    const auto &productHelper = getHelper<ProductHelper>();
+    EncodeSurfaceState<FamilyType>::setPitchForScratch(&renderSurfaceState, expectedPitch, productHelper);
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    EXPECT_EQ(expectedPitch, gfxCoreHelper.getRenderSurfaceStatePitch(&renderSurfaceState));
+    EXPECT_EQ(expectedPitch, gfxCoreHelper.getRenderSurfaceStatePitch(&renderSurfaceState, productHelper));
 }
 
 HWTEST_F(GfxCoreHelperTest, whenBlitterSupportIsDisabledThenDontExposeAnyBcsEngine) {
@@ -1274,8 +1326,6 @@ HWTEST_F(GfxCoreHelperTest, givenGfxCoreHelperWhenGettingIsPlatformFlushTaskEnab
 struct CoherentWANotNeeded {
     template <PRODUCT_FAMILY productFamily>
     static constexpr bool isMatched() {
-        if (productFamily == IGFX_BROADWELL)
-            return false;
         return !TestTraits<NEO::ToGfxCoreFamily<productFamily>::get()>::forceGpuNonCoherent;
     }
 };
@@ -1283,8 +1333,6 @@ struct CoherentWANotNeeded {
 struct ForceNonCoherentMode {
     template <PRODUCT_FAMILY productFamily>
     static constexpr bool isMatched() {
-        if (productFamily == IGFX_BROADWELL)
-            return false;
         return TestTraits<NEO::ToGfxCoreFamily<productFamily>::get()>::forceGpuNonCoherent;
     }
 };
@@ -1322,11 +1370,6 @@ HWTEST2_F(GfxCoreHelperTest, givenGfxCoreHelperWhenCallCopyThroughLockedPtrEnabl
     EXPECT_FALSE(gfxCoreHelper.copyThroughLockedPtrEnabled(*defaultHwInfo, productHelper));
 }
 
-HWTEST2_F(GfxCoreHelperTest, givenGfxCoreHelperWhenCallGetAmountOfAllocationsToFillThenReturnFalse, IsNotXeHpcCore) {
-    const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 0u);
-}
-
 HWTEST_F(GfxCoreHelperTest, givenGfxCoreHelperWhenFlagSetAndCallCopyThroughLockedPtrEnabledThenReturnCorrectValue) {
     DebugManagerStateRestore restorer;
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
@@ -1338,9 +1381,11 @@ HWTEST_F(GfxCoreHelperTest, givenGfxCoreHelperWhenFlagSetAndCallCopyThroughLocke
     EXPECT_TRUE(gfxCoreHelper.copyThroughLockedPtrEnabled(*defaultHwInfo, productHelper));
 }
 
-HWTEST_F(GfxCoreHelperTest, givenGfxCoreHelperWhenFlagSetAndCallGetAmountOfAllocationsToFillThenReturnCorrectValue) {
+HWTEST2_F(GfxCoreHelperTest, givenGfxCoreHelperWhenFlagSetAndCallGetAmountOfAllocationsToFillThenReturnCorrectValue, IsBeforeXeHpCore) {
     DebugManagerStateRestore restorer;
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 0u);
+
     debugManager.flags.SetAmountOfReusableAllocations.set(0);
     EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 0u);
 
@@ -1348,34 +1393,7 @@ HWTEST_F(GfxCoreHelperTest, givenGfxCoreHelperWhenFlagSetAndCallGetAmountOfAlloc
     EXPECT_EQ(gfxCoreHelper.getAmountOfAllocationsToFill(), 1u);
 }
 
-HWTEST2_F(GfxCoreHelperTest, GivenVariousValuesAndXeHpOrXeHpgCoreWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned, IsXeHpOrXeHpgCore) {
-    std::array<std::pair<uint32_t, uint32_t>, 3> grfTestInputs = {{{64, 8},
-                                                                   {128, 8},
-                                                                   {256, 4}}};
-
-    const auto &hwInfo = *defaultHwInfo;
-    const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    for (const auto &[grfCount, expectedThreadCountPerEu] : grfTestInputs) {
-        auto expected = expectedThreadCountPerEu * hwInfo.gtSystemInfo.EUCount;
-        auto result = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, grfCount);
-        EXPECT_EQ(expected, result);
-    }
-}
-
-HWTEST2_F(GfxCoreHelperTest, GivenModifiedGtSystemInfoAndXeHpOrXeHpgCoreWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned, IsXeHpOrXeHpgCore) {
-    std::array<std::tuple<uint32_t, uint32_t, uint32_t>, 3> testInputs = {{{1, 64, 1},
-                                                                           {5, 128, 5},
-                                                                           {8, 256, 4}}};
-    const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    auto hwInfo = hardwareInfo;
-    for (const auto &[threadCount, grfCount, expectedThreadCount] : testInputs) {
-        hwInfo.gtSystemInfo.ThreadCount = threadCount;
-        auto result = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, grfCount);
-        EXPECT_EQ(expectedThreadCount, result);
-    }
-}
-
-HWTEST2_F(GfxCoreHelperTest, givenAtMostGen12lpPlatformWhenGettingMinimalScratchSpaceSizeThen1024IsReturned, IsAtMostGen12lp) {
+HWTEST2_F(GfxCoreHelperTest, givenAtMostGen12lpPlatformWhenGettingMinimalScratchSpaceSizeThen1024IsReturned, IsGen12LP) {
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_EQ(1024U, gfxCoreHelper.getMinimalScratchSpaceSize());
 }
@@ -1403,6 +1421,35 @@ HWTEST_F(GfxCoreHelperTest, WhenIsDynamicallyPopulatedIsFalseThenGetHighestEnabl
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto maxDualSubSlice = gfxCoreHelper.getHighestEnabledDualSubSlice(hwInfo);
     EXPECT_EQ(maxDualSubSlice, hwInfo.gtSystemInfo.MaxDualSubSlicesSupported);
+}
+
+TEST_F(GfxCoreHelperTest, givenMaxDualSubSlicesSupportedAndNoDSSInfoThenMaxEnabledDualSubSliceIsCalculatedBasedOnMaxDSSPerSlice) {
+    HardwareInfo hwInfo = *defaultHwInfo.get();
+
+    constexpr uint32_t numFusedOutSlices = 2u;
+    constexpr uint32_t maxSlices = 2u;
+    constexpr uint32_t maxSliceIndex = numFusedOutSlices + maxSlices - 1;
+    constexpr uint32_t dualSubSlicesPerSlice = 5u;
+
+    constexpr uint32_t maxDualSubSliceEnabled = 20u;
+
+    hwInfo.gtSystemInfo.MaxSlicesSupported = maxSlices;
+    hwInfo.gtSystemInfo.MaxSubSlicesSupported = 0u;
+    hwInfo.gtSystemInfo.MaxDualSubSlicesSupported = maxSlices * dualSubSlicesPerSlice;
+    hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
+
+    for (uint32_t slice = 0u; slice < GT_MAX_SLICE; slice++) {
+        hwInfo.gtSystemInfo.SliceInfo[slice].Enabled = false;
+        for (uint32_t dualSubSlice = 0; dualSubSlice < GT_MAX_DUALSUBSLICE_PER_SLICE; dualSubSlice++) {
+            hwInfo.gtSystemInfo.SliceInfo[slice].DSSInfo[dualSubSlice].Enabled = false;
+        }
+        for (uint32_t subSlice = 0; subSlice < GT_MAX_SUBSLICE_PER_SLICE; subSlice++) {
+            hwInfo.gtSystemInfo.SliceInfo[slice].SubSliceInfo[subSlice].Enabled = false;
+        }
+    }
+    hwInfo.gtSystemInfo.SliceInfo[maxSliceIndex].Enabled = true;
+
+    EXPECT_EQ(maxDualSubSliceEnabled, GfxCoreHelper::getHighestEnabledDualSubSlice(hwInfo));
 }
 
 TEST_F(GfxCoreHelperTest, givenNoMaxDualSubSlicesSupportedThenMaxEnabledDualSubSliceIsCalculatedBasedOnSubSlices) {
@@ -1435,7 +1482,36 @@ TEST_F(GfxCoreHelperTest, givenNoMaxDualSubSlicesSupportedThenMaxEnabledDualSubS
     EXPECT_EQ(maxSubSliceEnabled, GfxCoreHelper::getHighestEnabledDualSubSlice(hwInfo));
 }
 
-HWTEST2_F(GfxCoreHelperTest, givenLargeGrfIsNotSupportedWhenCalculatingMaxWorkGroupSizeThenAlwaysReturnDeviceDefault, IsAtMostGen12lp) {
+TEST_F(GfxCoreHelperTest, givenNoMaxDualSubSlicesSupportedAndNoSubSliceInfoThenMaxEnabledDualSubSliceIsCalculatedBasedOnMaxSubSlicesPerSlice) {
+    HardwareInfo hwInfo = *defaultHwInfo.get();
+
+    constexpr uint32_t numFusedOutSlices = 2u;
+    constexpr uint32_t maxSlices = 2u;
+    constexpr uint32_t maxSliceIndex = numFusedOutSlices + maxSlices - 1;
+    constexpr uint32_t subSlicesPerSlice = 5u;
+
+    constexpr uint32_t maxSubSliceEnabled = 20u;
+
+    hwInfo.gtSystemInfo.MaxSlicesSupported = maxSlices;
+    hwInfo.gtSystemInfo.MaxSubSlicesSupported = maxSlices * subSlicesPerSlice;
+    hwInfo.gtSystemInfo.MaxDualSubSlicesSupported = 0u;
+    hwInfo.gtSystemInfo.IsDynamicallyPopulated = true;
+
+    for (uint32_t slice = 0u; slice < GT_MAX_SLICE; slice++) {
+        hwInfo.gtSystemInfo.SliceInfo[slice].Enabled = false;
+        for (uint32_t dualSubSlice = 0; dualSubSlice < GT_MAX_DUALSUBSLICE_PER_SLICE; dualSubSlice++) {
+            hwInfo.gtSystemInfo.SliceInfo[slice].DSSInfo[dualSubSlice].Enabled = false;
+        }
+        for (uint32_t subSlice = 0; subSlice < GT_MAX_SUBSLICE_PER_SLICE; subSlice++) {
+            hwInfo.gtSystemInfo.SliceInfo[slice].SubSliceInfo[subSlice].Enabled = false;
+        }
+    }
+    hwInfo.gtSystemInfo.SliceInfo[maxSliceIndex].Enabled = true;
+
+    EXPECT_EQ(maxSubSliceEnabled, GfxCoreHelper::getHighestEnabledDualSubSlice(hwInfo));
+}
+
+HWTEST2_F(GfxCoreHelperTest, givenLargeGrfIsNotSupportedWhenCalculatingMaxWorkGroupSizeThenAlwaysReturnDeviceDefault, IsGen12LP) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto defaultMaxGroupSize = 42u;
 
@@ -1522,33 +1598,30 @@ HWTEST_F(GfxCoreHelperTest, GivenCooperativeEngineSupportedAndNotUsedWhenAdjustM
         }
         hwInfo.platform.usRevId = hwRevId;
 
-        for (auto isEngineInstanced : ::testing::Bool()) {
-            for (auto isRcsEnabled : ::testing::Bool()) {
-                hwInfo.featureTable.flags.ftrRcsNode = isRcsEnabled;
-                for (auto engineGroupType : {EngineGroupType::renderCompute, EngineGroupType::compute, EngineGroupType::cooperativeCompute}) {
-                    if (productHelper.isCooperativeEngineSupported(hwInfo)) {
-                        bool disallowDispatch = (engineGroupType == EngineGroupType::renderCompute) ||
-                                                ((engineGroupType == EngineGroupType::compute) && isRcsEnabled);
-                        bool applyLimitation = !isEngineInstanced &&
-                                               (engineGroupType != EngineGroupType::cooperativeCompute);
-                        if (disallowDispatch) {
-                            EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                            EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                        } else if (applyLimitation) {
-                            hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = 4;
-                            EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                            EXPECT_EQ(256u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                            hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = 2;
-                            EXPECT_EQ(2u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                            EXPECT_EQ(512u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                        } else {
-                            EXPECT_EQ(4u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                            EXPECT_EQ(1024u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                        }
+        for (auto isRcsEnabled : ::testing::Bool()) {
+            hwInfo.featureTable.flags.ftrRcsNode = isRcsEnabled;
+            for (auto engineGroupType : {EngineGroupType::renderCompute, EngineGroupType::compute, EngineGroupType::cooperativeCompute}) {
+                if (productHelper.isCooperativeEngineSupported(hwInfo)) {
+                    bool disallowDispatch = (engineGroupType == EngineGroupType::renderCompute) ||
+                                            ((engineGroupType == EngineGroupType::compute) && isRcsEnabled);
+                    bool applyLimitation = engineGroupType != EngineGroupType::cooperativeCompute;
+                    if (disallowDispatch) {
+                        EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment));
+                        EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment));
+                    } else if (applyLimitation) {
+                        hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = 4;
+                        EXPECT_EQ(1u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment));
+                        EXPECT_EQ(256u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment));
+                        hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled = 2;
+                        EXPECT_EQ(2u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment));
+                        EXPECT_EQ(512u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment));
                     } else {
-                        EXPECT_EQ(4u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
-                        EXPECT_EQ(1024u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment, isEngineInstanced));
+                        EXPECT_EQ(4u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment));
+                        EXPECT_EQ(1024u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment));
                     }
+                } else {
+                    EXPECT_EQ(4u, gfxCoreHelper.adjustMaxWorkGroupCount(4u, engineGroupType, rootDeviceEnvironment));
+                    EXPECT_EQ(1024u, gfxCoreHelper.adjustMaxWorkGroupCount(1024u, engineGroupType, rootDeviceEnvironment));
                 }
             }
         }
@@ -1557,25 +1630,27 @@ HWTEST_F(GfxCoreHelperTest, GivenCooperativeEngineSupportedAndNotUsedWhenAdjustM
 
 HWTEST_F(GfxCoreHelperTest, givenNumGrfAndSimdSizeWhenAdjustingMaxWorkGroupSizeThenAlwaysReturnDeviceDefault) {
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    const auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
     constexpr auto defaultMaxGroupSize = 1024u;
 
     uint32_t simdSize = 16u;
     uint32_t isHwLocalIdGeneration = true;
     uint32_t numGrfRequired = GrfConfig::largeGrfNumber;
-    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize));
+    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize, rootDeviceEnvironment));
 
     simdSize = 32u;
     numGrfRequired = GrfConfig::largeGrfNumber;
-    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize));
+    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize, rootDeviceEnvironment));
 
     simdSize = 16u;
     isHwLocalIdGeneration = false;
     numGrfRequired = GrfConfig::defaultGrfNumber;
-    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize));
+    EXPECT_EQ(defaultMaxGroupSize, gfxCoreHelper.adjustMaxWorkGroupSize(numGrfRequired, simdSize, isHwLocalIdGeneration, defaultMaxGroupSize, rootDeviceEnvironment));
 }
 
 HWTEST2_F(GfxCoreHelperTest, givenParamsWhenCalculateNumThreadsPerThreadGroupThenMethodReturnProperValue, IsAtMostXeHpcCore) {
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    const auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
     std::array<std::array<uint32_t, 3>, 8> values = {{
         {32u, 32u, 1u}, // SIMT Size, totalWorkItems, Max Num of threads
         {32u, 64u, 2u},
@@ -1588,20 +1663,15 @@ HWTEST2_F(GfxCoreHelperTest, givenParamsWhenCalculateNumThreadsPerThreadGroupThe
     }};
 
     for (auto &[simtSize, totalWgSize, expectedNumThreadsPerThreadGroup] : values) {
-        EXPECT_EQ(expectedNumThreadsPerThreadGroup, gfxCoreHelper.calculateNumThreadsPerThreadGroup(simtSize, totalWgSize, 32u, true));
+        EXPECT_EQ(expectedNumThreadsPerThreadGroup, gfxCoreHelper.calculateNumThreadsPerThreadGroup(simtSize, totalWgSize, 32u, true, rootDeviceEnvironment));
     }
-}
-
-HWTEST2_F(GfxCoreHelperTest, givenDebugModeWhenCheckingIfRunaloneModeRequiredThenMethodReturnFalseValue, IsAtMostXeHpcCore) {
-    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
-    EXPECT_FALSE(gfxCoreHelper.isRunaloneModeRequired(DebuggingMode::offline));
-    EXPECT_FALSE(gfxCoreHelper.isRunaloneModeRequired(DebuggingMode::online));
 }
 
 HWTEST_F(GfxCoreHelperTest, givenFlagRemoveRestrictionsOnNumberOfThreadsInGpgpuThreadGroupWhenCalculateNumThreadsPerThreadGroupThenMethodReturnProperValue) {
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.RemoveRestrictionsOnNumberOfThreadsInGpgpuThreadGroup.set(1);
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    const auto &rootDeviceEnvironment = pDevice->getRootDeviceEnvironment();
 
     std::array<std::array<uint32_t, 5>, 8> values = {{
         {32u, 32u, 128u, 1, 1u}, // SIMT Size, totalWorkItems, Max Num of threads, Grf size, Hw local id generation
@@ -1615,14 +1685,14 @@ HWTEST_F(GfxCoreHelperTest, givenFlagRemoveRestrictionsOnNumberOfThreadsInGpgpuT
     }};
 
     for (auto &[simtSize, totalWgSize, grfsize, isHwLocalIdGeneration, expectedNumThreadsPerThreadGroup] : values) {
-        EXPECT_EQ(expectedNumThreadsPerThreadGroup, gfxCoreHelper.calculateNumThreadsPerThreadGroup(simtSize, totalWgSize, grfsize, isHwLocalIdGeneration));
+        EXPECT_EQ(expectedNumThreadsPerThreadGroup, gfxCoreHelper.calculateNumThreadsPerThreadGroup(simtSize, totalWgSize, grfsize, isHwLocalIdGeneration, rootDeviceEnvironment));
     }
 }
 
-HWTEST2_F(GfxCoreHelperTest, whenGetDefaultDeviceHierarchyThenReturnFlatHierarchy, IsNotXeHpcCore) {
+HWTEST2_F(GfxCoreHelperTest, whenGetDefaultDeviceHierarchyThenReturnCompositeHierarchy, IsNotXeHpcCore) {
     const auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     auto defaultDeviceHierarchy = gfxCoreHelper.getDefaultDeviceHierarchy();
-    EXPECT_STREQ("COMPOSITE", defaultDeviceHierarchy);
+    EXPECT_EQ(DeviceHierarchyMode::composite, defaultDeviceHierarchy);
 }
 
 HWTEST_F(GfxCoreHelperTest, givenContextGroupDisabledWhenContextGroupContextsCountAndSecondaryContextsSupportQueriedThenZeroCountAndFalseIsReturned) {
@@ -1637,6 +1707,8 @@ TEST_F(GfxCoreHelperTest, givenContextGroupEnabledWithDebugKeyWhenContextGroupCo
     auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
     EXPECT_EQ(8u, gfxCoreHelper.getContextGroupContextsCount());
     EXPECT_TRUE(gfxCoreHelper.areSecondaryContextsSupported());
+    EXPECT_EQ(4u, gfxCoreHelper.getContextGroupHpContextsCount(EngineGroupType::copy, false));
+    EXPECT_EQ(0u, gfxCoreHelper.getContextGroupHpContextsCount(EngineGroupType::copy, true));
 
     debugManager.flags.ContextGroupSize.set(1);
     EXPECT_EQ(1u, gfxCoreHelper.getContextGroupContextsCount());
@@ -1645,10 +1717,42 @@ TEST_F(GfxCoreHelperTest, givenContextGroupEnabledWithDebugKeyWhenContextGroupCo
     debugManager.flags.ContextGroupSize.set(2);
     EXPECT_EQ(2u, gfxCoreHelper.getContextGroupContextsCount());
     EXPECT_TRUE(gfxCoreHelper.areSecondaryContextsSupported());
+    EXPECT_EQ(1u, gfxCoreHelper.getContextGroupHpContextsCount(EngineGroupType::copy, false));
+    EXPECT_EQ(0u, gfxCoreHelper.getContextGroupHpContextsCount(EngineGroupType::copy, true));
 }
 
 HWTEST_F(GfxCoreHelperTest, whenAskingIf48bResourceNeededForCmdBufferThenReturnTrue) {
     EXPECT_TRUE(getHelper<GfxCoreHelper>().is48ResourceNeededForCmdBuffer());
+}
+
+HWTEST_F(GfxCoreHelperTest, givenDebugVariableSetWhenAskingForDuplicatedInOrderHostStorageThenReturnCorrectValue) {
+    DebugManagerStateRestore restore;
+
+    auto &helper = getHelper<GfxCoreHelper>();
+    auto &rootExecEnv = *pDevice->getExecutionEnvironment()->rootDeviceEnvironments[0];
+
+    EXPECT_FALSE(helper.duplicatedInOrderCounterStorageEnabled(rootExecEnv));
+
+    debugManager.flags.InOrderDuplicatedCounterStorageEnabled.set(1);
+    EXPECT_TRUE(helper.duplicatedInOrderCounterStorageEnabled(rootExecEnv));
+
+    debugManager.flags.InOrderDuplicatedCounterStorageEnabled.set(0);
+    EXPECT_FALSE(helper.duplicatedInOrderCounterStorageEnabled(rootExecEnv));
+}
+
+HWTEST_F(GfxCoreHelperTest, givenDebugVariableSetWhenAskingForInOrderAtomicSignalingThenReturnCorrectValue) {
+    DebugManagerStateRestore restore;
+
+    auto &helper = getHelper<GfxCoreHelper>();
+    auto &rootExecEnv = *pDevice->getExecutionEnvironment()->rootDeviceEnvironments[0];
+
+    EXPECT_FALSE(helper.inOrderAtomicSignallingEnabled(rootExecEnv));
+
+    debugManager.flags.InOrderAtomicSignallingEnabled.set(1);
+    EXPECT_TRUE(helper.inOrderAtomicSignallingEnabled(rootExecEnv));
+
+    debugManager.flags.InOrderAtomicSignallingEnabled.set(0);
+    EXPECT_FALSE(helper.inOrderAtomicSignallingEnabled(rootExecEnv));
 }
 
 TEST_F(GfxCoreHelperTest, whenOnlyPerThreadPrivateMemorySizeIsDefinedThenItIsReturnedAsKernelPrivateMemorySize) {
@@ -1667,6 +1771,138 @@ HWTEST_F(GfxCoreHelperTest, givenCooperativeKernelWhenAskingForSingleTileDispatc
 HWTEST2_F(GfxCoreHelperTest, whenPrivateScratchSizeIsDefinedThenItIsReturnedAsKernelPrivateMemorySize, IsAtLeastXeHpCore) {
     KernelDescriptor kernelDescriptor{};
     kernelDescriptor.kernelAttributes.perHwThreadPrivateMemorySize = 0x100u;
-    kernelDescriptor.kernelAttributes.perThreadScratchSize[1] = 0x200u;
+    kernelDescriptor.kernelAttributes.privateScratchMemorySize = 0x200u;
     EXPECT_EQ(0x200u, getHelper<GfxCoreHelper>().getKernelPrivateMemSize(kernelDescriptor));
+}
+
+HWTEST_F(GfxCoreHelperTest, givenEncodeDispatchKernelWhenUsingGfxHelperThenSameDataPrpvided) {
+    auto &helper = getHelper<GfxCoreHelper>();
+
+    uint32_t workDim = 1;
+    uint32_t simd = 8;
+    size_t lws[3] = {16, 1, 1};
+    std::array<uint8_t, 3> walkOrder = {};
+    uint32_t requiredWalkOrder = 0u;
+
+    bool encoderReturn = EncodeDispatchKernel<FamilyType>::isRuntimeLocalIdsGenerationRequired(
+        workDim, lws, walkOrder, true, requiredWalkOrder, simd);
+
+    uint32_t helperRequiredWalkOrder = 0u;
+
+    bool helperReturn = helper.isRuntimeLocalIdsGenerationRequired(
+        workDim, lws, walkOrder, true, helperRequiredWalkOrder, simd);
+
+    EXPECT_EQ(encoderReturn, helperReturn);
+    EXPECT_EQ(requiredWalkOrder, helperRequiredWalkOrder);
+}
+
+HWTEST_F(GfxCoreHelperTest, whenCallGetMaxPtssIndexThenCorrectValue) {
+    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    const auto &productHelper = getHelper<ProductHelper>();
+    EXPECT_EQ(15u, gfxCoreHelper.getMaxPtssIndex(productHelper));
+}
+
+HWTEST_F(GfxCoreHelperTest, whenEncodeAdditionalTimestampOffsetsThenNothingEncoded) {
+    using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
+    constexpr static auto bufferSize = sizeof(MI_STORE_REGISTER_MEM);
+    char streamBuffer[bufferSize];
+    LinearStream stream(streamBuffer, bufferSize);
+    uint64_t fstAddress = 0;
+    uint64_t sndAddress = 0;
+    MemorySynchronizationCommands<FamilyType>::encodeAdditionalTimestampOffsets(stream, fstAddress, sndAddress, false);
+
+    HardwareParse hwParser;
+    hwParser.parseCommands<FamilyType>(stream, 0);
+    GenCmdList storeRegMemList = hwParser.getCommandsList<MI_STORE_REGISTER_MEM>();
+    EXPECT_EQ(0u, storeRegMemList.size());
+}
+
+HWTEST2_F(GfxCoreHelperTest, GivenVariousValuesWhenCallingCalculateAvailableThreadCountAndThreadCountAvailableIsBiggerThenCorrectValueIsReturned, IsAtMostXe2HpgCore) {
+    std::array<std::pair<uint32_t, uint32_t>, 2> grfTestInputs = {{{128, 8},
+                                                                   {256, 4}}};
+    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    for (const auto &[grfCount, expectedThreadCountPerEu] : grfTestInputs) {
+        auto expected = expectedThreadCountPerEu * hardwareInfo.gtSystemInfo.EUCount;
+        // force allways bigger Thread Count available
+        hardwareInfo.gtSystemInfo.ThreadCount = 2 * expected;
+        auto result = gfxCoreHelper.calculateAvailableThreadCount(hardwareInfo, grfCount);
+        EXPECT_EQ(expected, result);
+    }
+}
+
+HWTEST2_F(GfxCoreHelperTest, GivenVariousValuesWhenCallingCalculateAvailableThreadCountAndThreadCountAvailableIsSmallerThenThreadCountIsReturned, IsAtMostXe2HpgCore) {
+    std::array<std::pair<uint32_t, uint32_t>, 2> grfTestInputs = {{
+        {128, 8},
+        {256, 4},
+    }};
+    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    for (const auto &[grfCount, expectedThreadCountPerEu] : grfTestInputs) {
+        auto calculatedThreadCount = expectedThreadCountPerEu * hardwareInfo.gtSystemInfo.EUCount;
+        // force thread count smaller than calculation
+        hardwareInfo.gtSystemInfo.ThreadCount = calculatedThreadCount / 2;
+        auto result = gfxCoreHelper.calculateAvailableThreadCount(hardwareInfo, grfCount);
+        EXPECT_EQ(hardwareInfo.gtSystemInfo.ThreadCount, result);
+    }
+}
+
+HWTEST2_F(GfxCoreHelperTest, GivenModifiedGtSystemInfoWhenCallingCalculateAvailableThreadCountThenCorrectValueIsReturned, IsAtMostXe2HpgCore) {
+    std::array<std::pair<uint32_t, uint32_t>, 2> testInputs = {{{64, 256},
+                                                                {128, 512}}};
+    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    auto hwInfo = hardwareInfo;
+    for (const auto &[euCount, expectedThreadCount] : testInputs) {
+        // force thread count bigger than expected
+        hwInfo.gtSystemInfo.ThreadCount = 1024;
+        hwInfo.gtSystemInfo.EUCount = euCount;
+        auto result = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, 256);
+        EXPECT_EQ(expectedThreadCount, result);
+    }
+}
+
+HWTEST_F(GfxCoreHelperTest, givenGetDeviceTimestampWidthCalledThenReturnCorrectValue) {
+    DebugManagerStateRestore restore;
+
+    auto &helper = getHelper<GfxCoreHelper>();
+    EXPECT_EQ(0u, helper.getDeviceTimestampWidth());
+
+    debugManager.flags.OverrideTimestampWidth.set(64);
+    EXPECT_EQ(64u, helper.getDeviceTimestampWidth());
+}
+
+HWTEST_F(GfxCoreHelperTest, givenHwHelperWhenAligningThreadGroupCountToDssSizeThenThreadGroupCountChanged) {
+    auto &helper = getHelper<GfxCoreHelper>();
+    uint32_t threadGroupCountBefore = 4096;
+    uint32_t threadCount = threadGroupCountBefore;
+    helper.alignThreadGroupCountToDssSize(threadCount, 1, 1, 1);
+    EXPECT_NE(threadGroupCountBefore, threadCount);
+}
+
+HWTEST_F(GfxCoreHelperTest, givenHwHelperWhenThreadGroupCountIsAlignedToDssThenThreadCountNotChanged) {
+    auto &helper = getHelper<GfxCoreHelper>();
+    uint32_t dssCount = 16;
+    uint32_t threadGroupSize = 32;
+    uint32_t threadsPerDss = 2 * threadGroupSize;
+    uint32_t maxThreadCount = (dssCount * threadsPerDss) / threadGroupSize;
+    uint32_t threadCount = maxThreadCount;
+    helper.alignThreadGroupCountToDssSize(threadCount, dssCount, threadsPerDss, threadGroupSize);
+    EXPECT_EQ(2 * dssCount, threadCount);
+}
+
+HWTEST_F(GfxCoreHelperTest, givenHwHelperWhenThreadGroupCountIsAlignedToDssThenThreadCountChanged) {
+    auto &helper = getHelper<GfxCoreHelper>();
+    uint32_t dssCount = 16;
+    uint32_t threadGroupSize = 32;
+    uint32_t threadsPerDss = 2 * threadGroupSize - 1;
+    uint32_t maxThreadCount = (dssCount * threadsPerDss) / threadGroupSize;
+    uint32_t threadCount = maxThreadCount;
+    helper.alignThreadGroupCountToDssSize(threadCount, dssCount, threadsPerDss, threadGroupSize);
+    EXPECT_EQ(dssCount, threadCount);
+}
+
+HWTEST_F(GfxCoreHelperTest, givenDebugFlagForceUseOnlyGlobalTimestampsSetWhenCallUseOnlyGlobalTimestampsThenTrueIsReturned) {
+    DebugManagerStateRestore restore;
+    debugManager.flags.ForceUseOnlyGlobalTimestamps.set(1);
+
+    auto &gfxCoreHelper = getHelper<GfxCoreHelper>();
+    EXPECT_TRUE(gfxCoreHelper.useOnlyGlobalTimestamps());
 }

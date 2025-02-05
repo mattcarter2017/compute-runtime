@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,7 +8,6 @@
 #pragma once
 
 #include "shared/source/command_container/command_encoder.h"
-#include "shared/source/command_container/implicit_scaling.h"
 #include "shared/source/command_container/walker_partition_interface.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/helpers/aligned_memory.h"
@@ -54,6 +53,9 @@ template <typename GfxFamily>
 using MI_STORE_DATA_IMM = typename GfxFamily::MI_STORE_DATA_IMM;
 template <typename GfxFamily>
 using POST_SYNC_OPERATION = typename PIPE_CONTROL<GfxFamily>::POST_SYNC_OPERATION;
+
+template <typename GfxFamily, typename WalkerType>
+void appendWalkerFields(WalkerType &walkerCmd, uint32_t tileCount, uint32_t workgroupCount);
 
 template <typename Command>
 Command *putCommand(void *&inputAddress, uint32_t &totalBytesProgrammed) {
@@ -236,7 +238,7 @@ void programRegisterWithValue(void *&inputAddress, uint32_t registerOffset, uint
 template <typename GfxFamily>
 void programWaitForSemaphore(void *&inputAddress, uint32_t &totalBytesProgrammed, uint64_t gpuAddress, uint32_t semaphoreCompareValue, typename MI_SEMAPHORE_WAIT<GfxFamily>::COMPARE_OPERATION compareOperation) {
     auto semaphoreWait = putCommand<MI_SEMAPHORE_WAIT<GfxFamily>>(inputAddress, totalBytesProgrammed);
-    NEO::EncodeSemaphore<GfxFamily>::programMiSemaphoreWait(semaphoreWait, gpuAddress, semaphoreCompareValue, compareOperation, false, true, false, false);
+    NEO::EncodeSemaphore<GfxFamily>::programMiSemaphoreWait(semaphoreWait, gpuAddress, semaphoreCompareValue, compareOperation, false, true, false, false, false);
 }
 
 template <typename GfxFamily>
@@ -492,13 +494,14 @@ uint64_t computeWalkerSectionStart(WalkerPartitionArgs &args) {
 template <typename GfxFamily, typename WalkerType>
 void *programPartitionedWalker(void *&inputAddress, uint32_t &totalBytesProgrammed,
                                WalkerType *inputWalker,
-                               uint32_t partitionCount,
-                               uint32_t tileCount,
-                               bool forceExecutionOnSingleTile) {
-    auto computeWalker = putCommand<WalkerType>(inputAddress, totalBytesProgrammed);
-    WalkerType cmd = *inputWalker;
+                               WalkerPartitionArgs &args,
+                               const NEO::Device &device) {
+    WalkerType *computeWalker = nullptr;
+    if (!args.blockDispatchToCommandBuffer) {
+        computeWalker = putCommand<WalkerType>(inputAddress, totalBytesProgrammed);
+    }
 
-    if (partitionCount > 1) {
+    if (args.partitionCount > 1) {
         auto partitionType = inputWalker->getPartitionType();
 
         assert(inputWalker->getThreadGroupIdStartingX() == 0u);
@@ -506,9 +509,9 @@ void *programPartitionedWalker(void *&inputAddress, uint32_t &totalBytesProgramm
         assert(inputWalker->getThreadGroupIdStartingZ() == 0u);
         assert(partitionType != WalkerType::PARTITION_TYPE::PARTITION_TYPE_DISABLED);
 
-        cmd.setWorkloadPartitionEnable(true);
+        inputWalker->setWorkloadPartitionEnable(true);
 
-        auto workgroupCount = 0u;
+        uint32_t workgroupCount = 0;
         if (partitionType == WalkerType::PARTITION_TYPE::PARTITION_TYPE_X) {
             workgroupCount = inputWalker->getThreadGroupIdXDimension();
         } else if (partitionType == WalkerType::PARTITION_TYPE::PARTITION_TYPE_Y) {
@@ -517,16 +520,26 @@ void *programPartitionedWalker(void *&inputAddress, uint32_t &totalBytesProgramm
             workgroupCount = inputWalker->getThreadGroupIdZDimension();
         }
 
-        if (forceExecutionOnSingleTile) {
-            cmd.setPartitionSize(workgroupCount);
+        if (args.forceExecutionOnSingleTile) {
+            inputWalker->setPartitionSize(workgroupCount);
         } else {
-            cmd.setPartitionSize(Math::divideAndRoundUp(workgroupCount, partitionCount));
+            inputWalker->setPartitionSize(Math::divideAndRoundUp(workgroupCount, args.partitionCount));
         }
+
+        NEO::EncodeDispatchKernel<GfxFamily>::setWalkerRegionSettings(*inputWalker,
+                                                                      device,
+                                                                      args.partitionCount,
+                                                                      args.workgroupSize,
+                                                                      args.threadGroupCount,
+                                                                      args.maxWgCountPerTile,
+                                                                      args.isRequiredDispatchWorkGroupOrder);
+
+        appendWalkerFields<GfxFamily, WalkerType>(*inputWalker, args.tileCount, workgroupCount);
     }
 
-    NEO::ImplicitScalingDispatch<GfxFamily>::appendWalkerFields(cmd, tileCount);
-
-    *computeWalker = cmd;
+    if (computeWalker != nullptr) {
+        *computeWalker = *inputWalker;
+    }
 
     return computeWalker;
 }
@@ -568,7 +581,7 @@ void constructDynamicallyPartitionedCommandBuffer(void *cpuPointer,
                                                   WalkerType *inputWalker,
                                                   uint32_t &totalBytesProgrammed,
                                                   WalkerPartitionArgs &args,
-                                                  const NEO::HardwareInfo &hwInfo) {
+                                                  const NEO::Device &device) {
     totalBytesProgrammed = 0u;
     void *currentBatchBufferPointer = cpuPointer;
 
@@ -638,7 +651,7 @@ void constructDynamicallyPartitionedCommandBuffer(void *cpuPointer,
         args.secondaryBatchBuffer);
 
     // Walker section
-    auto walkerPtr = programPartitionedWalker<GfxFamily, WalkerType>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args.partitionCount, args.tileCount, args.forceExecutionOnSingleTile);
+    auto walkerPtr = programPartitionedWalker<GfxFamily, WalkerType>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args, device);
     if (outWalkerPtr) {
         *outWalkerPtr = walkerPtr;
     }
@@ -714,73 +727,79 @@ void constructStaticallyPartitionedCommandBuffer(void *cpuPointer,
                                                  WalkerType *inputWalker,
                                                  uint32_t &totalBytesProgrammed,
                                                  WalkerPartitionArgs &args,
-                                                 const NEO::HardwareInfo &hwInfo) {
+                                                 const NEO::Device &device) {
     totalBytesProgrammed = 0u;
     void *currentBatchBufferPointer = cpuPointer;
 
     // Get address of the control section
-    const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<GfxFamily, WalkerType>(args);
-    const auto afterControlSectionOffset = controlSectionOffset + sizeof(StaticPartitioningControlSection);
+    const auto controlSectionOffset = args.blockDispatchToCommandBuffer ? 0u : computeStaticPartitioningControlSectionOffset<GfxFamily, WalkerType>(args);
+    const auto afterControlSectionOffset = args.blockDispatchToCommandBuffer ? 0u : controlSectionOffset + sizeof(StaticPartitioningControlSection);
 
-    // Synchronize tiles before walker
-    if (args.synchronizeBeforeExecution) {
-        const auto atomicAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
-        programTilesSynchronizationWithAtomics<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, atomicAddress, args.tileCount);
+    if (!args.blockDispatchToCommandBuffer) {
+        // Synchronize tiles before walker
+        if (args.synchronizeBeforeExecution) {
+            const auto atomicAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
+            programTilesSynchronizationWithAtomics<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, atomicAddress, args.tileCount);
+        }
+
+        // Load partition ID to wparid register and execute walker
+        if (args.initializeWparidRegister) {
+            programMiLoadRegisterMem<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, args.workPartitionAllocationGpuVa, wparidCCSOffset);
+        }
     }
 
-    // Load partition ID to wparid register and execute walker
-    if (args.initializeWparidRegister) {
-        programMiLoadRegisterMem<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, args.workPartitionAllocationGpuVa, wparidCCSOffset);
-    }
-    auto walkerPtr = programPartitionedWalker<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args.partitionCount, args.tileCount, args.forceExecutionOnSingleTile);
-    if (outWalkerPtr) {
-        *outWalkerPtr = walkerPtr;
-    }
+    auto walkerPtr = programPartitionedWalker<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args, device);
 
-    // Prepare for cleanup section
-    if (args.emitSelfCleanup) {
-        const auto finalSyncTileCountField = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, finalSyncTileCounter);
-        programSelfCleanupSection<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, finalSyncTileCountField, args.useAtomicsForSelfCleanup);
-    }
+    if (!args.blockDispatchToCommandBuffer) {
+        if (outWalkerPtr) {
+            *outWalkerPtr = walkerPtr;
+        }
 
-    if (args.emitPipeControlStall) {
-        NEO::PipeControlArgs pipeControlArgs;
-        pipeControlArgs.dcFlushEnable = args.dcFlushEnable;
-        programPipeControlCommand<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, pipeControlArgs);
-    }
+        // Prepare for cleanup section
+        if (args.emitSelfCleanup) {
+            const auto finalSyncTileCountField = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, finalSyncTileCounter);
+            programSelfCleanupSection<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, finalSyncTileCountField, args.useAtomicsForSelfCleanup);
+        }
 
-    // Synchronize tiles after walker
-    if (args.semaphoreProgrammingRequired) {
-        programTilesSynchronizationWithPostSyncs<GfxFamily, WalkerType>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args.partitionCount);
-    }
+        if (args.emitPipeControlStall) {
+            NEO::PipeControlArgs pipeControlArgs;
+            pipeControlArgs.dcFlushEnable = args.dcFlushEnable;
+            programPipeControlCommand<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, pipeControlArgs);
+        }
 
-    if (args.crossTileAtomicSynchronization || args.emitSelfCleanup) {
-        const auto atomicAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeAfterWalkerCounter);
-        programTilesSynchronizationWithAtomics<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, atomicAddress, args.tileCount);
-    }
+        // Synchronize tiles after walker
+        if (args.semaphoreProgrammingRequired) {
+            programTilesSynchronizationWithPostSyncs<GfxFamily, WalkerType>(currentBatchBufferPointer, totalBytesProgrammed, inputWalker, args.partitionCount);
+        }
 
-    // Jump over the control section only when needed
-    if (isStartAndControlSectionRequired<GfxFamily>(args)) {
-        programMiBatchBufferStart<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, gpuAddressOfAllocation + afterControlSectionOffset, false, args.secondaryBatchBuffer);
+        if (args.crossTileAtomicSynchronization || args.emitSelfCleanup) {
+            const auto atomicAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeAfterWalkerCounter);
+            programTilesSynchronizationWithAtomics<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, atomicAddress, args.tileCount);
+        }
 
-        // Control section
-        DEBUG_BREAK_IF(totalBytesProgrammed != controlSectionOffset);
-        StaticPartitioningControlSection *controlSection = putCommand<StaticPartitioningControlSection>(currentBatchBufferPointer, totalBytesProgrammed);
-        controlSection->synchronizeBeforeWalkerCounter = 0u;
-        controlSection->synchronizeAfterWalkerCounter = 0u;
-        controlSection->finalSyncTileCounter = 0u;
-        DEBUG_BREAK_IF(totalBytesProgrammed != afterControlSectionOffset);
-    }
+        // Jump over the control section only when needed
+        if (isStartAndControlSectionRequired<GfxFamily>(args)) {
+            programMiBatchBufferStart<GfxFamily>(currentBatchBufferPointer, totalBytesProgrammed, gpuAddressOfAllocation + afterControlSectionOffset, false, args.secondaryBatchBuffer);
 
-    // Cleanup section
-    if (args.emitSelfCleanup) {
-        const auto finalSyncTileCountAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, finalSyncTileCounter);
-        programSelfCleanupEndSection<GfxFamily>(currentBatchBufferPointer,
-                                                totalBytesProgrammed,
-                                                finalSyncTileCountAddress,
-                                                gpuAddressOfAllocation + controlSectionOffset,
-                                                staticPartitioningFieldsForCleanupCount,
-                                                args);
+            // Control section
+            DEBUG_BREAK_IF(totalBytesProgrammed != controlSectionOffset);
+            StaticPartitioningControlSection *controlSection = putCommand<StaticPartitioningControlSection>(currentBatchBufferPointer, totalBytesProgrammed);
+            controlSection->synchronizeBeforeWalkerCounter = 0u;
+            controlSection->synchronizeAfterWalkerCounter = 0u;
+            controlSection->finalSyncTileCounter = 0u;
+            DEBUG_BREAK_IF(totalBytesProgrammed != afterControlSectionOffset);
+        }
+
+        // Cleanup section
+        if (args.emitSelfCleanup) {
+            const auto finalSyncTileCountAddress = gpuAddressOfAllocation + controlSectionOffset + offsetof(StaticPartitioningControlSection, finalSyncTileCounter);
+            programSelfCleanupEndSection<GfxFamily>(currentBatchBufferPointer,
+                                                    totalBytesProgrammed,
+                                                    finalSyncTileCountAddress,
+                                                    gpuAddressOfAllocation + controlSectionOffset,
+                                                    staticPartitioningFieldsForCleanupCount,
+                                                    args);
+        }
     }
 }
 

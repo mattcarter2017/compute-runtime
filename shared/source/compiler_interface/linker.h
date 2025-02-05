@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -45,7 +45,7 @@ enum class LinkingStatus : uint32_t {
 inline const char *asString(SegmentType segment) {
     switch (segment) {
     default:
-        return "UNKOWN";
+        return "UNKNOWN";
     case SegmentType::globalConstants:
         return "GLOBAL_CONSTANTS";
     case SegmentType::globalVariables:
@@ -92,6 +92,7 @@ struct LinkerInput {
             addressLow,
             addressHigh,
             perThreadPayloadOffset,
+            address16 = 7,
             relocTypeMax
         };
 
@@ -99,6 +100,7 @@ struct LinkerInput {
         uint64_t offset = std::numeric_limits<uint64_t>::max();
         Type type = Type::unknown;
         SegmentType relocationSegment = SegmentType::unknown;
+        std::string relocationSegmentName;
         int64_t addend = 0U;
     };
 
@@ -107,7 +109,12 @@ struct LinkerInput {
     using SymbolMap = std::unordered_map<std::string, SymbolInfo>;
     using RelocationsPerInstSegment = std::vector<Relocations>;
 
-    virtual ~LinkerInput() = default;
+    LinkerInput();
+    virtual ~LinkerInput();
+    LinkerInput(LinkerInput &&other) noexcept = delete;
+    LinkerInput(const LinkerInput &other) = delete;
+    LinkerInput &operator=(LinkerInput &&other) noexcept = delete;
+    LinkerInput &operator=(const LinkerInput &other) = delete;
 
     static SegmentType getSegmentForSection(ConstStringRef name);
 
@@ -189,6 +196,7 @@ struct LinkerInput {
 
 struct Linker {
     inline static const std::string subDeviceID = "__SubDeviceID";
+    inline static const std::string perThreadOff = "__INTEL_PER_THREAD_OFF";
 
     using RelocationInfo = LinkerInput::RelocationInfo;
 
@@ -257,7 +265,7 @@ struct Linker {
 
     bool resolveExternalFunctions(const KernelDescriptorsT &kernelDescriptors, std::vector<ExternalFunctionInfo> &externalFunctions);
     void resolveImplicitArgs(const KernelDescriptorsT &kernelDescriptors, Device *pDevice);
-    void resolveBuiltins(Device *pDevice, UnresolvedExternals &outUnresolvedExternals, const std::vector<PatchableSegment> &instructionsSegments);
+    void resolveBuiltins(Device *pDevice, UnresolvedExternals &outUnresolvedExternals, const std::vector<PatchableSegment> &instructionsSegments, const KernelDescriptorsT &kernelDescriptors);
 
     template <typename PatchSizeT>
     void patchIncrement(void *dstAllocation, size_t relocationOffset, const void *initData, uint64_t incrementValue);

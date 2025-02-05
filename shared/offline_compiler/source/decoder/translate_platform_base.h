@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,22 +14,6 @@ inline iga_gen_t translateToIgaGenBase(PRODUCT_FAMILY productFamily) {
     switch (productFamily) {
     default:
         return IGA_GEN_INVALID;
-    case IGFX_BROADWELL:
-        return IGA_GEN8;
-    case IGFX_CHERRYVIEW:
-        return IGA_GEN8lp;
-    case IGFX_SKYLAKE:
-        return IGA_GEN9;
-    case IGFX_BROXTON:
-        return IGA_GEN9lp;
-    case IGFX_KABYLAKE:
-    case IGFX_COFFEELAKE:
-        return IGA_GEN9p5;
-    case IGFX_ICELAKE:
-    case IGFX_ICELAKE_LP:
-    case IGFX_LAKEFIELD:
-    case IGFX_ELKHARTLAKE:
-        return IGA_GEN11;
     case IGFX_TIGERLAKE_LP:
     case IGFX_ROCKETLAKE:
     case IGFX_ALDERLAKE_S:
@@ -41,6 +25,14 @@ inline iga_gen_t translateToIgaGenBase(PRODUCT_FAMILY productFamily) {
         return IGA_XE_HPG;
     case IGFX_PVC:
         return IGA_XE_HPC;
+    case IGFX_METEORLAKE:
+    case IGFX_ARROWLAKE:
+        return IGA_XE_HPG;
+    case IGFX_BMG:
+    case IGFX_LUNARLAKE:
+        return IGA_XE2;
+    case IGFX_PTL:
+        return IGA_XE3;
     }
 }
 
@@ -48,13 +40,6 @@ inline iga_gen_t translateToIgaGenBase(GFXCORE_FAMILY coreFamily) {
     switch (coreFamily) {
     default:
         return IGA_GEN_INVALID;
-    case IGFX_GEN8_CORE:
-        return IGA_GEN8;
-    case IGFX_GEN9_CORE:
-        return IGA_GEN9;
-    case IGFX_GEN11_CORE:
-    case IGFX_GEN11LP_CORE:
-        return IGA_GEN11;
     case IGFX_GEN12LP_CORE:
         return IGA_XE;
     case IGFX_XE_HP_CORE:
@@ -63,6 +48,10 @@ inline iga_gen_t translateToIgaGenBase(GFXCORE_FAMILY coreFamily) {
         return IGA_XE_HPG;
     case IGFX_XE_HPC_CORE:
         return IGA_XE_HPC;
+    case IGFX_XE2_HPG_CORE:
+        return IGA_XE2;
+    case IGFX_XE3_CORE:
+        return IGA_XE3;
     }
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -68,7 +68,6 @@ PVCTEST_F(PvcProductHelperLinux, GivenPvcWhenConfigureHardwareCustomThenKmdNotif
 }
 
 PVCTEST_F(PvcProductHelperLinux, givenProductHelperWhenAskedIfPatIndexProgrammingSupportedThenReturnTrue) {
-
     EXPECT_TRUE(productHelper->isVmBindPatIndexProgrammingSupported());
 }
 
@@ -122,4 +121,8 @@ PVCTEST_F(PvcProductHelperLinux, WhenGetDeviceMemoryMaxBandWidthInBytesPerSecond
     drm->storedGetDeviceMemoryMaxClockRateInMhzStatus = true;
     drm->useBaseGetDeviceMemoryMaxClockRateInMhz = false;
     EXPECT_EQ(51200000000u, productHelper->getDeviceMemoryMaxBandWidthInBytesPerSecond(testHwInfo, osInterface, 0));
+}
+
+PVCTEST_F(PvcProductHelperLinux, givenProductHelperWhenAskingForDeviceToHostCopySignalingFenceTrueReturned) {
+    EXPECT_TRUE(productHelper->isDeviceToHostCopySignalingFenceRequired());
 }

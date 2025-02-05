@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -481,12 +481,6 @@ TEST_F(DebugEnvReaderTests, GivenBoolEnvVariableWhenGettingThenCorrectValueIsRet
         EXPECT_EQ(1u, IoFunctions::mockGetenvCalled);
         EXPECT_EQ(defaultValue, ret);
     }
-}
-
-TEST_F(DebugEnvReaderTests, WhenSettingAppSpecificLocationThenLocationIsReturned) {
-    std::string appSpecific;
-    appSpecific = "cl_cache_dir";
-    EXPECT_EQ(appSpecific, environmentVariableReader->appSpecificLocation(appSpecific));
 }
 
 TEST_F(DebugEnvReaderTests, givenEnvironmentVariableReaderWhenCreateOsReaderWithStringThenNotNullPointer) {

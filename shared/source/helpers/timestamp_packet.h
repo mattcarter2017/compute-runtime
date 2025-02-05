@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,6 +29,8 @@ class LinearStream;
 template <typename TSize, uint32_t packetCount>
 class TimestampPackets : public TagTypeBase {
   public:
+    using ValueT = TSize;
+
     static constexpr AllocationType getAllocationType() {
         return AllocationType::timestampPacketTagBuffer;
     }
@@ -37,12 +39,12 @@ class TimestampPackets : public TagTypeBase {
 
     static constexpr size_t getSinglePacketSize() { return sizeof(Packet); }
 
-    void initialize() {
+    void initialize(TSize initValue) {
         for (auto &packet : packets) {
-            packet.contextStart = TimestampPacketConstants::initValue;
-            packet.globalStart = TimestampPacketConstants::initValue;
-            packet.contextEnd = TimestampPacketConstants::initValue;
-            packet.globalEnd = TimestampPacketConstants::initValue;
+            packet.contextStart = initValue;
+            packet.globalStart = initValue;
+            packet.contextEnd = initValue;
+            packet.globalEnd = initValue;
         }
     }
 
@@ -104,28 +106,28 @@ struct TimestampPacketHelper {
 
         for (uint32_t packetId = 0; packetId < timestampPacketNode.getPacketsUsed(); packetId++) {
             uint64_t compareOffset = packetId * timestampPacketNode.getSinglePacketSize();
-            EncodeSemaphore<GfxFamily>::addMiSemaphoreWaitCommand(cmdStream, compareAddress + compareOffset, TimestampPacketConstants::initValue, COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, false, false, false);
+            EncodeSemaphore<GfxFamily>::addMiSemaphoreWaitCommand(cmdStream, compareAddress + compareOffset, TimestampPacketConstants::initValue, COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD, false, false, false, false, nullptr);
         }
     }
 
     template <typename GfxFamily>
-    static void programConditionalBbStartForRelaxedOrdering(LinearStream &cmdStream, TagNodeBase &timestampPacketNode) {
+    static void programConditionalBbStartForRelaxedOrdering(LinearStream &cmdStream, TagNodeBase &timestampPacketNode, bool isBcs) {
         auto compareAddress = getContextEndGpuAddress(timestampPacketNode);
 
         for (uint32_t packetId = 0; packetId < timestampPacketNode.getPacketsUsed(); packetId++) {
             uint64_t compareOffset = packetId * timestampPacketNode.getSinglePacketSize();
 
             EncodeBatchBufferStartOrEnd<GfxFamily>::programConditionalDataMemBatchBufferStart(cmdStream, 0, compareAddress + compareOffset, TimestampPacketConstants::initValue,
-                                                                                              NEO::CompareOperation::equal, true, false);
+                                                                                              NEO::CompareOperation::equal, true, false, isBcs);
         }
     }
 
     template <typename GfxFamily>
-    static void programCsrDependenciesForTimestampPacketContainer(LinearStream &cmdStream, const CsrDependencies &csrDependencies, bool relaxedOrderingEnabled) {
+    static void programCsrDependenciesForTimestampPacketContainer(LinearStream &cmdStream, const CsrDependencies &csrDependencies, bool relaxedOrderingEnabled, bool isBcs) {
         for (auto timestampPacketContainer : csrDependencies.timestampPacketContainer) {
             for (auto &node : timestampPacketContainer->peekNodes()) {
                 if (relaxedOrderingEnabled) {
-                    TimestampPacketHelper::programConditionalBbStartForRelaxedOrdering<GfxFamily>(cmdStream, *node);
+                    TimestampPacketHelper::programConditionalBbStartForRelaxedOrdering<GfxFamily>(cmdStream, *node, isBcs);
                 } else {
                     TimestampPacketHelper::programSemaphore<GfxFamily>(cmdStream, *node);
                 }
@@ -137,7 +139,8 @@ struct TimestampPacketHelper {
     static void nonStallingContextEndNodeSignal(LinearStream &cmdStream, const TagNodeBase &timestampPacketNode, bool multiTileOperation) {
         uint64_t contextEndAddress = getContextEndGpuAddress(timestampPacketNode);
 
-        NEO::EncodeStoreMemory<GfxFamily>::programStoreDataImm(cmdStream, contextEndAddress, 0, 0, false, multiTileOperation);
+        NEO::EncodeStoreMemory<GfxFamily>::programStoreDataImm(cmdStream, contextEndAddress, 0, 0, false, multiTileOperation,
+                                                               nullptr);
     }
 
     template <typename GfxFamily>

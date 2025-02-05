@@ -1,13 +1,14 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
-#include "level_zero/api/driver_experimental/public/zex_cmdlist.h"
+#include "level_zero/driver_experimental/zex_cmdlist.h"
 
 #include "level_zero/core/source/cmdlist/cmdlist.h"
+#include "level_zero/ze_intel_gpu.h"
 
 namespace L0 {
 ZE_APIEXPORT ze_result_t ZE_APICALL
@@ -19,6 +20,7 @@ zexCommandListAppendWaitOnMemory(
     zex_event_handle_t hSignalEvent) {
     try {
         {
+            hCommandList = toInternalType(hCommandList);
             if (nullptr == hCommandList)
                 return ZE_RESULT_ERROR_INVALID_ARGUMENT;
         }
@@ -40,6 +42,7 @@ zexCommandListAppendWaitOnMemory64(
     uint64_t data,
     zex_event_handle_t hSignalEvent) {
 
+    hCommandList = toInternalType(hCommandList);
     if (!hCommandList) {
         return ZE_RESULT_ERROR_INVALID_ARGUMENT;
     }
@@ -55,6 +58,7 @@ zexCommandListAppendWriteToMemory(
     uint64_t data) {
     try {
         {
+            hCommandList = toInternalType(hCommandList);
             if (nullptr == hCommandList)
                 return ZE_RESULT_ERROR_INVALID_ARGUMENT;
         }
@@ -68,3 +72,27 @@ zexCommandListAppendWriteToMemory(
     }
 }
 } // namespace L0
+
+ze_result_t ZE_APICALL
+zeIntelCommandListAppendWaitExternalSemaphoresExp(
+    ze_command_list_handle_t hCmdList,
+    unsigned int numExternalSemaphores,
+    const ze_intel_external_semaphore_exp_handle_t *hSemaphores,
+    const ze_intel_external_semaphore_wait_params_exp_t *params,
+    ze_event_handle_t hSignalEvent,
+    uint32_t numWaitEvents,
+    ze_event_handle_t *phWaitEvents) {
+    return L0::CommandList::fromHandle(hCmdList)->appendWaitExternalSemaphores(numExternalSemaphores, hSemaphores, params, hSignalEvent, numWaitEvents, phWaitEvents);
+}
+
+ze_result_t ZE_APICALL
+zeIntelCommandListAppendSignalExternalSemaphoresExp(
+    ze_command_list_handle_t hCmdList,
+    size_t numExternalSemaphores,
+    const ze_intel_external_semaphore_exp_handle_t *hSemaphores,
+    const ze_intel_external_semaphore_signal_params_exp_t *params,
+    ze_event_handle_t hSignalEvent,
+    uint32_t numWaitEvents,
+    ze_event_handle_t *phWaitEvents) {
+    return L0::CommandList::fromHandle(hCmdList)->appendSignalExternalSemaphores(numExternalSemaphores, hSemaphores, params, hSignalEvent, numWaitEvents, phWaitEvents);
+}

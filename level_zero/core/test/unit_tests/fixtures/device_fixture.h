@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/os_interface/os_time.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/variable_backup.h"
+#include "shared/test/common/mocks/mock_device.h"
 
 #include "level_zero/core/source/context/context_imp.h"
 #include "level_zero/core/source/device/device_imp.h"
@@ -19,7 +20,6 @@
 
 class MockPageFaultManager;
 namespace NEO {
-class MockDevice;
 struct UltDeviceFactory;
 class MockMemoryManager;
 class OsAgnosticMemoryManager;
@@ -56,6 +56,20 @@ struct DeviceFixture {
     HelperType &getHelper() const;
     VariableBackup<_ze_driver_handle_t *> globalDriverHandleBackup{&globalDriverHandle};
     VariableBackup<uint32_t> driverCountBackup{&driverCount};
+};
+
+template <typename T>
+struct DeviceFixtureWithCustomMemoryManager : public DeviceFixture {
+    void setUp() {
+        auto executionEnvironment = NEO::MockDevice::prepareExecutionEnvironment(defaultHwInfo.get(), 0u);
+        auto memoryManager = new T(*executionEnvironment);
+        executionEnvironment->memoryManager.reset(memoryManager);
+        DeviceFixture::setupWithExecutionEnvironment(*executionEnvironment);
+    }
+
+    void tearDown() {
+        DeviceFixture::tearDown();
+    }
 };
 
 struct DriverHandleGetMemHandlePtrMock : public L0::DriverHandleImp {
@@ -112,10 +126,11 @@ struct MultiDeviceFixture {
     void tearDown();
 
     DebugManagerStateRestore restorer;
-    std::unique_ptr<Mock<L0::DriverHandleImp>> driverHandle;
+    std::unique_ptr<Mock<L0::DriverHandleImp>> driverHandle = std::make_unique<Mock<L0::DriverHandleImp>>();
     uint32_t numRootDevices = 4u;
     uint32_t numSubDevices = 2u;
     L0::ContextImp *context = nullptr;
+    NEO::DeviceHierarchyMode deviceHierarchyMode = NEO::DeviceHierarchyMode::composite;
 
     VariableBackup<_ze_driver_handle_t *> globalDriverHandleBackup{&globalDriverHandle};
     VariableBackup<uint32_t> driverCountBackup{&driverCount};
@@ -123,13 +138,22 @@ struct MultiDeviceFixture {
 
 struct MultiDeviceFixtureHierarchy : public MultiDeviceFixture {
     void setUp();
-    bool exposeSubDevices = true;
 };
 
-struct MultiDeviceFixtureCombinedHierarchy : public MultiDeviceFixture {
-    void setUp();
-    bool exposeSubDevices = true;
-    bool combinedHierarchy = true;
+struct MultiDeviceFixtureCompositeHierarchy : public MultiDeviceFixtureHierarchy {};
+
+struct MultiDeviceFixtureFlatHierarchy : public MultiDeviceFixtureHierarchy {
+    void setUp() {
+        this->deviceHierarchyMode = NEO::DeviceHierarchyMode::flat;
+        MultiDeviceFixtureHierarchy::setUp();
+    }
+};
+
+struct MultiDeviceFixtureCombinedHierarchy : public MultiDeviceFixtureHierarchy {
+    void setUp() {
+        this->deviceHierarchyMode = NEO::DeviceHierarchyMode::combined;
+        MultiDeviceFixtureHierarchy::setUp();
+    }
 };
 
 struct SingleRootMultiSubDeviceFixture : public MultiDeviceFixture {
@@ -197,14 +221,14 @@ struct SingleRootMultiSubDeviceFixtureWithImplicitScaling : public SingleRootMul
 
 class FalseGpuCpuDeviceTime : public NEO::DeviceTime {
   public:
-    bool getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
-        return false;
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+        return TimeQueryStatus::deviceLost;
     }
-    double getDynamicDeviceTimerResolution(HardwareInfo const &hwInfo) const override {
-        return NEO::OSTime::getDeviceTimerResolution(hwInfo);
+    double getDynamicDeviceTimerResolution() const override {
+        return NEO::OSTime::getDeviceTimerResolution();
     }
-    uint64_t getDynamicDeviceTimerClock(HardwareInfo const &hwInfo) const override {
-        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution(hwInfo));
+    uint64_t getDynamicDeviceTimerClock() const override {
+        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution());
     }
 };
 
@@ -212,6 +236,39 @@ class FalseGpuCpuTime : public NEO::OSTime {
   public:
     FalseGpuCpuTime() {
         this->deviceTime = std::make_unique<FalseGpuCpuDeviceTime>();
+    }
+
+    bool getCpuTime(uint64_t *timeStamp) override {
+        return true;
+    };
+    double getHostTimerResolution() const override {
+        return 0;
+    }
+    uint64_t getCpuRawTimestamp() override {
+        return 0;
+    }
+    static std::unique_ptr<OSTime> create() {
+        return std::unique_ptr<OSTime>(new FalseGpuCpuTime());
+    }
+};
+
+class FalseUnSupportedFeatureGpuCpuDeviceTime : public NEO::DeviceTime {
+  public:
+    TimeQueryStatus getGpuCpuTimeImpl(TimeStampData *pGpuCpuTime, OSTime *osTime) override {
+        return TimeQueryStatus::unsupportedFeature;
+    }
+    double getDynamicDeviceTimerResolution() const override {
+        return NEO::OSTime::getDeviceTimerResolution();
+    }
+    uint64_t getDynamicDeviceTimerClock() const override {
+        return static_cast<uint64_t>(1000000000.0 / OSTime::getDeviceTimerResolution());
+    }
+};
+
+class FalseUnSupportedFeatureGpuCpuTime : public NEO::OSTime {
+  public:
+    FalseUnSupportedFeatureGpuCpuTime() {
+        this->deviceTime = std::make_unique<FalseUnSupportedFeatureGpuCpuDeviceTime>();
     }
 
     bool getCpuTime(uint64_t *timeStamp) override {

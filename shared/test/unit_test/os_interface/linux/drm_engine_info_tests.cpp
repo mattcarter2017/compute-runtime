@@ -8,6 +8,7 @@
 #include "shared/source/os_interface/linux/engine_info.h"
 #include "shared/source/os_interface/linux/i915.h"
 #include "shared/source/os_interface/linux/memory_info.h"
+#include "shared/test/common/helpers/gtest_helpers.h"
 #include "shared/test/common/helpers/mock_product_helper_hw.h"
 #include "shared/test/common/helpers/raii_product_helper.h"
 #include "shared/test/common/libult/linux/drm_mock.h"
@@ -23,6 +24,7 @@ TEST(DrmTest, whenQueryingEngineInfoThenSingleIoctlIsCalled) {
     std::unique_ptr<DrmMock> drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
     EXPECT_NE(nullptr, drm);
     auto ioctlCount = drm->ioctlCount.total.load();
+    drm->memoryInfoQueried = true;
     drm->queryEngineInfo();
     EXPECT_EQ(1 + ioctlCount, drm->ioctlCount.total.load());
 }
@@ -35,12 +37,13 @@ TEST(EngineInfoTest, givenEngineInfoQuerySupportedWhenQueryingEngineInfoThenEngi
     std::vector<MemoryRegion> memRegions{
         {{0, 0}, 0, 0}};
     drm->memoryInfo.reset(new MemoryInfo(memRegions, *drm));
+    drm->memoryInfoQueried = true;
     drm->queryEngineInfo();
     EXPECT_EQ(2u + drm->getBaseIoctlCalls(), drm->ioctlCallsCount);
     auto engineInfo = drm->getEngineInfo();
 
     ASSERT_NE(nullptr, engineInfo);
-    EXPECT_EQ(2u, engineInfo->engines.size());
+    EXPECT_EQ(2u, engineInfo->getEngineInfos().size());
 }
 
 TEST(EngineInfoTest, whenQueryingEngineInfoWithoutMemoryInfoThenEngineInfoCreated) {
@@ -48,6 +51,7 @@ TEST(EngineInfoTest, whenQueryingEngineInfoWithoutMemoryInfoThenEngineInfoCreate
     auto drm = std::make_unique<DrmMockEngine>(*executionEnvironment->rootDeviceEnvironments[0]);
     ASSERT_NE(nullptr, drm);
 
+    drm->memoryInfoQueried = true;
     drm->queryEngineInfo();
     EXPECT_EQ(2u + drm->getBaseIoctlCalls(), drm->ioctlCallsCount);
     auto engineInfo = drm->getEngineInfo();
@@ -63,16 +67,24 @@ TEST(EngineInfoTest, whenCreateEngineInfoWithRcsThenCorrectHwInfoSet) {
     auto &hwInfo = *drm->getRootDeviceEnvironment().getHardwareInfo();
     std::vector<EngineCapabilities> engines(2);
     engines[0].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 0};
-    engines[0].capabilities = 0;
+    engines[0].capabilities = {};
     engines[1].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 0};
-    engines[1].capabilities = 0;
-    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engines);
+    engines[1].capabilities = {};
+    StackVec<std::vector<EngineCapabilities>, 2> engineInfosPerTile{engines};
+    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engineInfosPerTile);
 
     auto ccsInfo = hwInfo.gtSystemInfo.CCSInfo;
     EXPECT_FALSE(ccsInfo.IsValid);
-    EXPECT_EQ(0u, ccsInfo.NumberOfCCSEnabled);
-    EXPECT_EQ(0u, ccsInfo.Instances.CCSEnableMask);
-    EXPECT_EQ(1u, hwInfo.featureTable.ftrBcsInfo.to_ulong());
+    EXPECT_EQ_VAL(0u, ccsInfo.NumberOfCCSEnabled);
+    EXPECT_EQ_VAL(0u, ccsInfo.Instances.CCSEnableMask);
+
+    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getProductHelper();
+    auto defaultCopyEngine = productHelper.getDefaultCopyEngine();
+    if (defaultCopyEngine == aub_stream::EngineType::ENGINE_BCS) {
+        EXPECT_EQ(1u, hwInfo.featureTable.ftrBcsInfo.to_ulong());
+    } else {
+        EXPECT_TRUE(hwInfo.featureTable.ftrBcsInfo.test(static_cast<uint32_t>(defaultCopyEngine) - static_cast<uint32_t>(aub_stream::EngineType::ENGINE_BCS1) + 1));
+    }
 }
 
 TEST(EngineInfoTest, whenCallingGetEngineTileInfoCorrectValuesAreReturned) {
@@ -82,8 +94,9 @@ TEST(EngineInfoTest, whenCallingGetEngineTileInfoCorrectValuesAreReturned) {
 
     std::vector<EngineCapabilities> engines(1);
     engines[0].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 0};
-    engines[0].capabilities = 0;
-    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engines);
+    engines[0].capabilities = {};
+    StackVec<std::vector<EngineCapabilities>, 2> engineInfosPerTile{engines};
+    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engineInfosPerTile);
 
     auto engineTileMap = engineInfo->getEngineTileInfo();
     auto it = engineTileMap.begin();
@@ -100,16 +113,24 @@ TEST(EngineInfoTest, whenCreateEngineInfoWithCcsThenCorrectHwInfoSet) {
     std::vector<EngineCapabilities> engines(2);
     uint16_t ccsClass = ioctlHelper->getDrmParamValue(DrmParam::engineClassCompute);
     engines[0].engine = {ccsClass, 0};
-    engines[0].capabilities = 0;
+    engines[0].capabilities = {};
     engines[1].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 0};
-    engines[1].capabilities = 0;
-    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engines);
+    engines[1].capabilities = {};
+    StackVec<std::vector<EngineCapabilities>, 2> engineInfosPerTile{engines};
+    auto engineInfo = std::make_unique<EngineInfo>(drm.get(), engineInfosPerTile);
 
     auto ccsInfo = hwInfo.gtSystemInfo.CCSInfo;
     EXPECT_TRUE(ccsInfo.IsValid);
-    EXPECT_EQ(1u, ccsInfo.NumberOfCCSEnabled);
-    EXPECT_EQ(1u, ccsInfo.Instances.CCSEnableMask);
-    EXPECT_EQ(1u, hwInfo.featureTable.ftrBcsInfo.to_ulong());
+    EXPECT_EQ_VAL(1u, ccsInfo.NumberOfCCSEnabled);
+    EXPECT_EQ_VAL(1u, ccsInfo.Instances.CCSEnableMask);
+
+    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getProductHelper();
+    auto defaultCopyEngine = productHelper.getDefaultCopyEngine();
+    if (defaultCopyEngine == aub_stream::EngineType::ENGINE_BCS) {
+        EXPECT_EQ(1u, hwInfo.featureTable.ftrBcsInfo.to_ulong());
+    } else {
+        EXPECT_TRUE(hwInfo.featureTable.ftrBcsInfo.test(static_cast<uint32_t>(defaultCopyEngine) - static_cast<uint32_t>(aub_stream::EngineType::ENGINE_BCS1) + 1));
+    }
 }
 
 TEST(EngineInfoTest, whenGetEngineInstanceAndTileThenCorrectValuesReturned) {
@@ -122,13 +143,13 @@ TEST(EngineInfoTest, whenGetEngineInstanceAndTileThenCorrectValuesReturned) {
 
     std::vector<EngineCapabilities> engines(4);
     engines[0].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 0};
-    engines[0].capabilities = 0;
+    engines[0].capabilities = {};
     engines[1].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 0};
-    engines[1].capabilities = 0;
+    engines[1].capabilities = {};
     engines[2].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 1};
-    engines[2].capabilities = 0;
+    engines[2].capabilities = {};
     engines[3].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 1};
-    engines[3].capabilities = 0;
+    engines[3].capabilities = {};
 
     std::vector<DistanceInfo> distances(4);
     distances[0].engine = engines[0].engine;
@@ -171,13 +192,13 @@ TEST(EngineInfoTest, whenCreateEngineInfoAndInvalidQueryThenNoEnginesSet) {
 
     std::vector<EngineCapabilities> engines(4);
     engines[0].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 0};
-    engines[0].capabilities = 0;
+    engines[0].capabilities = {};
     engines[1].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 0};
-    engines[1].capabilities = 0;
+    engines[1].capabilities = {};
     engines[2].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassRender)), 1};
-    engines[2].capabilities = 0;
+    engines[2].capabilities = {};
     engines[3].engine = {static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy)), 1};
-    engines[3].capabilities = 0;
+    engines[3].capabilities = {};
 
     std::vector<DistanceInfo> distances(4);
     distances[0].engine = engines[0].engine;
@@ -220,13 +241,13 @@ HWTEST2_F(DisabledBCSEngineInfoTest, whenBCS0IsNotEnabledThenSkipMappingItAndSet
 
     RAIIProductHelperFactory<MockProductHelperHw<productFamily>> raii(rootDeviceEnvironment);
     raii.mockProductHelper->mockDefaultCopyEngine = aub_stream::EngineType::ENGINE_BCS1;
-    auto emplaceCopyEngine = [&ioctlHelper](std::vector<EngineClassInstance> &vec) {
+    auto emplaceCopyEngine = [&ioctlHelper](std::vector<EngineCapabilities> &vec) {
         auto &emplaced = vec.emplace_back();
-        emplaced.engineClass = static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy));
-        emplaced.engineInstance = 0u;
+        emplaced.engine.engineClass = static_cast<uint16_t>(ioctlHelper->getDrmParamValue(DrmParam::engineClassCopy));
+        emplaced.engine.engineInstance = 0u;
     };
 
-    StackVec<std::vector<EngineClassInstance>, 2> enginesPerTile{};
+    StackVec<std::vector<EngineCapabilities>, 2> enginesPerTile{};
     enginesPerTile.resize(2u);
     for (int tileIdx = 0; tileIdx < 2; tileIdx++) {
         emplaceCopyEngine(enginesPerTile[tileIdx]);

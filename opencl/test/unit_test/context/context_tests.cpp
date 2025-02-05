@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -120,7 +120,7 @@ TEST_F(ContextTest, WhenCreatingContextThenSpecialQueueIsAvailable) {
 TEST_F(ContextTest, WhenSettingSpecialQueueThenQueueIsAvailable) {
     MockContext context((ClDevice *)devices[0], true);
 
-    auto specialQ = context.getSpecialQueue(0u);
+    auto specialQ = context.specialQueues[0];
     EXPECT_EQ(specialQ, nullptr);
 
     auto cmdQ = new MockCommandQueue(&context, (ClDevice *)devices[0], 0, false);
@@ -314,6 +314,7 @@ class ContextWithAsyncDeleterTest : public ::testing::WithParamInterface<bool>,
         deleter = new MockDeferredDeleter();
 
         device->allEngines.clear();
+        device->device.secondaryEngines.clear();
         device->device.regularEngineGroups.clear();
         device->injectMemoryManager(memoryManager);
         device->createEngines();
@@ -348,9 +349,9 @@ TEST_P(ContextWithAsyncDeleterTest, givenContextWithMemoryManagerWhenAsyncDelete
     EXPECT_EQ(0, deleter->getClientsNum());
 }
 
-INSTANTIATE_TEST_CASE_P(ContextTests,
-                        ContextWithAsyncDeleterTest,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(ContextTests,
+                         ContextWithAsyncDeleterTest,
+                         ::testing::Bool());
 
 TEST(DefaultContext, givenDefaultContextWhenItIsQueriedForTypeThenDefaultTypeIsReturned) {
     MockContext context;
@@ -821,6 +822,8 @@ TEST_F(GTPinContextDestroyTest, whenCallingConxtextDestructorThenGTPinIsNotified
     if (mockContext->svmAllocsManager) {
         mockContext->getDeviceMemAllocPool().cleanup();
         mockContext->getHostMemAllocPool().cleanup();
+        mockContext->svmAllocsManager->trimUSMDeviceAllocCache();
+        mockContext->svmAllocsManager->trimUSMHostAllocCache();
         delete mockContext->svmAllocsManager;
     }
     mockContext->svmAllocsManager = new MockSVMAllocManager();

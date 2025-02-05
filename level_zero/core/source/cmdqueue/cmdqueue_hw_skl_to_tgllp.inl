@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,7 +15,7 @@
 #include "shared/source/helpers/cache_policy.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/state_base_address.h"
-#include "shared/source/helpers/state_base_address_bdw_and_later.inl"
+#include "shared/source/helpers/state_base_address_tgllp_and_later.inl"
 
 #include "level_zero/core/source/cmdlist/cmdlist.h"
 #include "level_zero/core/source/cmdqueue/cmdqueue_hw.h"
@@ -41,10 +41,10 @@ void CommandQueueHw<gfxCoreFamily>::programStateBaseAddress(uint64_t gsba, bool 
     uint64_t bindlessSurfStateBase = 0ull;
 
     if (neoDevice->getBindlessHeapsHelper()) {
-        if (neoDevice->getBindlessHeapsHelper()->isGlobalDshSupported()) {
-            useGlobalSshAndDsh = true;
-            globalHeapsBase = neoDevice->getBindlessHeapsHelper()->getGlobalHeapsBase();
-        } else {
+        useGlobalSshAndDsh = true;
+        globalHeapsBase = neoDevice->getBindlessHeapsHelper()->getGlobalHeapsBase();
+
+        if (!neoDevice->getBindlessHeapsHelper()->isGlobalDshSupported()) {
             bindlessSurfStateBase = neoDevice->getBindlessHeapsHelper()->getGlobalHeapsBase();
         }
     }
@@ -84,7 +84,6 @@ void CommandQueueHw<gfxCoreFamily>::programStateBaseAddress(uint64_t gsba, bool 
         true,                                             // setGeneralStateBaseAddress
         useGlobalSshAndDsh,                               // useGlobalHeapsBaseAddress
         false,                                            // isMultiOsContextCapable
-        false,                                            // useGlobalAtomics
         false,                                            // areMultipleSubDevicesInContext
         false,                                            // overrideSurfaceStateBaseAddress
         isDebuggerActive,                                 // isDebuggerActive
@@ -121,46 +120,48 @@ size_t CommandQueueHw<gfxCoreFamily>::estimateStateBaseAddressCmdSize() {
 template <GFXCORE_FAMILY gfxCoreFamily>
 void CommandQueueHw<gfxCoreFamily>::handleScratchSpace(NEO::HeapContainer &heapContainer,
                                                        NEO::ScratchSpaceController *scratchController,
+                                                       NEO::GraphicsAllocation *globalStatelessAllocation,
                                                        bool &gsbaState, bool &frontEndState,
-                                                       uint32_t perThreadScratchSpaceSize, uint32_t perThreadPrivateScratchSize) {
+                                                       uint32_t perThreadScratchSpaceSlot0Size, uint32_t perThreadScratchSpaceSlot1Size) {
 
-    if (perThreadScratchSpaceSize > 0) {
-        scratchController->setRequiredScratchSpace(nullptr, 0u, perThreadScratchSpaceSize, 0u, csr->peekTaskCount(),
+    if (perThreadScratchSpaceSlot0Size > 0) {
+        scratchController->setRequiredScratchSpace(nullptr, 0u, perThreadScratchSpaceSlot0Size, 0u,
                                                    csr->getOsContext(), gsbaState, frontEndState);
-        auto scratchAllocation = scratchController->getScratchSpaceAllocation();
+        auto scratchAllocation = scratchController->getScratchSpaceSlot0Allocation();
         csr->makeResident(*scratchAllocation);
     }
 }
 
 template <GFXCORE_FAMILY gfxCoreFamily>
-void CommandQueueHw<gfxCoreFamily>::patchCommands(CommandList &commandList, uint64_t scratchAddress) {
+void CommandQueueHw<gfxCoreFamily>::patchCommands(CommandList &commandList, uint64_t scratchAddress,
+                                                  bool patchNewScratchAddress) {
     using MI_SEMAPHORE_WAIT = typename GfxFamily::MI_SEMAPHORE_WAIT;
     using COMPARE_OPERATION = typename GfxFamily::MI_SEMAPHORE_WAIT::COMPARE_OPERATION;
 
     auto &commandsToPatch = commandList.getCommandsToPatch();
     for (auto &commandToPatch : commandsToPatch) {
         switch (commandToPatch.type) {
-        case CommandList::CommandToPatch::FrontEndState: {
+        case CommandToPatch::FrontEndState: {
             UNRECOVERABLE_IF(true);
             break;
         }
-        case CommandList::CommandToPatch::PauseOnEnqueueSemaphoreStart: {
+        case CommandToPatch::PauseOnEnqueueSemaphoreStart: {
             NEO::EncodeSemaphore<GfxFamily>::programMiSemaphoreWait(reinterpret_cast<MI_SEMAPHORE_WAIT *>(commandToPatch.pCommand),
                                                                     csr->getDebugPauseStateGPUAddress(),
                                                                     static_cast<uint32_t>(NEO::DebugPauseState::hasUserStartConfirmation),
                                                                     COMPARE_OPERATION::COMPARE_OPERATION_SAD_EQUAL_SDD,
-                                                                    false, true, false, false);
+                                                                    false, true, false, false, false);
             break;
         }
-        case CommandList::CommandToPatch::PauseOnEnqueueSemaphoreEnd: {
+        case CommandToPatch::PauseOnEnqueueSemaphoreEnd: {
             NEO::EncodeSemaphore<GfxFamily>::programMiSemaphoreWait(reinterpret_cast<MI_SEMAPHORE_WAIT *>(commandToPatch.pCommand),
                                                                     csr->getDebugPauseStateGPUAddress(),
                                                                     static_cast<uint32_t>(NEO::DebugPauseState::hasUserEndConfirmation),
                                                                     COMPARE_OPERATION::COMPARE_OPERATION_SAD_EQUAL_SDD,
-                                                                    false, true, false, false);
+                                                                    false, true, false, false, false);
             break;
         }
-        case CommandList::CommandToPatch::PauseOnEnqueuePipeControlStart: {
+        case CommandToPatch::PauseOnEnqueuePipeControlStart: {
 
             NEO::PipeControlArgs args;
             args.dcFlushEnable = csr->getDcFlushSupport();
@@ -175,7 +176,7 @@ void CommandQueueHw<gfxCoreFamily>::patchCommands(CommandList &commandList, uint
                 args);
             break;
         }
-        case CommandList::CommandToPatch::PauseOnEnqueuePipeControlEnd: {
+        case CommandToPatch::PauseOnEnqueuePipeControlEnd: {
 
             NEO::PipeControlArgs args;
             args.dcFlushEnable = csr->getDcFlushSupport();
@@ -188,6 +189,10 @@ void CommandQueueHw<gfxCoreFamily>::patchCommands(CommandList &commandList, uint
                 static_cast<uint64_t>(NEO::DebugPauseState::waitingForUserEndConfirmation),
                 device->getNEODevice()->getRootDeviceEnvironment(),
                 args);
+            break;
+        }
+        case CommandToPatch::NoopSpace: {
+            memset(commandToPatch.pDestination, 0, commandToPatch.patchSize);
             break;
         }
         default: {

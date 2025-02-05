@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,13 +11,17 @@
 #include "shared/source/os_interface/driver_info.h"
 #include "shared/source/os_interface/windows/wddm/wddm.h"
 
+#include "level_zero/core/source/driver/driver.h"
 #include "level_zero/sysman/source/shared/firmware_util/sysman_firmware_util.h"
+#include "level_zero/sysman/source/shared/windows/pmt/sysman_pmt.h"
+#include "level_zero/sysman/source/shared/windows/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/windows/sysman_kmd_sys_manager.h"
 
 namespace L0 {
 namespace Sysman {
 
 ze_result_t WddmSysmanImp::init() {
+
     NEO::OSInterface &osInterface = *(pParentSysmanDeviceImp->getRootDeviceEnvironment()).osInterface;
     auto driverModel = osInterface.getDriverModel();
 
@@ -35,6 +39,21 @@ ze_result_t WddmSysmanImp::init() {
         subDeviceCount = 0;
     }
 
+    pSysmanProductHelper = SysmanProductHelper::create(getProductFamily());
+    DEBUG_BREAK_IF(nullptr == pSysmanProductHelper);
+
+    if (sysmanInitFromCore) {
+        if (pSysmanProductHelper->isZesInitSupported()) {
+            sysmanInitFromCore = false;
+        } else {
+            NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
+                                  "%s", "Sysman Initialization already happened via zeInit\n");
+            return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+        }
+    }
+
+    pPmt = PlatformMonitoringTech::create(pSysmanProductHelper.get());
+
     return ZE_RESULT_SUCCESS;
 }
 
@@ -44,6 +63,15 @@ uint32_t WddmSysmanImp::getSubDeviceCount() {
 
 SysmanDeviceImp *WddmSysmanImp::getSysmanDeviceImp() {
     return pParentSysmanDeviceImp;
+}
+
+SysmanProductHelper *WddmSysmanImp::getSysmanProductHelper() {
+    UNRECOVERABLE_IF(nullptr == pSysmanProductHelper);
+    return pSysmanProductHelper.get();
+}
+
+PlatformMonitoringTech *WddmSysmanImp::getSysmanPmt() {
+    return pPmt.get();
 }
 
 void WddmSysmanImp::createFwUtilInterface() {

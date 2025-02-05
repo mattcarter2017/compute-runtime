@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,6 +29,7 @@ constexpr uint64_t correctableEuErrorCount = 75u;
 constexpr uint64_t fatalEuErrorCount = 50u;
 constexpr uint64_t fatalTlb = 3u;
 constexpr uint64_t socFatalPsfCsc0Count = 5u;
+constexpr uint64_t socFatalIosfPciaer = 3u;
 constexpr uint64_t fatalEngineResetCount = 45u;
 constexpr uint64_t correctableGrfErrorCountTile0 = 90u;
 constexpr uint64_t correctableEuErrorCountTile0 = 70u;
@@ -60,9 +61,9 @@ constexpr uint64_t driverEngineOther = 3u;
 constexpr uint64_t initialUncorrectableCacheErrors = 2u;
 constexpr uint64_t initialEngineReset = 2u;
 constexpr uint64_t initialProgrammingErrors = 7u;
-constexpr uint64_t initialUncorrectableNonComputeErrors = 8u;
+constexpr uint64_t initialUncorrectableNonComputeErrors = 4u;
 constexpr uint64_t initialUncorrectableFabricErrors = 8u;
-constexpr uint64_t initialUncorrectableComputeErrors = 10u;
+constexpr uint64_t initialUncorrectableComputeErrors = 7u;
 constexpr uint64_t initialCorrectableComputeErrors = 6u;
 constexpr uint64_t initialUncorrectableDriverErrors = 5u;
 
@@ -70,9 +71,9 @@ constexpr uint64_t initialUncorrectableCacheErrorsTile0 = 2u;
 constexpr uint64_t initialCorrectableCacheErrorTile0 = 2u;
 constexpr uint64_t initialEngineResetTile0 = 2u;
 constexpr uint64_t initialProgrammingErrorsTile0 = 7u;
-constexpr uint64_t initialUncorrectableNonComputeErrorsTile0 = 15u;
+constexpr uint64_t initialUncorrectableNonComputeErrorsTile0 = 11u;
 constexpr uint64_t initialCorrectableNonComputeErrorsTile0 = 2u;
-constexpr uint64_t initialUncorrectableComputeErrorsTile0 = 11u;
+constexpr uint64_t initialUncorrectableComputeErrorsTile0 = 8u;
 constexpr uint64_t initialUncorrectableFabricErrorsTile0 = 8u;
 constexpr uint64_t initialCorrectableComputeErrorsTile0 = 6u;
 constexpr uint64_t initialUncorrectableDriverErrorsTile0 = 5u;
@@ -80,7 +81,7 @@ constexpr uint64_t initialUncorrectableCacheErrorsTile1 = 1u;
 constexpr uint64_t initialEngineResetTile1 = 4u;
 constexpr uint64_t initialProgrammingErrorsTile1 = 5u;
 constexpr uint64_t initialCorrectableComputeErrorsTile1 = 7u;
-constexpr uint64_t initialUncorrectableNonComputeErrorsTile1 = 5u;
+constexpr uint64_t initialUncorrectableNonComputeErrorsTile1 = 3u;
 constexpr uint64_t initialUncorrectableFabricErrorsTile1 = 2u;
 constexpr uint64_t initialUncorrectableComputeErrorsTile1 = 6u;
 constexpr uint64_t initialUncorrectableDriverErrorsTile1 = 4u;
@@ -137,11 +138,12 @@ struct MockRasPmuInterfaceImp : public PmuInterfaceImp {
         data[5] = driverGgtt;
         data[6] = driverRps;
         data[7] = 0;
-        data[8] = 0;
-        data[9] = fatalEuErrorCount;
-        data[10] = socFatalPsfCsc0Count;
-        data[11] = socFatalMdfiEastCount;
-        data[12] = fatalTlb;
+        data[8] = fatalEuErrorCount;
+        data[9] = socFatalPsfCsc0Count;
+        data[10] = socFatalIosfPciaer;
+        data[11] = fatalTlb;
+        data[12] = 0;
+        data[13] = socFatalMdfiEastCount;
         return 0;
     }
 
@@ -164,14 +166,15 @@ struct MockRasPmuInterfaceImp : public PmuInterfaceImp {
         data[5] = driverGgtt;
         data[6] = driverRps;
         data[7] = 0;
-        data[8] = 0;
-        data[9] = fatalSubslice;
-        data[10] = fatalEuErrorCount;
-        data[11] = socFatalPsfCsc0Count;
-        data[12] = socFatalMdfiEastCount;
-        data[13] = nonFatalGscAonParity;
-        data[14] = nonFataGscSelfmBist;
-        data[15] = fatalTlb;
+        data[8] = fatalSubslice;
+        data[9] = fatalEuErrorCount;
+        data[10] = socFatalPsfCsc0Count;
+        data[11] = socFatalIosfPciaer;
+        data[12] = nonFatalGscAonParity;
+        data[13] = nonFataGscSelfmBist;
+        data[14] = fatalTlb;
+        data[15] = 0;
+        data[16] = socFatalMdfiEastCount;
         return 0;
     }
 
@@ -192,10 +195,10 @@ struct MockRasPmuInterfaceImp : public PmuInterfaceImp {
         data[4] = driverMigration;
         data[5] = driverEngineOther;
         data[6] = fatalGucErrorCountTile1;
-        data[7] = socFatalMdfiWestCountTile1;
-        data[8] = socFatalPunitTile1;
-        data[9] = fatalIdiParityErrorCountTile1;
-        data[10] = fatalL3BankTile1;
+        data[7] = socFatalPunitTile1;
+        data[8] = fatalIdiParityErrorCountTile1;
+        data[9] = fatalL3BankTile1;
+        data[10] = socFatalMdfiWestCountTile1;
         return 0;
     }
 
@@ -382,6 +385,9 @@ struct MockRasSysfsAccess : public SysfsAccess {
         } else if (file.compare("gt/gt1/error_counter/correctable_subslice") == 0) {
             val = 2u;
             return ZE_RESULT_SUCCESS;
+        } else if (file.compare("gt/gt0/error_counter/soc_fatal_iosf_pciaer") == 0) {
+            val = 1u;
+            return ZE_RESULT_SUCCESS;
         }
         return ZE_RESULT_ERROR_NOT_AVAILABLE;
     }
@@ -453,6 +459,9 @@ struct MockRasSysfsAccess : public SysfsAccess {
         } else if (file.compare("gt/gt1/error_counter/driver_engine_other") == 0) {
             val = 3u;
             return ZE_RESULT_SUCCESS;
+        } else if (file.compare("gt/gt0/error_counter/soc_fatal_iosf_pciaer") == 0) {
+            val = 1u;
+            return ZE_RESULT_SUCCESS;
         }
         return ZE_RESULT_ERROR_NOT_AVAILABLE;
     }
@@ -513,6 +522,7 @@ struct MockRasFsAccess : public FsAccess {
             events.push_back("error--fatal-fpu");
             events.push_back("error--fatal-l3-fabric");
             events.push_back("ccs0-busy");
+            events.push_back("error--soc-fatal-iosf-pciaer");
             return ZE_RESULT_SUCCESS;
         }
         return ZE_RESULT_ERROR_NOT_AVAILABLE;
@@ -560,6 +570,7 @@ struct MockRasFsAccess : public FsAccess {
             events.push_back("error-gt0--fatal-subslice");
             events.push_back("error-gt1--fatal-l3bank");
             events.push_back("error-gt1--correctable-subslice");
+            events.push_back("error-gt0--soc-fatal-iosf-pciaer");
             return ZE_RESULT_SUCCESS;
         }
         return ZE_RESULT_ERROR_NOT_AVAILABLE;
@@ -640,7 +651,7 @@ struct MockRasFwInterface : public FirmwareUtil {
     MockRasFwInterface() = default;
 
     ADDMETHOD_NOBASE(fwDeviceInit, ze_result_t, ZE_RESULT_SUCCESS, ());
-    ADDMETHOD_NOBASE(getFirstDevice, ze_result_t, ZE_RESULT_SUCCESS, (igsc_device_info * info));
+    ADDMETHOD_NOBASE(getFirstDevice, ze_result_t, ZE_RESULT_SUCCESS, (IgscDeviceInfo * info));
     ADDMETHOD_NOBASE(getFwVersion, ze_result_t, ZE_RESULT_SUCCESS, (std::string fwType, std::string &firmwareVersion));
     ADDMETHOD_NOBASE(flashFirmware, ze_result_t, ZE_RESULT_SUCCESS, (std::string fwType, void *pImage, uint32_t size));
     ADDMETHOD_NOBASE(fwIfrApplied, ze_result_t, ZE_RESULT_SUCCESS, (bool &ifrStatus));

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,14 +24,74 @@ using namespace NEO;
 
 Buffer *GlBuffer::createSharedGlBuffer(Context *context, cl_mem_flags flags, unsigned int bufferId, cl_int *errcodeRet) {
     ErrorCodeHelper errorCode(errcodeRet, CL_SUCCESS);
-    CL_GL_BUFFER_INFO bufferInfo = {0};
-    bufferInfo.bufferName = bufferId;
 
-    GLSharingFunctionsLinux *sharingFunctions = context->getSharing<GLSharingFunctionsLinux>();
-    if (sharingFunctions->acquireSharedBufferINTEL(&bufferInfo) == GL_FALSE) {
-        errorCode.set(CL_INVALID_GL_OBJECT);
+    /* Prepare flush & export request */
+    struct mesa_glinterop_export_in objIn = {};
+    struct mesa_glinterop_export_out objOut = {};
+    struct mesa_glinterop_flush_out flushOut = {};
+    int fenceFd = -1;
+
+    objIn.version = 2;
+    objIn.target = GL_ARRAY_BUFFER;
+    objIn.obj = bufferId;
+
+    switch (flags) {
+    case CL_MEM_READ_ONLY:
+        objIn.access = MESA_GLINTEROP_ACCESS_READ_ONLY;
+        break;
+    case CL_MEM_WRITE_ONLY:
+        objIn.access = MESA_GLINTEROP_ACCESS_WRITE_ONLY;
+        break;
+    case CL_MEM_READ_WRITE:
+        objIn.access = MESA_GLINTEROP_ACCESS_READ_WRITE;
+        break;
+    default:
+        errorCode.set(CL_INVALID_VALUE);
         return nullptr;
     }
+
+    flushOut.version = 1;
+    flushOut.fence_fd = &fenceFd;
+
+    objOut.version = 2;
+
+    /* Call MESA interop */
+    GLSharingFunctionsLinux *sharingFunctions = context->getSharing<GLSharingFunctionsLinux>();
+    bool success;
+    int retValue;
+
+    success = sharingFunctions->flushObjectsAndWait(1, &objIn, &flushOut, &retValue);
+    if (success) {
+        retValue = sharingFunctions->exportObject(&objIn, &objOut);
+    }
+
+    if (!success || (retValue != MESA_GLINTEROP_SUCCESS) || (objOut.version != 2)) {
+        switch (retValue) {
+        case MESA_GLINTEROP_INVALID_DISPLAY:
+        case MESA_GLINTEROP_INVALID_CONTEXT:
+            errorCode.set(CL_INVALID_CONTEXT);
+            break;
+        case MESA_GLINTEROP_INVALID_OBJECT:
+            errorCode.set(CL_INVALID_GL_OBJECT);
+            break;
+        case MESA_GLINTEROP_OUT_OF_HOST_MEMORY:
+            errorCode.set(CL_OUT_OF_HOST_MEMORY);
+            break;
+        case MESA_GLINTEROP_OUT_OF_RESOURCES:
+        default:
+            errorCode.set(CL_OUT_OF_RESOURCES);
+            break;
+        }
+
+        return nullptr;
+    }
+
+    /* Map result for rest of the function */
+    CL_GL_BUFFER_INFO bufferInfo = {};
+    bufferInfo.bufferName = bufferId;
+    bufferInfo.globalShareHandle = static_cast<unsigned int>(objOut.dmabuf_fd);
+    bufferInfo.bufferSize = static_cast<GLint>(objOut.buf_size);
+    bufferInfo.bufferOffset = static_cast<GLint>(objOut.buf_offset);
 
     auto graphicsAllocation = GlBuffer::createGraphicsAllocation(context, bufferId, bufferInfo);
     if (!graphicsAllocation) {
@@ -50,20 +110,20 @@ Buffer *GlBuffer::createSharedGlBuffer(Context *context, cl_mem_flags flags, uns
 void GlBuffer::synchronizeObject(UpdateData &updateData) {
     auto sharingFunctions = static_cast<GLSharingFunctionsLinux *>(this->sharingFunctions);
 
-    CL_GL_BUFFER_INFO bufferInfo = {};
-    bufferInfo.bufferName = this->clGlObjectId;
-    sharingFunctions->acquireSharedBufferINTEL(&bufferInfo);
+    /* Prepare flush request */
+    struct mesa_glinterop_export_in objIn = {};
+    struct mesa_glinterop_flush_out syncOut = {};
+    int fenceFd = -1;
 
-    auto graphicsAllocation = updateData.memObject->getGraphicsAllocation(updateData.rootDeviceIndex);
+    objIn.version = 2;
+    objIn.target = GL_ARRAY_BUFFER;
+    objIn.obj = this->clGlObjectId;
 
-    updateData.sharedHandle = bufferInfo.globalShareHandle;
-    updateData.synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
-    graphicsAllocation->setAllocationOffset(bufferInfo.bufferOffset);
+    syncOut.version = 1;
+    syncOut.fence_fd = &fenceFd;
 
-    const auto currentSharedHandle = graphicsAllocation->peekSharedHandle();
-    if (currentSharedHandle != updateData.sharedHandle) {
-        updateData.updateData = new CL_GL_BUFFER_INFO(bufferInfo);
-    }
+    bool success = sharingFunctions->flushObjectsAndWait(1, &objIn, &syncOut);
+    updateData.synchronizationStatus = success ? SynchronizeStatus::ACQUIRE_SUCCESFUL : SynchronizeStatus::SYNCHRONIZE_ERROR;
 }
 
 void GlBuffer::resolveGraphicsAllocationChange(osHandle currentSharedHandle, UpdateData *updateData) {
@@ -152,8 +212,9 @@ GraphicsAllocation *GlBuffer::createGraphicsAllocation(Context *context, unsigne
                                            false, // isMultiStorageAllocation
                                            context->getDeviceBitfieldForAllocation(context->getDevice(0)->getRootDeviceIndex())};
         // couldn't find allocation for reuse - create new
+        MemoryManager::OsHandleData osHandleData{bufferInfo.globalShareHandle};
         graphicsAllocation =
-            context->getMemoryManager()->createGraphicsAllocationFromSharedHandle(bufferInfo.globalShareHandle, properties, true, false, false, nullptr);
+            context->getMemoryManager()->createGraphicsAllocationFromSharedHandle(osHandleData, properties, false, false, false, nullptr);
     }
 
     if (!graphicsAllocation) {
@@ -167,6 +228,13 @@ GraphicsAllocation *GlBuffer::createGraphicsAllocation(Context *context, unsigne
             DEBUG_BREAK_IF(graphicsAllocation->getDefaultGmm() != nullptr);
             auto helper = context->getDevice(0)->getRootDeviceEnvironment().getGmmHelper();
             graphicsAllocation->setDefaultGmm(new Gmm(helper, bufferInfo.pGmmResInfo));
+        } else {
+            auto helper = context->getDevice(0)->getRootDeviceEnvironment().getGmmHelper();
+            StorageInfo storageInfo = {};
+            GmmRequirements gmmRequirements{};
+
+            graphicsAllocation->setDefaultGmm(new Gmm(helper,
+                                                      nullptr, bufferInfo.bufferSize, 1, GMM_RESOURCE_USAGE_UNKNOWN, storageInfo, gmmRequirements));
         }
     }
 
@@ -174,8 +242,8 @@ GraphicsAllocation *GlBuffer::createGraphicsAllocation(Context *context, unsigne
 }
 
 void GlBuffer::releaseResource(MemObj *memObject, uint32_t rootDeviceIndex) {
-    auto sharingFunctions = static_cast<GLSharingFunctionsLinux *>(this->sharingFunctions);
-    CL_GL_BUFFER_INFO bufferInfo = {};
-    bufferInfo.bufferName = this->clGlObjectId;
-    sharingFunctions->releaseSharedBufferINTEL(&bufferInfo);
+    auto memoryManager = memObject->getMemoryManager();
+    memoryManager->closeSharedHandle(memObject->getGraphicsAllocation(rootDeviceIndex));
 }
+
+void GlBuffer::callReleaseResource(bool createOrDestroy) {}

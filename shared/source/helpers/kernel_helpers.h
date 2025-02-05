@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,13 +7,19 @@
 
 #pragma once
 
+#include "shared/source/helpers/aligned_memory.h"
+#include "shared/source/helpers/constants.h"
+#include "shared/source/helpers/definitions/engine_group_types.h"
 #include "shared/source/kernel/kernel_descriptor.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
 namespace NEO {
 class Device;
+class GraphicsAllocation;
+struct RootDeviceEnvironment;
 
 struct KernelHelper {
     enum class ErrorCode {
@@ -21,9 +27,10 @@ struct KernelHelper {
         outOfDeviceMemory = 1,
         invalidKernel = 2
     };
-    static uint32_t getMaxWorkGroupCount(uint32_t simd, uint32_t availableThreadCount, uint32_t dssCount, uint32_t availableSlmSize,
-                                         uint32_t usedSlmSize, uint32_t maxBarrierCount, uint32_t numberOfBarriers, uint32_t workDim,
-                                         const size_t *localWorkSize);
+    static uint32_t getMaxWorkGroupCount(Device &device, uint16_t numGrfRequired, uint8_t simdSize, uint8_t barrierCount, uint32_t alignedSlmSize, uint32_t workDim, const size_t *localWorkSize,
+                                         EngineGroupType engineGroupType, bool implicitScalingEnabled, bool forceSingleTileQuery);
+    static uint32_t getMaxWorkGroupCount(const RootDeviceEnvironment &rootDeviceEnvironment, uint16_t numGrfRequired, uint8_t simdSize, uint8_t barrierCount,
+                                         uint32_t numSubDevices, uint32_t usedSlmSize, uint32_t workDim, const size_t *localWorkSize, EngineGroupType engineGroupType);
     static inline uint64_t getPrivateSurfaceSize(uint64_t perHwThreadPrivateMemorySize, uint32_t computeUnitsUsedForScratch) {
         return perHwThreadPrivateMemorySize * computeUnitsUsedForScratch;
     }
@@ -36,6 +43,18 @@ struct KernelHelper {
     static ErrorCode checkIfThereIsSpaceForScratchOrPrivate(KernelDescriptor::KernelAttributes attributes, Device *device);
 
     static bool isAnyArgumentPtrByValue(const KernelDescriptor &kernelDescriptor);
+
+    static inline size_t getRegionGroupBarrierSize(const size_t threadGroupCount, const size_t localRegionSize) {
+        const size_t ratio = (threadGroupCount / localRegionSize) + (threadGroupCount % localRegionSize ? 1 : 0);
+        return alignUp(ratio * (localRegionSize + 1) * 2 * sizeof(uint32_t), MemoryConstants::cacheLineSize);
+    }
+
+    static std::pair<GraphicsAllocation *, size_t> getRegionGroupBarrierAllocationOffset(Device &device, const size_t threadGroupCount, const size_t localRegionSize);
+
+    static inline size_t getSyncBufferSize(const size_t requestedNumberOfWorkgroups) {
+        return alignUp(std::max(requestedNumberOfWorkgroups, static_cast<size_t>(CommonConstants::minimalSyncBufferSize)), static_cast<size_t>(CommonConstants::maximalSizeOfAtomicType));
+    }
+    static std::pair<GraphicsAllocation *, size_t> getSyncBufferAllocationOffset(Device &device, const size_t requestedNumberOfWorkgroups);
 };
 
 } // namespace NEO

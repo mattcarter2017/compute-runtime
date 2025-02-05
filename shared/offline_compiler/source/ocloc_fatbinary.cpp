@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,6 +20,7 @@
 #include "shared/source/helpers/file_io.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/product_config_helper.h"
+#include "shared/source/utilities/directory.h"
 
 #include "igfxfmid.h"
 #include "platforms.h"
@@ -31,6 +32,11 @@
 #include <set>
 
 namespace NEO {
+
+bool isSpvOnly(const std::vector<std::string> &args) {
+    return std::find(args.begin(), args.end(), "-spv_only") != args.end();
+}
+
 bool requestedFatBinary(ConstStringRef deviceArg, OclocArgHelper *helper) {
     auto deviceName = deviceArg.str();
     ProductConfigHelper::adjustDeviceName(deviceName);
@@ -95,12 +101,12 @@ void getProductsAcronymsForTarget<AOT::FAMILY>(std::vector<NEO::ConstStringRef> 
 }
 
 template <typename T>
-std::vector<ConstStringRef> getProductsForTargetRange(T targetFrom, T targetTo, OclocArgHelper *argHelper) {
+std::vector<ConstStringRef> getProductsForTargetRange(T targetFrom, T targetTo, OclocArgHelper *argHelper, const T maxValue) {
     std::vector<ConstStringRef> ret{};
     if (targetFrom > targetTo) {
         std::swap(targetFrom, targetTo);
     }
-    while (targetFrom <= targetTo) {
+    while (targetFrom <= targetTo && targetFrom < maxValue) {
         getProductsAcronymsForTarget<T>(ret, targetFrom, argHelper);
         targetFrom = static_cast<T>(static_cast<unsigned int>(targetFrom) + 1);
     }
@@ -134,17 +140,18 @@ std::vector<ConstStringRef> getProductForClosedRange(ConstStringRef rangeFrom, C
 
     ProductConfigHelper::adjustDeviceName(rangeToStr);
     ProductConfigHelper::adjustDeviceName(rangeFromStr);
+    argHelper->productConfigHelper->adjustClosedRangeDeviceLegacyAcronyms(rangeFromStr, rangeToStr);
 
     auto familyFrom = argHelper->productConfigHelper->getFamilyFromDeviceName(rangeFromStr);
     auto familyTo = argHelper->productConfigHelper->getFamilyFromDeviceName(rangeToStr);
     if (familyFrom != AOT::UNKNOWN_FAMILY && familyTo != AOT::UNKNOWN_FAMILY) {
-        return getProductsForTargetRange(familyFrom, familyTo, argHelper);
+        return getProductsForTargetRange(familyFrom, familyTo, argHelper, AOT::FAMILY_MAX);
     }
 
     auto releaseFrom = argHelper->productConfigHelper->getReleaseFromDeviceName(rangeFromStr);
     auto releaseTo = argHelper->productConfigHelper->getReleaseFromDeviceName(rangeToStr);
     if (releaseFrom != AOT::UNKNOWN_RELEASE && releaseTo != AOT::UNKNOWN_RELEASE) {
-        return getProductsForTargetRange(releaseFrom, releaseTo, argHelper);
+        return getProductsForTargetRange(releaseFrom, releaseTo, argHelper, AOT::RELEASE_MAX);
     }
 
     auto prodConfigFrom = argHelper->productConfigHelper->getProductConfigFromDeviceName(rangeFromStr);
@@ -171,11 +178,10 @@ std::vector<ConstStringRef> getProductForOpenRange(ConstStringRef openRange, Ocl
         if (rangeTo) {
             unsigned int familyFrom = AOT::UNKNOWN_FAMILY;
             ++familyFrom;
-            return getProductsForTargetRange(static_cast<AOT::FAMILY>(familyFrom), family, argHelper);
+            return getProductsForTargetRange(static_cast<AOT::FAMILY>(familyFrom), family, argHelper, AOT::FAMILY_MAX);
         } else {
             unsigned int familyTo = AOT::FAMILY_MAX;
-            --familyTo;
-            return getProductsForTargetRange(family, static_cast<AOT::FAMILY>(familyTo), argHelper);
+            return getProductsForTargetRange(family, static_cast<AOT::FAMILY>(familyTo), argHelper, AOT::FAMILY_MAX);
         }
     }
 
@@ -184,11 +190,10 @@ std::vector<ConstStringRef> getProductForOpenRange(ConstStringRef openRange, Ocl
         if (rangeTo) {
             unsigned int releaseFrom = AOT::UNKNOWN_FAMILY;
             ++releaseFrom;
-            return getProductsForTargetRange(static_cast<AOT::RELEASE>(releaseFrom), release, argHelper);
+            return getProductsForTargetRange(static_cast<AOT::RELEASE>(releaseFrom), release, argHelper, AOT::RELEASE_MAX);
         } else {
             unsigned int releaseTo = AOT::RELEASE_MAX;
-            --releaseTo;
-            return getProductsForTargetRange(release, static_cast<AOT::RELEASE>(releaseTo), argHelper);
+            return getProductsForTargetRange(release, static_cast<AOT::RELEASE>(releaseTo), argHelper, AOT::RELEASE_MAX);
         }
     }
 
@@ -229,6 +234,11 @@ std::vector<ConstStringRef> getProductForSpecificTarget(const CompilerOptions::T
             requestedConfigs.push_back(target);
             continue;
         }
+        auto legacyAcronymHwInfo = getHwInfoForDeprecatedAcronym(targetStr);
+        if (nullptr != legacyAcronymHwInfo) {
+            requestedConfigs.push_back(target);
+            continue;
+        }
         argHelper->printf("Failed to parse target : %s - invalid device:\n", target.str().c_str());
         return {};
     }
@@ -260,6 +270,17 @@ std::vector<ConstStringRef> getTargetProductsForFatbinary(ConstStringRef deviceA
     return retVal;
 }
 
+int getDeviceArgValueIdx(const std::vector<std::string> &args) {
+    for (size_t argIndex = 0; argIndex < args.size(); ++argIndex) {
+        const auto &currArg = args[argIndex];
+        const bool hasMoreArgs = (argIndex + 1 < args.size());
+        if ((ConstStringRef("-device") == currArg) && hasMoreArgs) {
+            return static_cast<int>(argIndex + 1);
+        }
+    }
+    return -1;
+}
+
 int buildFatBinaryForTarget(int retVal, const std::vector<std::string> &argsCopy, std::string pointerSize, Ar::ArEncoder &fatbinary,
                             OfflineCompiler *pCompiler, OclocArgHelper *argHelper, const std::string &product) {
 
@@ -284,14 +305,22 @@ int buildFatBinaryForTarget(int retVal, const std::vector<std::string> &argsCopy
         return retVal;
     }
 
-    std::string productConfig("");
+    std::string entryName("");
     if (product.find(".") != std::string::npos) {
-        productConfig = product;
+        entryName = product;
     } else {
-        productConfig = ProductConfigHelper::parseMajorMinorRevisionValue(argHelper->productConfigHelper->getProductConfigFromDeviceName(product));
+        auto productConfig = argHelper->productConfigHelper->getProductConfigFromDeviceName(product);
+        auto genericIdAcronymIt = std::find_if(AOT::genericIdAcronyms.begin(), AOT::genericIdAcronyms.end(), [product](const std::pair<std::string, AOT::PRODUCT_CONFIG> &genericIdAcronym) {
+            return product == genericIdAcronym.first;
+        });
+        if (AOT::UNKNOWN_ISA != productConfig && genericIdAcronymIt == AOT::genericIdAcronyms.end()) {
+            entryName = ProductConfigHelper::parseMajorMinorRevisionValue(productConfig);
+        } else {
+            entryName = product;
+        }
     }
 
-    fatbinary.appendFileEntry(pointerSize + "." + productConfig, pCompiler->getPackedDeviceBinaryOutput());
+    fatbinary.appendFileEntry(pointerSize + "." + entryName, pCompiler->getPackedDeviceBinaryOutput());
     return retVal;
 }
 
@@ -391,13 +420,22 @@ int buildFatBinary(const std::vector<std::string> &args, OclocArgHelper *argHelp
     }
 
     auto fatbinaryData = fatbinary.encode();
-    std::string fatbinaryFileName = outputFileName;
-    if (outputFileName.empty() && (false == inputFileName.empty())) {
-        fatbinaryFileName = OfflineCompiler::getFileNameTrunk(inputFileName) + ".ar";
+
+    std::string fatbinaryFileName = "";
+
+    if (!outputDirectory.empty() && outputDirectory != "/dev/null") {
+        fatbinaryFileName = outputDirectory + "/";
+        NEO::Directory(outputDirectory).parseDirectories(Directory::createDirs);
     }
-    if (false == outputDirectory.empty()) {
-        fatbinaryFileName = outputDirectory + "/" + outputFileName;
+
+    if (!outputFileName.empty()) {
+        fatbinaryFileName += outputFileName;
+    } else {
+        if (!inputFileName.empty()) {
+            fatbinaryFileName += OfflineCompiler::getFileNameTrunk(inputFileName) + ".ar";
+        }
     }
+
     argHelper->saveOutput(fatbinaryFileName, fatbinaryData.data(), fatbinaryData.size());
 
     return 0;

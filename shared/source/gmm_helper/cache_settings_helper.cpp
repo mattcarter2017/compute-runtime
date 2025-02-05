@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,7 +26,7 @@ GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getGmmUsageType(AllocationType
     }
 
     if (forceUncached || debugManager.flags.ForceAllResourcesUncached.get()) {
-        return getDefaultUsageTypeWithCachingDisabled(allocationType);
+        return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
     } else {
         return getDefaultUsageTypeWithCachingEnabled(allocationType, productHelper);
     }
@@ -39,14 +39,24 @@ bool CacheSettingsHelper::preferNoCpuAccess(GMM_RESOURCE_USAGE_TYPE_ENUM gmmReso
     if (rootDeviceEnvironment.isWddmOnLinux()) {
         return false;
     }
-    auto releaseHelper = rootDeviceEnvironment.getReleaseHelper();
-    if (!releaseHelper || releaseHelper->isCachingOnCpuAvailable()) {
+    auto &productHelper = rootDeviceEnvironment.getProductHelper();
+    if (productHelper.isCachingOnCpuAvailable()) {
         return false;
     }
     return (gmmResourceUsageType != GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER);
 }
 
 GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getDefaultUsageTypeWithCachingEnabled(AllocationType allocationType, const ProductHelper &productHelper) {
+    if (productHelper.overrideUsageForDcFlushMitigation(allocationType)) {
+        return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
+    }
+
+    if (debugManager.flags.ForceGmmSystemMemoryBufferForAllocations.get()) {
+        UNRECOVERABLE_IF(allocationType == AllocationType::unknown);
+        if ((1llu << (static_cast<int64_t>(allocationType))) & debugManager.flags.ForceGmmSystemMemoryBufferForAllocations.get()) {
+            return GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER;
+        }
+    }
 
     switch (allocationType) {
     case AllocationType::image:
@@ -54,37 +64,41 @@ GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getDefaultUsageTypeWithCaching
     case AllocationType::internalHeap:
     case AllocationType::linearStream:
         if (debugManager.flags.DisableCachingForHeaps.get()) {
-            return getDefaultUsageTypeWithCachingDisabled(allocationType);
+            return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
         }
         return GMM_RESOURCE_USAGE_OCL_STATE_HEAP_BUFFER;
     case AllocationType::constantSurface:
         if (debugManager.flags.ForceL1Caching.get() == 0) {
-            return getDefaultUsageTypeWithCachingDisabled(allocationType);
+            return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
         }
         return GMM_RESOURCE_USAGE_OCL_BUFFER_CONST;
     case AllocationType::buffer:
     case AllocationType::sharedBuffer:
     case AllocationType::svmGpu:
     case AllocationType::unifiedSharedMemory:
-    case AllocationType::externalHostPtr:
         if (debugManager.flags.DisableCachingForStatefulBufferAccess.get()) {
-            return getDefaultUsageTypeWithCachingDisabled(allocationType);
+            return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
         }
         return GMM_RESOURCE_USAGE_OCL_BUFFER;
+    case AllocationType::externalHostPtr:
     case AllocationType::bufferHostMemory:
     case AllocationType::internalHostMemory:
     case AllocationType::mapAllocation:
     case AllocationType::fillPattern:
     case AllocationType::svmCpu:
     case AllocationType::svmZeroCopy:
+    case AllocationType::tagBuffer:
         if (debugManager.flags.DisableCachingForStatefulBufferAccess.get()) {
-            return getDefaultUsageTypeWithCachingDisabled(allocationType);
+            return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
         }
         return GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER;
     case AllocationType::gpuTimestampDeviceBuffer:
     case AllocationType::timestampPacketTagBuffer:
+        if (debugManager.flags.ForceNonCoherentModeForTimestamps.get()) {
+            return GMM_RESOURCE_USAGE_OCL_BUFFER;
+        }
         if (productHelper.isDcFlushAllowed()) {
-            return getDefaultUsageTypeWithCachingDisabled(allocationType);
+            return getDefaultUsageTypeWithCachingDisabled(allocationType, productHelper);
         }
         return GMM_RESOURCE_USAGE_OCL_BUFFER;
     default:
@@ -92,15 +106,21 @@ GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getDefaultUsageTypeWithCaching
     }
 }
 
-GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getDefaultUsageTypeWithCachingDisabled(AllocationType allocationType) {
+GMM_RESOURCE_USAGE_TYPE_ENUM CacheSettingsHelper::getDefaultUsageTypeWithCachingDisabled(AllocationType allocationType, const ProductHelper &productHelper) {
     switch (allocationType) {
     case AllocationType::preemption:
         return GMM_RESOURCE_USAGE_OCL_BUFFER_CSR_UC;
     case AllocationType::internalHeap:
     case AllocationType::linearStream:
         return GMM_RESOURCE_USAGE_OCL_SYSTEM_MEMORY_BUFFER_CACHELINE_MISALIGNED;
+    case AllocationType::timestampPacketTagBuffer:
+    case AllocationType::gpuTimestampDeviceBuffer:
+        if (debugManager.flags.ForceNonCoherentModeForTimestamps.get()) {
+            return GMM_RESOURCE_USAGE_OCL_BUFFER;
+        }
+        [[fallthrough]];
     default:
-        return GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED;
+        return productHelper.isNewCoherencyModelSupported() ? GMM_RESOURCE_USAGE_OCL_BUFFER_CSR_UC : GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED;
     }
 }
 

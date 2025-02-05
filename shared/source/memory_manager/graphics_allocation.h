@@ -36,6 +36,9 @@ class Gmm;
 class MemoryManager;
 class CommandStreamReceiver;
 class GraphicsAllocation;
+class ProductHelper;
+
+struct AllocationProperties;
 
 struct AubInfo {
     uint32_t aubWritable = std::numeric_limits<uint32_t>::max();
@@ -65,14 +68,6 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     GraphicsAllocation &operator=(const GraphicsAllocation &) = delete;
     GraphicsAllocation(const GraphicsAllocation &) = delete;
 
-    GraphicsAllocation(uint32_t rootDeviceIndex, AllocationType allocationType, void *cpuPtrIn,
-                       uint64_t gpuAddress, uint64_t baseAddress, size_t sizeIn, MemoryPool pool, size_t maxOsContextCount)
-        : GraphicsAllocation(rootDeviceIndex, 1, allocationType, cpuPtrIn, gpuAddress, baseAddress, sizeIn, pool, maxOsContextCount) {}
-
-    GraphicsAllocation(uint32_t rootDeviceIndex, AllocationType allocationType, void *cpuPtrIn,
-                       size_t sizeIn, osHandle sharedHandleIn, MemoryPool pool, size_t maxOsContextCount, uint64_t canonizedGpuAddress)
-        : GraphicsAllocation(rootDeviceIndex, 1, allocationType, cpuPtrIn, sizeIn, sharedHandleIn, pool, maxOsContextCount, canonizedGpuAddress) {}
-
     GraphicsAllocation(uint32_t rootDeviceIndex, size_t numGmms, AllocationType allocationType, void *cpuPtrIn,
                        uint64_t canonizedGpuAddress, uint64_t baseAddress, size_t sizeIn, MemoryPool pool, size_t maxOsContextCount);
 
@@ -86,6 +81,9 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
 
     void setCpuPtrAndGpuAddress(void *cpuPtr, uint64_t canonizedGpuAddress) {
         this->cpuPtr = cpuPtr;
+        this->gpuAddress = canonizedGpuAddress;
+    }
+    void setGpuPtr(uint64_t canonizedGpuAddress) {
         this->gpuAddress = canonizedGpuAddress;
     }
     size_t getUnderlyingBufferSize() const { return size; }
@@ -124,6 +122,8 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     bool peekEvictable() const { return allocationInfo.flags.evictable; }
     bool isFlushL3Required() const { return allocationInfo.flags.flushL3Required; }
     void setFlushL3Required(bool flushL3Required) { allocationInfo.flags.flushL3Required = flushL3Required; }
+    bool isLockedMemory() const { return allocationInfo.flags.lockedMemory; }
+    void setLockedMemory(bool locked) { allocationInfo.flags.lockedMemory = locked; }
 
     bool isUncacheable() const { return allocationInfo.flags.uncacheable; }
     void setUncacheable(bool uncacheable) { allocationInfo.flags.uncacheable = uncacheable; }
@@ -155,6 +155,7 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     AllocationType getAllocationType() const { return allocationType; }
 
     MemoryPool getMemoryPool() const { return memoryPool; }
+    virtual void setAsReadOnly(){};
 
     bool isUsed() const { return registeredContextsNum > 0; }
     bool isUsedByManyOsContexts() const { return registeredContextsNum > 1u; }
@@ -183,6 +184,7 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     bool isResidencyTaskCountBelow(TaskCountType taskCount, uint32_t contextId) const { return !isResident(contextId) || getResidencyTaskCount(contextId) < taskCount; }
 
     virtual std::string getAllocationInfoString() const;
+    virtual std::string getPatIndexInfoString(const ProductHelper &) const;
     virtual int createInternalHandle(MemoryManager *memoryManager, uint32_t handleId, uint64_t &handle) { return 0; }
     virtual int peekInternalHandle(MemoryManager *memoryManager, uint64_t &handle) { return 0; }
     virtual void clearInternalHandle(uint32_t handleId) { return; }
@@ -221,7 +223,9 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
                allocationType == AllocationType::debugSbaTrackingBuffer ||
                allocationType == AllocationType::gpuTimestampDeviceBuffer ||
                allocationType == AllocationType::debugModuleArea ||
-               allocationType == AllocationType::assertBuffer;
+               allocationType == AllocationType::assertBuffer ||
+               allocationType == AllocationType::syncDispatchToken ||
+               allocationType == AllocationType::syncBuffer;
     }
     static bool isLockable(AllocationType allocationType) {
         return isCpuAccessRequired(allocationType) ||
@@ -309,10 +313,20 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
         bindlessInfo = info;
     }
 
-    SurfaceStateInHeapInfo getBindlessInfo() {
+    const SurfaceStateInHeapInfo &getBindlessInfo() const {
         return bindlessInfo;
     }
+    bool canBeReadOnly() {
+        return !cantBeReadOnly;
+    }
+    void setAsCantBeReadOnly(bool cantBeReadOnly) {
+        this->cantBeReadOnly = cantBeReadOnly;
+    }
     MOCKABLE_VIRTUAL void updateCompletionDataForAllocationAndFragments(uint64_t newFenceValue, uint32_t contextId);
+    void setShareableHostMemory(bool shareableHostMemory) { this->shareableHostMemory = shareableHostMemory; }
+    bool isShareableHostMemory() const { return shareableHostMemory; }
+    MOCKABLE_VIRTUAL bool hasAllocationReadOnlyType();
+    MOCKABLE_VIRTUAL void checkAllocationTypeReadOnlyRestrictions(const AllocationProperties &properties);
 
     OsHandleStorage fragmentsStorage;
     StorageInfo storageInfo = {};
@@ -322,8 +336,15 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     constexpr static TaskCountType objectNotResident = std::numeric_limits<TaskCountType>::max();
     constexpr static TaskCountType objectNotUsed = std::numeric_limits<TaskCountType>::max();
     constexpr static TaskCountType objectAlwaysResident = std::numeric_limits<TaskCountType>::max() - 1;
+
     std::atomic<uint32_t> hostPtrTaskCountAssignment{0};
-    bool isShareableHostMemory = false;
+
+    bool isExplicitlyMadeResident() const {
+        return this->explicitlyMadeResident;
+    }
+    void setExplicitlyMadeResident(bool explicitlyMadeResident) {
+        this->explicitlyMadeResident = explicitlyMadeResident;
+    }
 
   protected:
     struct UsageInfo {
@@ -344,7 +365,8 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
                 uint32_t flushL3Required : 1;
                 uint32_t uncacheable : 1;
                 uint32_t is32BitAllocation : 1;
-                uint32_t reserved : 27;
+                uint32_t lockedMemory : 1;
+                uint32_t reserved : 26;
             } flags;
             uint32_t allFlags = 0u;
         };
@@ -354,6 +376,7 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
             flags.evictable = true;
             flags.flushL3Required = true;
             flags.is32BitAllocation = false;
+            flags.lockedMemory = false;
         }
     };
 
@@ -383,8 +406,11 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     AllocationType allocationType = AllocationType::unknown;
 
     StackVec<UsageInfo, 32> usageInfos;
-    std::atomic<uint32_t> registeredContextsNum{0};
     StackVec<Gmm *, EngineLimits::maxHandleCount> gmms;
     ResidencyData residency;
+    std::atomic<uint32_t> registeredContextsNum{0};
+    bool shareableHostMemory = false;
+    bool cantBeReadOnly = false;
+    bool explicitlyMadeResident = false;
 };
 } // namespace NEO

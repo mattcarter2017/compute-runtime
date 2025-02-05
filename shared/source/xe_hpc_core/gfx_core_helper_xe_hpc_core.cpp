@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -72,16 +72,13 @@ const EngineInstancesContainer GfxCoreHelperHw<Family>::getGpgpuEngineInstances(
             engines.push_back({aub_stream::EngineType::ENGINE_BCS, EngineUsage::internal}); // Internal usage
         }
 
+        uint32_t internalIndex = getInternalCopyEngineIndex(hwInfo);
         for (uint32_t i = 1; i < hwInfo.featureTable.ftrBcsInfo.size(); i++) {
             if (hwInfo.featureTable.ftrBcsInfo.test(i)) {
                 auto engineType = static_cast<aub_stream::EngineType>((i - 1) + aub_stream::ENGINE_BCS1); // Link copy engine
                 engines.push_back({engineType, EngineUsage::regular});
-                uint32_t internalIndex = 3;
-                if (debugManager.flags.ForceBCSForInternalCopyEngine.get() != -1) {
-                    internalIndex = debugManager.flags.ForceBCSForInternalCopyEngine.get();
-                }
                 if (i == internalIndex) {
-                    engines.push_back({engineType, EngineUsage::internal}); // BCS3 for internal usage
+                    engines.push_back({engineType, EngineUsage::internal});
                 }
             }
         }
@@ -111,7 +108,7 @@ EngineGroupType GfxCoreHelperHw<Family>::getEngineGroupType(aub_stream::EngineTy
 }
 
 template <>
-void GfxCoreHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo, const ProductHelper &productHelper) {
+void GfxCoreHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo, const ProductHelper &productHelper, AILConfiguration *ailConfiguration) {
     if (!pHwInfo->featureTable.flags.ftrCCSNode) {
         pHwInfo->capabilityTable.defaultEngineType = aub_stream::EngineType::ENGINE_CCCS;
     }
@@ -170,9 +167,9 @@ void MemorySynchronizationCommands<Family>::setAdditionalSynchronization(void *&
     if (programGlobalFenceAsMiMemFenceCommandInCommandStream) {
         MI_MEM_FENCE miMemFence = Family::cmdInitMemFence;
         if (acquire) {
-            miMemFence.setFenceType(Family::MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE);
+            miMemFence.setFenceType(Family::MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_ACQUIRE_FENCE);
         } else {
-            miMemFence.setFenceType(Family::MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_RELEASE);
+            miMemFence.setFenceType(Family::MI_MEM_FENCE::FENCE_TYPE::FENCE_TYPE_RELEASE_FENCE);
         }
         *reinterpret_cast<MI_MEM_FENCE *>(commandsBuffer) = miMemFence;
         commandsBuffer = ptrOffset(commandsBuffer, sizeof(MI_MEM_FENCE));
@@ -181,7 +178,7 @@ void MemorySynchronizationCommands<Family>::setAdditionalSynchronization(void *&
                                                         gpuAddress,
                                                         EncodeSemaphore<Family>::invalidHardwareTag,
                                                         MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD,
-                                                        false, true, false, false);
+                                                        false, true, false, false, false);
         commandsBuffer = ptrOffset(commandsBuffer, EncodeSemaphore<Family>::getSizeMiSemaphoreWait());
     }
 }
@@ -202,9 +199,9 @@ size_t MemorySynchronizationCommands<Family>::getSizeForAdditonalSynchronization
 template <>
 void GfxCoreHelperHw<Family>::setL1CachePolicy(bool useL1Cache, typename Family::RENDER_SURFACE_STATE *surfaceState, const HardwareInfo *hwInfo) const {
     if (useL1Cache) {
-        surfaceState->setL1CachePolicyL1CacheControl(Family::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB);
+        surfaceState->setL1CacheControlCachePolicy(Family::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB);
         if (debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get() != -1) {
-            surfaceState->setL1CachePolicyL1CacheControl(static_cast<typename Family::RENDER_SURFACE_STATE::L1_CACHE_POLICY>(debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get()));
+            surfaceState->setL1CacheControlCachePolicy(static_cast<typename Family::RENDER_SURFACE_STATE::L1_CACHE_CONTROL>(debugManager.flags.OverrideL1CacheControlInSurfaceStateForScratchSpace.get()));
         }
     }
 }
@@ -252,83 +249,6 @@ void GfxCoreHelperHw<Family>::setExtraAllocationData(AllocationData &allocationD
 }
 
 template <>
-uint32_t GfxCoreHelperHw<Family>::getNumCacheRegions() const {
-    constexpr uint32_t numSharedCacheRegions = 1;
-    constexpr uint32_t numReservedCacheRegions = 2;
-    constexpr uint32_t numTotalCacheRegions = numSharedCacheRegions + numReservedCacheRegions;
-    return numTotalCacheRegions;
-}
-
-template <>
-uint32_t GfxCoreHelperHw<Family>::alignSlmSize(uint32_t slmSize) const {
-    const uint32_t alignedSlmSizes[] = {
-        0u,
-        1u * MemoryConstants::kiloByte,
-        2u * MemoryConstants::kiloByte,
-        4u * MemoryConstants::kiloByte,
-        8u * MemoryConstants::kiloByte,
-        16u * MemoryConstants::kiloByte,
-        24u * MemoryConstants::kiloByte,
-        32u * MemoryConstants::kiloByte,
-        48u * MemoryConstants::kiloByte,
-        64u * MemoryConstants::kiloByte,
-        96u * MemoryConstants::kiloByte,
-        128u * MemoryConstants::kiloByte,
-    };
-
-    for (auto &alignedSlmSize : alignedSlmSizes) {
-        if (slmSize <= alignedSlmSize) {
-            return alignedSlmSize;
-        }
-    }
-
-    UNRECOVERABLE_IF(true);
-    return 0;
-}
-
-template <>
-uint32_t GfxCoreHelperHw<Family>::computeSlmValues(const HardwareInfo &hwInfo, uint32_t slmSize) const {
-    using SHARED_LOCAL_MEMORY_SIZE = typename Family::INTERFACE_DESCRIPTOR_DATA::SHARED_LOCAL_MEMORY_SIZE;
-    if (slmSize == 0u) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_0K;
-    }
-
-    UNRECOVERABLE_IF(slmSize > 128u * MemoryConstants::kiloByte);
-
-    if (slmSize > 96u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_128K;
-    }
-    if (slmSize > 64u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_96K;
-    }
-    if (slmSize > 48u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_64K;
-    }
-    if (slmSize > 32u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_48K;
-    }
-    if (slmSize > 24u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_32K;
-    }
-    if (slmSize > 16u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_24K;
-    }
-    if (slmSize > 8u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_16K;
-    }
-    if (slmSize > 4u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_8K;
-    }
-    if (slmSize > 2u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_4K;
-    }
-    if (slmSize > 1u * MemoryConstants::kiloByte) {
-        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_2K;
-    }
-    return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_ENCODES_1K;
-}
-
-template <>
 int32_t GfxCoreHelperHw<Family>::getDefaultThreadArbitrationPolicy() const {
     return ThreadArbitrationPolicy::RoundRobinAfterDependency;
 }
@@ -366,37 +286,6 @@ size_t GfxCoreHelperHw<Family>::getSipKernelMaxDbgSurfaceSize(const HardwareInfo
 }
 
 template <>
-bool GfxCoreHelperHw<Family>::isTimestampWaitSupportedForQueues() const {
-    return true;
-}
-
-template <>
-uint64_t GfxCoreHelperHw<Family>::getPatIndex(CacheRegion cacheRegion, CachePolicy cachePolicy) const {
-    /*
-    PAT Index  CLOS   MemType
-    SHARED
-    0          0      UC (00)
-    1          0      WC (01)
-    2          0      WT (10)
-    3          0      WB (11)
-    RESERVED 1
-    4          1      WT (10)
-    5          1      WB (11)
-    RESERVED 2
-    6          2      WT (10)
-    7          2      WB (11)
-    */
-
-    if ((debugManager.flags.ForceAllResourcesUncached.get() == true)) {
-        cacheRegion = CacheRegion::defaultRegion;
-        cachePolicy = CachePolicy::uncached;
-    }
-
-    UNRECOVERABLE_IF((cacheRegion > CacheRegion::defaultRegion) && (cachePolicy < CachePolicy::writeThrough));
-    return (static_cast<uint32_t>(cachePolicy) + (static_cast<uint16_t>(cacheRegion) * 2));
-}
-
-template <>
 bool GfxCoreHelperHw<Family>::copyThroughLockedPtrEnabled(const HardwareInfo &hwInfo, const ProductHelper &productHelper) const {
     if (debugManager.flags.ExperimentalCopyThroughLock.get() != -1) {
         return debugManager.flags.ExperimentalCopyThroughLock.get() == 1;
@@ -405,21 +294,13 @@ bool GfxCoreHelperHw<Family>::copyThroughLockedPtrEnabled(const HardwareInfo &hw
 }
 
 template <>
-uint32_t GfxCoreHelperHw<Family>::getAmountOfAllocationsToFill() const {
-    if (debugManager.flags.SetAmountOfReusableAllocations.get() != -1) {
-        return debugManager.flags.SetAmountOfReusableAllocations.get();
-    }
-    return 1u;
-}
-
-template <>
 bool GfxCoreHelperHw<Family>::isRelaxedOrderingSupported() const {
     return true;
 }
 
 template <>
-char const *GfxCoreHelperHw<Family>::getDefaultDeviceHierarchy() const {
-    return deviceHierarchyFlat;
+DeviceHierarchyMode GfxCoreHelperHw<Family>::getDefaultDeviceHierarchy() const {
+    return DeviceHierarchyMode::flat;
 }
 
 } // namespace NEO

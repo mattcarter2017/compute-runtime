@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -229,6 +229,12 @@ void *MockOsLibrary::getProcAddress(const std::string &procName) {
     if (procName == "D3DKMTSignalSynchronizationObjectFromGpu") {
         return reinterpret_cast<void *>(mockD3DKMTSignalSynchronizationObjectFromGpu);
     }
+    if (procName == "D3DKMTOpenSyncObjectFromNtHandle2") {
+        return reinterpret_cast<void *>(mockD3DKMTOpenSyncObjectFromNtHandle2);
+    }
+    if (procName == "D3DKMTOpenSyncObjectNtHandleFromName") {
+        return reinterpret_cast<void *>(mockD3DKMTOpenSyncObjectNtHandleFromName);
+    }
     if (procName == "D3DKMTFreeGpuVirtualAddress") {
         return reinterpret_cast<void *>(mockD3DKMTFreeGpuVirtualAddress);
     }
@@ -247,7 +253,12 @@ void *MockOsLibrary::getProcAddress(const std::string &procName) {
     if (procName == "D3DKMTUnregisterTrimNotification") {
         return reinterpret_cast<void *>(mockD3DKMTUnregisterTrimNotification);
     }
-
+    if (procName == "setCapturingCreateAllocationFlags") {
+        return reinterpret_cast<void *>(setCapturingCreateAllocationFlags);
+    }
+    if (procName == "getCapturedCreateAllocationFlags") {
+        return reinterpret_cast<void *>(getCapturedCreateAllocationFlags);
+    }
     return nullptr;
 }
 

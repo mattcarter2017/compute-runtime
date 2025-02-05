@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,20 +22,20 @@ ARLTEST_F(ArlProductHelper, givenArlWithoutHwIpVersionInHwInfoWhenGettingIpVersi
     auto hwInfo = *defaultHwInfo;
     hwInfo.ipVersion = {};
 
-    auto arlSDeviceIds = {0x7D67};
-    auto arlHDeviceIds = {0x7D51, 0x7DD1, 0x7D41};
+    auto arlSUDeviceIds = {0x7D67, 0x7D41};
+    auto arlHDeviceIds = {0x7D51, 0x7DD1};
 
-    for (auto &deviceId : arlSDeviceIds) {
+    for (auto &deviceId : arlSUDeviceIds) {
         hwInfo.platform.usDeviceID = deviceId;
         for (auto &revision : {0}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_M_A0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_U_A0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         for (auto &revision : {3, 6}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_M_B0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_U_B0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         hwInfo.platform.usRevId = 0xdead;
 
@@ -47,12 +47,12 @@ ARLTEST_F(ArlProductHelper, givenArlWithoutHwIpVersionInHwInfoWhenGettingIpVersi
         for (auto &revision : {0, 3}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::XE_LPGPLUS_A0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::ARL_H_A0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         for (auto &revision : {6}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::XE_LPGPLUS_B0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::ARL_H_B0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         hwInfo.platform.usRevId = 0xdead;
 
@@ -63,4 +63,20 @@ ARLTEST_F(ArlProductHelper, givenArlWithoutHwIpVersionInHwInfoWhenGettingIpVersi
     hwInfo.platform.usRevId = 0xdead;
 
     EXPECT_EQ(compilerProductHelper->getDefaultHwIpVersion(), compilerProductHelper->getHwIpVersion(hwInfo));
+}
+
+ARLTEST_F(ArlProductHelper, givenPubliclyAvailableAcronymsForMtlDevicesWhenGetProductConfigThenCorrectValueIsReturned) {
+    auto productConfigHelper = std::make_unique<ProductConfigHelper>();
+    std::vector<std::string> arlSAcronyms = {"arl-s", "arl-u"};
+    std::vector<std::string> arlHAcronyms = {"arl-h"};
+    for (auto &acronym : arlSAcronyms) {
+        ProductConfigHelper::adjustDeviceName(acronym);
+        auto ret = productConfigHelper->getProductConfigFromDeviceName(acronym);
+        EXPECT_EQ(ret, AOT::MTL_U_B0);
+    }
+    for (auto &acronym : arlHAcronyms) {
+        ProductConfigHelper::adjustDeviceName(acronym);
+        auto ret = productConfigHelper->getProductConfigFromDeviceName(acronym);
+        EXPECT_EQ(ret, AOT::ARL_H_B0);
+    }
 }

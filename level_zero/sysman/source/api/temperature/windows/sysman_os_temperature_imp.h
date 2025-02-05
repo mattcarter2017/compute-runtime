@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,13 +19,13 @@ class WddmTemperatureImp : public OsTemperature, NEO::NonCopyableOrMovableClass 
     ze_result_t getProperties(zes_temp_properties_t *pProperties) override;
     ze_result_t getSensorTemperature(double *pTemperature) override;
     bool isTempModuleSupported() override;
-    uint32_t getNumTempDomainsSupported();
     void setSensorType(zes_temp_sensors_t sensorType);
     WddmTemperatureImp(OsSysman *pOsSysman);
     WddmTemperatureImp() = default;
     ~WddmTemperatureImp() override = default;
 
   protected:
+    WddmSysmanImp *pWddmSysmanImp = nullptr;
     KmdSysManager *pKmdSysManager = nullptr;
     zes_temp_sensors_t type = ZES_TEMP_SENSORS_GLOBAL;
 };

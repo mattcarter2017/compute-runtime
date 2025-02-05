@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -62,6 +62,8 @@ Wddm::Wddm(std::unique_ptr<HwDeviceIdWddm> &&hwDeviceIdIn, RootDeviceEnvironment
     workaroundTable.reset(new WorkaroundTable());
     gtSystemInfo.reset(new GT_SYSTEM_INFO);
     gfxPlatform.reset(new PLATFORM_KMD);
+    gfxFeatureTable.reset(new SKU_FEATURE_TABLE_KMD);
+    gfxWorkaroundTable.reset(new WA_TABLE_KMD);
     memset(gtSystemInfo.get(), 0, sizeof(*gtSystemInfo));
     memset(gfxPlatform.get(), 0, sizeof(*gfxPlatform));
     this->enablePreemptionRegValue = NEO::readEnablePreemptionRegKey();
@@ -114,6 +116,7 @@ bool Wddm::init() {
     productHelper.adjustPlatformForProductFamily(hardwareInfo);
     rootDeviceEnvironment.initApiGfxCoreHelper();
     rootDeviceEnvironment.initGfxCoreHelper();
+    rootDeviceEnvironment.initializeGfxCoreHelperFromHwInfo();
     rootDeviceEnvironment.initAilConfigurationHelper();
     if (false == rootDeviceEnvironment.initAilConfiguration()) {
         return false;
@@ -149,7 +152,9 @@ bool Wddm::init() {
         gmmMemory.reset(GmmMemory::create(rootDeviceEnvironment.getGmmClientContext()));
     }
 
-    buildTopologyMapping();
+    if (!buildTopologyMapping()) {
+        return false;
+    }
 
     setProcessPowerThrottling();
     setThreadPriority();
@@ -199,8 +204,9 @@ bool Wddm::translateTopologyInfo(TopologyMapping &mapping) {
         std::vector<int> subSliceIndices;
         subSliceIndices.reserve((gtSystemInfo.SliceInfo[x].DualSubSliceEnabledCount) * GT_MAX_SUBSLICE_PER_DSS);
 
-        // subSliceIndex is used to track the index number of subslices from all DSS in this slice
+        // subSliceIndex is used to track the index number of subslices from all SS or DSS in this slice
         int subSliceIndex = -1;
+        bool dssEnabled = false;
         for (uint32_t dss = 0; dss < GT_MAX_DUALSUBSLICE_PER_SLICE; dss++) {
             if (!gtSystemInfo.SliceInfo[x].DSSInfo[dss].Enabled) {
                 subSliceIndex += 2;
@@ -212,10 +218,26 @@ bool Wddm::translateTopologyInfo(TopologyMapping &mapping) {
                 if (!gtSystemInfo.SliceInfo[x].DSSInfo[dss].SubSlice[y].Enabled) {
                     continue;
                 }
+                dssEnabled = true;
                 subSliceCount++;
                 subSliceIndices.push_back(subSliceIndex);
 
                 euCount += gtSystemInfo.SliceInfo[x].DSSInfo[dss].SubSlice[y].EuEnabledCount;
+            }
+        }
+
+        if (!dssEnabled) {
+            subSliceIndex = -1;
+            for (uint32_t sss = 0; sss < GT_MAX_SUBSLICE_PER_SLICE; sss++) {
+                subSliceIndex++;
+                if (!gtSystemInfo.SliceInfo[x].SubSliceInfo[sss].Enabled) {
+                    continue;
+                }
+
+                subSliceCount++;
+                subSliceIndices.push_back(subSliceIndex);
+
+                euCount += gtSystemInfo.SliceInfo[x].SubSliceInfo[sss].EuEnabledCount;
             }
         }
 
@@ -267,6 +289,8 @@ bool Wddm::queryAdapterInfo() {
     if (status == STATUS_SUCCESS) {
         memcpy_s(gtSystemInfo.get(), sizeof(GT_SYSTEM_INFO), &adapterInfo.SystemInfo, sizeof(GT_SYSTEM_INFO));
         memcpy_s(gfxPlatform.get(), sizeof(PLATFORM_KMD), &adapterInfo.GfxPlatform, sizeof(PLATFORM_KMD));
+        memcpy_s(gfxFeatureTable.get(), sizeof(SKU_FEATURE_TABLE_KMD), &adapterInfo.SkuTable, sizeof(SKU_FEATURE_TABLE_KMD));
+        memcpy_s(gfxWorkaroundTable.get(), sizeof(WA_TABLE_KMD), &adapterInfo.WaTable, sizeof(WA_TABLE_KMD));
 
         if (debugManager.flags.ForceDeviceId.get() != "unk") {
             gfxPlatform->usDeviceID = static_cast<unsigned short>(std::stoi(debugManager.flags.ForceDeviceId.get(), nullptr, 16));
@@ -382,6 +406,7 @@ std::unique_ptr<HwDeviceIdWddm> createHwDeviceIdFromAdapterLuid(OsEnvironmentWin
     std::unique_ptr<UmKmDataTranslator> umKmDataTranslator = createUmKmDataTranslator(*osEnvironment.gdi, openAdapterData.hAdapter);
     if (false == umKmDataTranslator->enabled() && !debugManager.flags.DoNotValidateDriverPath.get()) {
         if (false == validDriverStorePath(osEnvironment, openAdapterData.hAdapter)) {
+            PRINT_DEBUG_STRING(debugManager.flags.PrintDebugMessages.get(), stderr, "Driver path is not a valid DriverStore path. Try running with debug key: DoNotValidateDriverPath=1.\n");
             return nullptr;
         }
     }
@@ -469,6 +494,9 @@ std::vector<std::unique_ptr<HwDeviceId>> Wddm::discoverDevices(ExecutionEnvironm
 }
 
 bool Wddm::evict(const D3DKMT_HANDLE *handleList, uint32_t numOfHandles, uint64_t &sizeToTrim, bool evictNeeded) {
+    if (numOfHandles == 0) {
+        return true;
+    }
     NTSTATUS status = STATUS_SUCCESS;
     D3DKMT_EVICT evict = {};
     evict.AllocationList = handleList;
@@ -478,6 +506,7 @@ bool Wddm::evict(const D3DKMT_HANDLE *handleList, uint32_t numOfHandles, uint64_
     evict.Flags.EvictOnlyIfNecessary = adjustEvictNeededParameter(evictNeeded) ? 0 : 1;
 
     status = getGdi()->evict(&evict);
+    DEBUG_BREAK_IF(status != STATUS_SUCCESS);
 
     sizeToTrim = evict.NumBytesToTrim;
 
@@ -510,7 +539,7 @@ bool Wddm::makeResident(const D3DKMT_HANDLE *handles, uint32_t count, bool cantT
         perfLogResidencyMakeResident(residencyLogger.get(), false, makeResident.PagingFenceValue);
         success = true;
     } else {
-        DEBUG_BREAK_IF(true);
+        DEBUG_BREAK_IF(cantTrimFurther);
         perfLogResidencyTrimRequired(residencyLogger.get(), makeResident.NumBytesToTrim);
         if (numberOfBytesToTrim != nullptr) {
             *numberOfBytesToTrim = makeResident.NumBytesToTrim;
@@ -529,10 +558,10 @@ bool Wddm::mapGpuVirtualAddress(AllocationStorageData *allocationStorageData) {
     return mapGpuVirtualAddress(osHandle->gmm,
                                 osHandle->handle,
                                 0u, MemoryConstants::maxSvmAddress, castToUint64(allocationStorageData->cpuPtr),
-                                osHandle->gpuPtr);
+                                osHandle->gpuPtr, AllocationType::externalHostPtr);
 }
 
-bool Wddm::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr) {
+bool Wddm::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr, AllocationType type) {
     D3DDDI_MAPGPUVIRTUALADDRESS mapGPUVA = {};
     D3DDDIGPUVIRTUALADDRESS_PROTECTION_TYPE protectionType = {};
     protectionType.Write = TRUE;
@@ -550,7 +579,7 @@ bool Wddm::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_A
     mapGPUVA.MinimumAddress = minimumAddress;
     mapGPUVA.MaximumAddress = maximumAddress;
 
-    applyAdditionalMapGPUVAFields(mapGPUVA, gmm);
+    applyAdditionalMapGPUVAFields(mapGPUVA, gmm, type);
 
     MapGpuVirtualAddressGmm gmmMapGpuVa = {&mapGPUVA, gmm->gmmResourceInfo.get(), &gpuPtr, getGdi()};
     auto status = gmm->getGmmHelper()->getClientContext()->mapGpuVirtualAddress(&gmmMapGpuVa);
@@ -571,7 +600,7 @@ bool Wddm::mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_A
     kmDafListener->notifyMapGpuVA(featureTable->flags.ftrKmdDaf, getAdapter(), device, handle, mapGPUVA.VirtualAddress, getGdi()->escape);
     bool ret = true;
     auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
-    if (gmm->isCompressionEnabled && productHelper.isPageTableManagerSupported(*rootDeviceEnvironment.getHardwareInfo())) {
+    if (gmm->isCompressionEnabled() && productHelper.isPageTableManagerSupported(*rootDeviceEnvironment.getHardwareInfo())) {
         this->forEachContextWithinWddm([&](const EngineControl &engine) {
             if (engine.commandStreamReceiver->pageTableManager.get()) {
                 ret &= engine.commandStreamReceiver->pageTableManager->updateAuxTable(gpuPtr, gmm, true);
@@ -636,8 +665,17 @@ NTSTATUS Wddm::createAllocation(const void *alignedCpuPtr, const Gmm *gmm, D3DKM
     createAllocation.Flags.CreateShared = outSharedHandle ? TRUE : FALSE;
     createAllocation.Flags.NtSecuritySharing = outSharedHandle ? TRUE : FALSE;
     createAllocation.Flags.CreateResource = outSharedHandle ? TRUE : FALSE;
+    createAllocation.Flags.ReadOnly = getReadOnlyFlagValue(alignedCpuPtr);
     createAllocation.pAllocationInfo2 = &allocationInfo;
     createAllocation.hDevice = device;
+
+    bool allowNotZeroForCompressed = false;
+    if (NEO::debugManager.flags.AllowNotZeroForCompressedOnWddm.get() != -1) {
+        allowNotZeroForCompressed = !!NEO::debugManager.flags.AllowNotZeroForCompressedOnWddm.get();
+    }
+    if (allowNotZeroForCompressed && gmm->isCompressionEnabled()) {
+        createAllocation.Flags.AllowNotZeroed = 1;
+    }
 
     status = getGdi()->createAllocation2(&createAllocation);
     if (status != STATUS_SUCCESS) {
@@ -734,6 +772,7 @@ NTSTATUS Wddm::createAllocationsAndMapGpuVa(OsHandleStorage &osHandles) {
     createAllocation.Flags.CreateShared = FALSE;
     createAllocation.Flags.RestrictSharedAccess = FALSE;
     createAllocation.Flags.CreateResource = FALSE;
+    createAllocation.Flags.ReadOnly = getReadOnlyFlagValue(allocationInfo[0].pSystemMem);
     createAllocation.pAllocationInfo2 = allocationInfo;
     createAllocation.hDevice = device;
 
@@ -774,7 +813,9 @@ bool Wddm::destroyAllocations(const D3DKMT_HANDLE *handles, uint32_t allocationC
     if ((0U == allocationCount) && (0U == resourceHandle)) {
         return true;
     }
+
     NTSTATUS status = STATUS_SUCCESS;
+
     D3DKMT_DESTROYALLOCATION2 destroyAllocation = {};
     DEBUG_BREAK_IF(!(allocationCount <= 1 || resourceHandle == 0));
 
@@ -782,10 +823,15 @@ bool Wddm::destroyAllocations(const D3DKMT_HANDLE *handles, uint32_t allocationC
     destroyAllocation.hResource = resourceHandle;
     destroyAllocation.phAllocationList = handles;
     destroyAllocation.AllocationCount = allocationCount;
+    destroyAllocation.Flags.AssumeNotInUse = debugManager.flags.SetAssumeNotInUse.get();
 
-    destroyAllocation.Flags.AssumeNotInUse = 1;
+    DeallocateGmm deallocateGmm{&destroyAllocation, getGdi()};
 
-    status = getGdi()->destroyAllocation2(&destroyAllocation);
+    if (debugManager.flags.DestroyAllocationsViaGmm.get()) {
+        status = static_cast<NTSTATUS>(this->rootDeviceEnvironment.getGmmClientContext()->deallocate2(&deallocateGmm));
+    } else {
+        status = getGdi()->destroyAllocation2(&destroyAllocation);
+    }
 
     return status == STATUS_SUCCESS;
 }
@@ -797,10 +843,10 @@ bool Wddm::verifySharedHandle(D3DKMT_HANDLE osHandle) {
     return status == STATUS_SUCCESS;
 }
 
-bool Wddm::openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc) {
+bool Wddm::openSharedHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc) {
     D3DKMT_QUERYRESOURCEINFO queryResourceInfo = {};
     queryResourceInfo.hDevice = device;
-    queryResourceInfo.hGlobalShare = handle;
+    queryResourceInfo.hGlobalShare = osHandleData.handle;
     [[maybe_unused]] auto status = getGdi()->queryResourceInfo(&queryResourceInfo);
     DEBUG_BREAK_IF(status != STATUS_SUCCESS);
 
@@ -811,14 +857,14 @@ bool Wddm::openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc) {
     std::unique_ptr<char[]> allocPrivateData(new char[queryResourceInfo.TotalPrivateDriverDataSize]);
     std::unique_ptr<char[]> resPrivateData(new char[queryResourceInfo.ResourcePrivateDriverDataSize]);
     std::unique_ptr<char[]> resPrivateRuntimeData(new char[queryResourceInfo.PrivateRuntimeDataSize]);
-    std::unique_ptr<D3DDDI_OPENALLOCATIONINFO2[]> allocationInfo(new D3DDDI_OPENALLOCATIONINFO2[queryResourceInfo.NumAllocations]);
+    std::unique_ptr<D3DDDI_OPENALLOCATIONINFO[]> allocationInfo(new D3DDDI_OPENALLOCATIONINFO[queryResourceInfo.NumAllocations]);
 
     D3DKMT_OPENRESOURCE openResource = {};
 
     openResource.hDevice = device;
-    openResource.hGlobalShare = handle;
+    openResource.hGlobalShare = osHandleData.handle;
     openResource.NumAllocations = queryResourceInfo.NumAllocations;
-    openResource.pOpenAllocationInfo2 = allocationInfo.get();
+    openResource.pOpenAllocationInfo = allocationInfo.get();
     openResource.pTotalPrivateDriverDataBuffer = allocPrivateData.get();
     openResource.TotalPrivateDriverDataBufferSize = queryResourceInfo.TotalPrivateDriverDataSize;
     openResource.pResourcePrivateDriverData = resPrivateData.get();
@@ -829,10 +875,11 @@ bool Wddm::openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc) {
     status = getGdi()->openResource(&openResource);
     DEBUG_BREAK_IF(status != STATUS_SUCCESS);
 
-    alloc->setDefaultHandle(allocationInfo[0].hAllocation);
-    alloc->resourceHandle = openResource.hResource;
+    auto allocationInfoIndex = osHandleData.arrayIndex < queryResourceInfo.NumAllocations ? osHandleData.arrayIndex : 0;
+    alloc->setDefaultHandle(allocationInfo[allocationInfoIndex].hAllocation);
+    alloc->setResourceHandle(openResource.hResource);
 
-    auto resourceInfo = const_cast<void *>(allocationInfo[0].pPrivateDriverData);
+    auto resourceInfo = const_cast<void *>(allocationInfo[allocationInfoIndex].pPrivateDriverData);
     alloc->setDefaultGmm(new Gmm(rootDeviceEnvironment.getGmmHelper(), static_cast<GMM_RESOURCE_INFO *>(resourceInfo)));
 
     return true;
@@ -846,12 +893,16 @@ bool Wddm::verifyNTHandle(HANDLE handle) {
     return status == STATUS_SUCCESS;
 }
 
-bool Wddm::openNTHandle(HANDLE handle, WddmAllocation *alloc) {
+bool Wddm::openNTHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc) {
     D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE queryResourceInfoFromNtHandle = {};
     queryResourceInfoFromNtHandle.hDevice = device;
-    queryResourceInfoFromNtHandle.hNtHandle = handle;
+    queryResourceInfoFromNtHandle.hNtHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(osHandleData.handle));
     [[maybe_unused]] auto status = getGdi()->queryResourceInfoFromNtHandle(&queryResourceInfoFromNtHandle);
     DEBUG_BREAK_IF(status != STATUS_SUCCESS);
+
+    if (queryResourceInfoFromNtHandle.NumAllocations == 0) {
+        return false;
+    }
 
     std::unique_ptr<char[]> allocPrivateData(new char[queryResourceInfoFromNtHandle.TotalPrivateDriverDataSize]);
     std::unique_ptr<char[]> resPrivateData(new char[queryResourceInfoFromNtHandle.ResourcePrivateDriverDataSize]);
@@ -861,7 +912,7 @@ bool Wddm::openNTHandle(HANDLE handle, WddmAllocation *alloc) {
     D3DKMT_OPENRESOURCEFROMNTHANDLE openResourceFromNtHandle = {};
 
     openResourceFromNtHandle.hDevice = device;
-    openResourceFromNtHandle.hNtHandle = handle;
+    openResourceFromNtHandle.hNtHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(osHandleData.handle));
     openResourceFromNtHandle.NumAllocations = queryResourceInfoFromNtHandle.NumAllocations;
     openResourceFromNtHandle.pOpenAllocationInfo2 = allocationInfo2.get();
     openResourceFromNtHandle.pTotalPrivateDriverDataBuffer = allocPrivateData.get();
@@ -874,12 +925,13 @@ bool Wddm::openNTHandle(HANDLE handle, WddmAllocation *alloc) {
     status = getGdi()->openResourceFromNtHandle(&openResourceFromNtHandle);
     DEBUG_BREAK_IF(status != STATUS_SUCCESS);
 
-    auto resourceInfo = const_cast<void *>(allocationInfo2[0].pPrivateDriverData);
+    auto allocationInfoIndex = osHandleData.arrayIndex < queryResourceInfoFromNtHandle.NumAllocations ? osHandleData.arrayIndex : 0;
+    auto resourceInfo = const_cast<void *>(allocationInfo2[allocationInfoIndex].pPrivateDriverData);
 
     alloc->setDefaultGmm(new Gmm(rootDeviceEnvironment.getGmmHelper(), static_cast<GMM_RESOURCE_INFO *>(resourceInfo), hwDeviceId->getUmKmDataTranslator()->enabled()));
 
-    alloc->setDefaultHandle(allocationInfo2[0].hAllocation);
-    alloc->resourceHandle = openResourceFromNtHandle.hResource;
+    alloc->setDefaultHandle(allocationInfo2[allocationInfoIndex].hAllocation);
+    alloc->setResourceHandle(openResourceFromNtHandle.hResource);
 
     return true;
 }
@@ -930,7 +982,7 @@ bool Wddm::setLowPriorityContextParam(D3DKMT_HANDLE contextHandle) {
     D3DKMT_SETCONTEXTSCHEDULINGPRIORITY contextPriority = {};
 
     contextPriority.hContext = contextHandle;
-    contextPriority.Priority = 1;
+    contextPriority.Priority = -7;
 
     if (debugManager.flags.ForceWddmLowPriorityContextValue.get() != -1) {
         contextPriority.Priority = static_cast<INT>(debugManager.flags.ForceWddmLowPriorityContextValue.get());
@@ -951,7 +1003,7 @@ bool Wddm::createContext(OsContextWin &osContext) {
 
     CREATECONTEXT_PVTDATA privateData = initPrivateData(osContext);
 
-    privateData.ProcessID = NEO::getPid();
+    privateData.ProcessID = NEO::SysCalls::getProcessId();
     privateData.pHwContextId = &hwContextId;
     privateData.NoRingFlushes = debugManager.flags.UseNoRingFlushesKmdMode.get();
 
@@ -1070,7 +1122,6 @@ bool Wddm::getDeviceState() {
         D3DKMT_DEVICEEXECUTION_STATE executionState = D3DKMT_DEVICEEXECUTION_ACTIVE;
         auto status = getDeviceExecutionState(D3DKMT_DEVICESTATE_EXECUTION, &executionState);
         if (status) {
-            DEBUG_BREAK_IF(executionState != D3DKMT_DEVICEEXECUTION_ACTIVE);
             if (executionState == D3DKMT_DEVICEEXECUTION_ERROR_OUTOFMEMORY) {
                 PRINT_DEBUG_STRING(true, stderr, "Device execution error, out of memory %d\n", executionState);
             } else if (executionState == D3DKMT_DEVICEEXECUTION_ERROR_DMAPAGEFAULT) {
@@ -1081,11 +1132,14 @@ bool Wddm::getDeviceState() {
                     PRINT_DEBUG_STRING(true, stderr, "faulted gpuva 0x%" PRIx64 ", ", pageFaultState.FaultedVirtualAddress);
                     PRINT_DEBUG_STRING(true, stderr, "pipeline stage %d, bind table entry %u, flags 0x%x, error code(is device) %u, error code %u\n",
                                        pageFaultState.FaultedPipelineStage, pageFaultState.FaultedBindTableEntry, pageFaultState.PageFaultFlags,
-                                       pageFaultState.FaultErrorCode.IsDeviceSpecificCodeReservedBit, pageFaultState.FaultErrorCode.DeviceSpecificCode);
+                                       pageFaultState.FaultErrorCode.IsDeviceSpecificCode, pageFaultState.FaultErrorCode.IsDeviceSpecificCode ? pageFaultState.FaultErrorCode.DeviceSpecificCode : static_cast<UINT>(pageFaultState.FaultErrorCode.GeneralErrorCode));
+
+                    DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "Page fault detected at address = ", std::hex, pageFaultState.FaultedVirtualAddress);
                 }
             } else if (executionState != D3DKMT_DEVICEEXECUTION_ACTIVE) {
                 PRINT_DEBUG_STRING(true, stderr, "Device execution error %d\n", executionState);
             }
+            DEBUG_BREAK_IF(executionState != D3DKMT_DEVICEEXECUTION_ACTIVE);
             return executionState == D3DKMT_DEVICEEXECUTION_ACTIVE;
         }
         return false;
@@ -1119,9 +1173,12 @@ bool Wddm::waitFromCpu(uint64_t lastFenceValue, const MonitoredFence &monitoredF
 
     if (!skipResourceCleanup() && lastFenceValue > *monitoredFence.cpuAddress) {
         if (lastFenceValue > monitoredFence.lastSubmittedFence) {
-            this->forEachContextWithinWddm([](const EngineControl &engine) {
-                auto lock = engine.commandStreamReceiver->obtainUniqueOwnership();
-                engine.commandStreamReceiver->flushMonitorFence();
+            this->forEachContextWithinWddm([&monitoredFence](const EngineControl &engine) {
+                auto &contextMonitoredFence = static_cast<OsContextWin *>(engine.osContext)->getResidencyController().getMonitoredFence();
+                if (contextMonitoredFence.cpuAddress == monitoredFence.cpuAddress) {
+                    auto lock = engine.commandStreamReceiver->obtainUniqueOwnership();
+                    engine.commandStreamReceiver->flushMonitorFence();
+                }
             });
         }
 
@@ -1266,22 +1323,21 @@ void Wddm::virtualFree(void *ptr, size_t size) {
     osMemory->osReleaseCpuAddressRange(ptr, size);
 }
 
-void Wddm::waitOnPagingFenceFromCpu(bool isKmdWaitNeeded) {
-    perfLogStartWaitTime(residencyLogger.get(), currentPagingFenceValue);
-    if (currentPagingFenceValue > *getPagingFenceAddress()) {
+void Wddm::waitOnPagingFenceFromCpu(uint64_t pagingFenceValueToWait, bool isKmdWaitNeeded) {
+    perfLogStartWaitTime(residencyLogger.get(), pagingFenceValueToWait);
+    if (pagingFenceValueToWait > *getPagingFenceAddress()) {
         if (isKmdWaitNeeded) {
             perfLogResidencyEnteredWait(residencyLogger.get());
             D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU waitFromCpu = {};
             waitFromCpu.ObjectCount = 1;
             waitFromCpu.ObjectHandleArray = &pagingQueueSyncObject;
-            uint64_t paging = currentPagingFenceValue.load();
-            waitFromCpu.FenceValueArray = &paging;
+            waitFromCpu.FenceValueArray = &pagingFenceValueToWait;
             waitFromCpu.hDevice = device;
             waitFromCpu.hAsyncEvent = NULL_HANDLE;
             [[maybe_unused]] auto status = getGdi()->waitForSynchronizationObjectFromCpu(&waitFromCpu);
             DEBUG_BREAK_IF(status != STATUS_SUCCESS);
         } else {
-            while (currentPagingFenceValue > *getPagingFenceAddress()) {
+            while (pagingFenceValueToWait > *getPagingFenceAddress()) {
                 perfLogResidencyEnteredWait(residencyLogger.get());
             }
         }
@@ -1352,5 +1408,4 @@ void Wddm::setNewResourceBoundToPageTable() {
     }
     this->forEachContextWithinWddm([](const EngineControl &engine) { engine.osContext->setNewResourceBound(); });
 }
-
 } // namespace NEO

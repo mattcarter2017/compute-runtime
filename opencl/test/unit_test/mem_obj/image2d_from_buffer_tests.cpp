@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -327,7 +327,11 @@ TEST_F(Image2dFromBufferTest, givenBufferWhenImageFromBufferThenIsImageFromBuffe
 
     EXPECT_TRUE(imageFromBuffer->isImageFromBuffer());
     auto graphicsAllocation = imageFromBuffer->getGraphicsAllocation(context.getDevice(0)->getRootDeviceIndex());
-    EXPECT_TRUE(AllocationType::bufferHostMemory == graphicsAllocation->getAllocationType());
+    if (!context.getDevice(0)->getProductHelper().isNewCoherencyModelSupported()) {
+        EXPECT_EQ(graphicsAllocation->getAllocationType(), AllocationType::bufferHostMemory);
+    } else {
+        EXPECT_EQ(graphicsAllocation->getAllocationType(), AllocationType::buffer);
+    }
 
     buffer->release();
     imageDesc.mem_object = memObj;

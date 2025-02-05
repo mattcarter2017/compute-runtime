@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 
 #include "level_zero/core/source/driver/driver.h"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -16,13 +17,21 @@ namespace L0 {
 
 class DriverImp : public Driver {
   public:
-    ze_result_t driverInit(ze_init_flags_t flags) override;
+    ze_result_t driverInit() override;
 
     void initialize(ze_result_t *result) override;
+    unsigned int getPid() const override {
+        return pid;
+    }
+    void tryInitGtpin() override;
+    ze_result_t driverHandleGet(uint32_t *pCount, ze_driver_handle_t *phDrivers) override;
 
   protected:
+    uint32_t pid = 0;
     std::once_flag initDriverOnce;
     static ze_result_t initStatus;
+    std::atomic<bool> gtPinInitializationNeeded{false};
+    std::mutex gtpinInitMtx;
 };
 
 struct L0EnvVariables {
@@ -33,7 +42,6 @@ struct L0EnvVariables {
     bool sysman;
     bool pciIdDeviceOrder;
     bool fp64Emulation;
-    std::string deviceHierarchyMode;
 };
 
 } // namespace L0

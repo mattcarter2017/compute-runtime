@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/source/os_interface/device_factory.h"
 
+#include "shared/source/ail/ail_configuration.h"
 #include "shared/source/aub/aub_center.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/device/root_device.h"
@@ -97,6 +98,15 @@ bool DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(ExecutionE
         setHwInfoValuesFromConfig(hwInfoConfig, *hardwareInfo);
         hardwareInfoSetup[hwInfoConst->platform.eProductFamily](hardwareInfo, true, hwInfoConfig, rootDeviceEnvironment.getReleaseHelper());
 
+        if (debugManager.flags.MaxSubSlicesSupportedOverride.get() > 0) {
+            hardwareInfo->gtSystemInfo.MaxSubSlicesSupported = debugManager.flags.MaxSubSlicesSupportedOverride.get();
+            hardwareInfo->gtSystemInfo.MaxDualSubSlicesSupported = debugManager.flags.MaxSubSlicesSupportedOverride.get();
+        }
+
+        if (debugManager.flags.BlitterEnableMaskOverride.get() > 0) {
+            hardwareInfo->featureTable.ftrBcsInfo = debugManager.flags.BlitterEnableMaskOverride.get();
+        }
+
         auto &productHelper = rootDeviceEnvironment.getProductHelper();
         productHelper.configureHardwareCustom(hardwareInfo, nullptr);
 
@@ -104,6 +114,13 @@ bool DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(ExecutionE
 
         if (debugManager.flags.OverrideGpuAddressSpace.get() != -1) {
             hardwareInfo->capabilityTable.gpuAddressSpace = maxNBitValue(static_cast<uint64_t>(debugManager.flags.OverrideGpuAddressSpace.get()));
+        }
+        if (debugManager.flags.OverrideSlmSize.get() != -1) {
+            hardwareInfo->capabilityTable.slmSize = debugManager.flags.OverrideSlmSize.get();
+            hardwareInfo->gtSystemInfo.SLMSizeInKb = debugManager.flags.OverrideSlmSize.get();
+        }
+        if (debugManager.flags.OverrideRegionCount.get() != -1) {
+            hardwareInfo->featureTable.regionCount = static_cast<uint32_t>(debugManager.flags.OverrideRegionCount.get());
         }
 
         [[maybe_unused]] bool result = rootDeviceEnvironment.initAilConfiguration();
@@ -120,7 +137,7 @@ bool DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(ExecutionE
         }
     }
 
-    executionEnvironment.setDeviceHierarchy(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
+    executionEnvironment.setDeviceHierarchyMode(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
     executionEnvironment.parseAffinityMask();
     executionEnvironment.adjustCcsCount();
     executionEnvironment.calculateMaxOsContextCount();
@@ -128,11 +145,13 @@ bool DeviceFactory::prepareDeviceEnvironmentsForProductFamilyOverride(ExecutionE
 }
 
 bool DeviceFactory::isHwModeSelected() {
-    int32_t csr = debugManager.flags.SetCommandStreamReceiver.get();
-    switch (csr) {
-    case CSR_AUB:
-    case CSR_TBX:
-    case CSR_TBX_WITH_AUB:
+
+    CommandStreamReceiverType csrType = obtainCsrTypeFromIntegerValue(debugManager.flags.SetCommandStreamReceiver.get(), CommandStreamReceiverType::hardware);
+    switch (csrType) {
+    case CommandStreamReceiverType::aub:
+    case CommandStreamReceiverType::tbx:
+    case CommandStreamReceiverType::tbxWithAub:
+    case CommandStreamReceiverType::nullAub:
         return false;
     default:
         return true;
@@ -154,6 +173,14 @@ static bool initHwDeviceIdResources(ExecutionEnvironment &executionEnvironment,
         executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getMutableHardwareInfo()->platform.usRevId =
             static_cast<unsigned short>(debugManager.flags.OverrideRevision.get());
     }
+    if (debugManager.flags.OverrideSlmSize.get() != -1) {
+        auto hardwareInfo = executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getMutableHardwareInfo();
+        hardwareInfo->capabilityTable.slmSize = debugManager.flags.OverrideSlmSize.get();
+        hardwareInfo->gtSystemInfo.SLMSizeInKb = debugManager.flags.OverrideSlmSize.get();
+    }
+    if (debugManager.flags.OverrideRegionCount.get() != -1) {
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getMutableHardwareInfo()->featureTable.regionCount = static_cast<uint32_t>(debugManager.flags.OverrideRegionCount.get());
+    }
 
     executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->initGmm();
 
@@ -161,8 +188,9 @@ static bool initHwDeviceIdResources(ExecutionEnvironment &executionEnvironment,
 }
 
 bool DeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &executionEnvironment) {
-    using HwDeviceIds = std::vector<std::unique_ptr<HwDeviceId>>;
+    executionEnvironment.configureCcsMode();
 
+    using HwDeviceIds = std::vector<std::unique_ptr<HwDeviceId>>;
     HwDeviceIds hwDeviceIds = OSInterface::discoverDevices(executionEnvironment);
     if (hwDeviceIds.empty()) {
         return false;
@@ -186,7 +214,7 @@ bool DeviceFactory::prepareDeviceEnvironments(ExecutionEnvironment &executionEnv
         return false;
     }
 
-    executionEnvironment.setDeviceHierarchy(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
+    executionEnvironment.setDeviceHierarchyMode(executionEnvironment.rootDeviceEnvironments[0]->getHelper<GfxCoreHelper>());
     executionEnvironment.sortNeoDevices();
     executionEnvironment.parseAffinityMask();
     executionEnvironment.adjustRootDeviceEnvironments();
@@ -222,6 +250,7 @@ std::unique_ptr<Device> DeviceFactory::createDevice(ExecutionEnvironment &execut
         return device;
     }
 
+    executionEnvironment.memoryManager->reInitDeviceSpecificGfxPartition(rootDeviceIndex);
     executionEnvironment.memoryManager->createDeviceSpecificMemResources(rootDeviceIndex);
     executionEnvironment.memoryManager->reInitLatestContextId();
     device = createRootDeviceFunc(executionEnvironment, rootDeviceIndex);

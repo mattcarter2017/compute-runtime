@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,11 +17,6 @@
 namespace NEO {
 
 GfxCoreHelperCreateFunctionType gfxCoreHelperFactory[IGFX_MAX_CORE] = {};
-
-const char *deviceHierarchyComposite = "COMPOSITE";
-const char *deviceHierarchyFlat = "FLAT";
-const char *deviceHierarchyCombined = "COMBINED";
-const char *deviceHierarchyUnk = "UNK";
 
 std::unique_ptr<GfxCoreHelper> GfxCoreHelper::create(const GFXCORE_FAMILY gfxCoreFamily) {
 
@@ -95,9 +90,9 @@ uint32_t GfxCoreHelper::getHighestEnabledSlice(const HardwareInfo &hwInfo) {
 }
 
 uint32_t getHighestEnabledSubSlice(const HardwareInfo &hwInfo) {
-    uint32_t highestSubSlice = hwInfo.gtSystemInfo.MaxSubSlicesSupported;
-    uint32_t numSubSlicesPerSlice = highestSubSlice / hwInfo.gtSystemInfo.MaxSlicesSupported;
+    uint32_t numSubSlicesPerSlice = hwInfo.gtSystemInfo.MaxSubSlicesSupported / hwInfo.gtSystemInfo.MaxSlicesSupported;
     uint32_t highestEnabledSliceIdx = GfxCoreHelper::getHighestEnabledSlice(hwInfo) - 1;
+    uint32_t highestSubSlice = (highestEnabledSliceIdx + 1) * numSubSlicesPerSlice;
 
     for (int32_t subSliceId = GT_MAX_SUBSLICE_PER_SLICE - 1; subSliceId >= 0; subSliceId--) {
         if (hwInfo.gtSystemInfo.SliceInfo[highestEnabledSliceIdx].SubSliceInfo[subSliceId].Enabled) {
@@ -109,21 +104,22 @@ uint32_t getHighestEnabledSubSlice(const HardwareInfo &hwInfo) {
 }
 
 uint32_t GfxCoreHelper::getHighestEnabledDualSubSlice(const HardwareInfo &hwInfo) {
-    uint32_t highestDualSubSlice = hwInfo.gtSystemInfo.MaxDualSubSlicesSupported;
+    uint32_t maxDualSubSlicesSupported = hwInfo.gtSystemInfo.MaxDualSubSlicesSupported;
     if (!hwInfo.gtSystemInfo.IsDynamicallyPopulated) {
-        return highestDualSubSlice;
+        return maxDualSubSlicesSupported;
     }
 
-    if (highestDualSubSlice == 0) {
+    if (maxDualSubSlicesSupported == 0) {
         return getHighestEnabledSubSlice(hwInfo);
     }
 
-    uint32_t numDssPerSlice = highestDualSubSlice / hwInfo.gtSystemInfo.MaxSlicesSupported;
+    uint32_t numDssPerSlice = maxDualSubSlicesSupported / hwInfo.gtSystemInfo.MaxSlicesSupported;
     uint32_t highestEnabledSliceIdx = getHighestEnabledSlice(hwInfo) - 1;
+    uint32_t highestDualSubSlice = (highestEnabledSliceIdx + 1) * numDssPerSlice;
 
-    for (uint32_t dssID = 0; dssID < GT_MAX_DUALSUBSLICE_PER_SLICE; dssID++) {
+    for (int32_t dssID = GT_MAX_DUALSUBSLICE_PER_SLICE - 1; dssID >= 0; dssID--) {
         if (hwInfo.gtSystemInfo.SliceInfo[highestEnabledSliceIdx].DSSInfo[dssID].Enabled) {
-            highestDualSubSlice = std::max(highestDualSubSlice, (highestEnabledSliceIdx * numDssPerSlice) + dssID + 1);
+            return (highestEnabledSliceIdx * numDssPerSlice) + dssID + 1;
         }
     }
 

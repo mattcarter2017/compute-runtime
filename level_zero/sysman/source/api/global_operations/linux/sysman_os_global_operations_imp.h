@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,7 @@ class SysFsAccessInterface;
 class FsAccessInterface;
 class ProcFsAccessInterface;
 class SysmanKmdInterface;
+constexpr uint32_t maxUuidsPerDevice = 3;
 
 class LinuxGlobalOperationsImp : public OsGlobalOperations, NEO::NonCopyableOrMovableClass {
   public:
@@ -30,14 +31,17 @@ class LinuxGlobalOperationsImp : public OsGlobalOperations, NEO::NonCopyableOrMo
     void getModelName(char (&modelName)[ZES_STRING_PROPERTY_SIZE]) override;
     void getVendorName(char (&vendorName)[ZES_STRING_PROPERTY_SIZE]) override;
     void getDriverVersion(char (&driverVersion)[ZES_STRING_PROPERTY_SIZE]) override;
-    void getWedgedStatus(zes_device_state_t *pState) override;
     void getRepairStatus(zes_device_state_t *pState) override;
+    void getTimerResolution(double *pTimerResolution) override;
     ze_result_t reset(ze_bool_t force) override;
     ze_result_t scanProcessesState(std::vector<zes_process_state_t> &pProcessList) override;
     ze_result_t deviceGetState(zes_device_state_t *pState) override;
     ze_result_t resetExt(zes_reset_properties_t *pProperties) override;
     bool getUuid(std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) override;
     bool generateUuidFromPciBusInfo(const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid) override;
+    ze_bool_t getDeviceInfoByUuid(zes_uuid_t uuid, ze_bool_t *onSubdevice, uint32_t *subdeviceId) override;
+    bool generateUuidFromPciAndSubDeviceInfo(uint32_t subDeviceID, const NEO::PhysicalDevicePciBusInfo &pciBusInfo, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid);
+    ze_result_t getSubDeviceProperties(uint32_t *pCount, zes_subdevice_exp_properties_t *pSubdeviceProps) override;
     LinuxGlobalOperationsImp() = default;
     LinuxGlobalOperationsImp(OsSysman *pOsSysman);
     ~LinuxGlobalOperationsImp() override = default;
@@ -45,7 +49,7 @@ class LinuxGlobalOperationsImp : public OsGlobalOperations, NEO::NonCopyableOrMo
     struct {
         bool isValid = false;
         std::array<uint8_t, NEO::ProductHelper::uuidSize> id;
-    } uuid;
+    } uuid[maxUuidsPerDevice];
 
   protected:
     struct DeviceMemStruct {
@@ -76,16 +80,14 @@ class LinuxGlobalOperationsImp : public OsGlobalOperations, NEO::NonCopyableOrMo
     static const std::string driverFile;
     static const std::string functionLevelReset;
     static const std::string clientsDir;
-    static const std::string srcVersionFile;
-    static const std::string agamaVersionFile;
     static const std::string ueventWedgedFile;
-    bool getTelemOffsetAndTelemDir(uint64_t &telemOffset, const std::string &key, std::string &telemDir);
     std::string devicePciBdf = "";
     NEO::ExecutionEnvironment *executionEnvironment = nullptr;
     uint32_t rootDeviceIndex = 0u;
     ze_result_t getListOfEnginesUsedByProcess(std::vector<std::string> &fdFileContents, uint32_t &activeEngines);
     ze_result_t getMemoryStatsUsedByProcess(std::vector<std::string> &fdFileContents, uint64_t &memSize, uint64_t &sharedSize);
     ze_result_t resetImpl(ze_bool_t force, zes_reset_type_t resetType);
+    bool getUuidFromSubDeviceInfo(uint32_t subDeviceID, std::array<uint8_t, NEO::ProductHelper::uuidSize> &uuid);
 };
 
 } // namespace Sysman

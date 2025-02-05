@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,7 +8,8 @@
 #pragma once
 #include "shared/source/direct_submission/direct_submission_hw.h"
 #include "shared/source/os_interface/windows/windows_defs.h"
-struct COMMAND_BUFFER_HEADER_REC;
+
+struct COMMAND_BUFFER_HEADER_REC; // NOLINT(readability-identifier-naming), forward declaration from sharedata_wrapper.h
 typedef struct COMMAND_BUFFER_HEADER_REC COMMAND_BUFFER_HEADER;
 
 namespace NEO {
@@ -24,6 +25,7 @@ class WddmDirectSubmission : public DirectSubmissionHw<GfxFamily, Dispatcher> {
     ~WddmDirectSubmission() override;
 
     void flushMonitorFence() override;
+    void unblockPagingFenceSemaphore(uint64_t pagingFenceValue) override;
 
   protected:
     bool allocateOsResources() override;
@@ -40,6 +42,7 @@ class WddmDirectSubmission : public DirectSubmissionHw<GfxFamily, Dispatcher> {
     void getTagAddressValue(TagData &tagData) override;
     bool isCompleted(uint32_t ringBufferIndex) override;
     MOCKABLE_VIRTUAL void updateMonitorFenceValueForResidencyList(ResidencyContainer *allocationsForResidency);
+    void makeGlobalFenceAlwaysResident() override;
 
     OsContextWin *osContextWin;
     Wddm *wddm;

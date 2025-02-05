@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,8 +10,11 @@
 #include "shared/source/os_interface/linux/drm_neo.h"
 #include "shared/source/os_interface/linux/i915_prelim.h"
 #include "shared/source/os_interface/linux/ioctl_helper.h"
+#include "shared/source/os_interface/linux/os_context_linux.h"
+#include "shared/source/os_interface/linux/sys_calls.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
+#include "shared/test/common/helpers/engine_descriptor_helper.h"
 #include "shared/test/common/helpers/variable_backup.h"
 #include "shared/test/common/libult/linux/drm_mock.h"
 #include "shared/test/common/mocks/linux/mock_os_time_linux.h"
@@ -64,6 +67,7 @@ TEST_F(IoctlPrelimHelperTests, whenGettingIoctlRequestValueThenPropertValueIsRet
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemContextDestroy), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_CONTEXT_DESTROY));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::regRead), static_cast<unsigned int>(DRM_IOCTL_I915_REG_READ));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::getResetStats), static_cast<unsigned int>(DRM_IOCTL_I915_GET_RESET_STATS));
+    EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::getResetStatsPrelim), static_cast<unsigned int>(PRELIM_DRM_IOCTL_I915_GET_RESET_STATS));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemContextGetparam), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemContextSetparam), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::query), static_cast<unsigned int>(DRM_IOCTL_I915_QUERY));
@@ -84,16 +88,15 @@ TEST_F(IoctlPrelimHelperTests, whenGettingIoctlRequestValueThenPropertValueIsRet
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemMmapOffset), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_MMAP_OFFSET));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemVmCreate), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_VM_CREATE));
     EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::gemVmDestroy), static_cast<unsigned int>(DRM_IOCTL_I915_GEM_VM_DESTROY));
+    EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::perfOpen), static_cast<unsigned int>(DRM_IOCTL_I915_PERF_OPEN));
+    EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::perfEnable), static_cast<unsigned int>(I915_PERF_IOCTL_ENABLE));
+    EXPECT_EQ(ioctlHelper.getIoctlRequestValue(DrmIoctl::perfDisable), static_cast<unsigned int>(I915_PERF_IOCTL_DISABLE));
 
     EXPECT_THROW(ioctlHelper.getIoctlRequestValue(DrmIoctl::dg1GemCreateExt), std::runtime_error);
 }
 
 TEST_F(IoctlPrelimHelperTests, whenGettingDrmParamStringThenProperStringIsReturned) {
-    EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramChipsetId).c_str(), "I915_PARAM_CHIPSET_ID");
-    EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramRevision).c_str(), "I915_PARAM_REVISION");
-    EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramHasExecSoftpin).c_str(), "I915_PARAM_HAS_EXEC_SOFTPIN");
     EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramHasPooledEu).c_str(), "I915_PARAM_HAS_POOLED_EU");
-    EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramHasScheduler).c_str(), "I915_PARAM_HAS_SCHEDULER");
     EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramEuTotal).c_str(), "I915_PARAM_EU_TOTAL");
     EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramSubsliceTotal).c_str(), "I915_PARAM_SUBSLICE_TOTAL");
     EXPECT_STREQ(ioctlHelper.getDrmParamString(DrmParam::paramMinEuInPool).c_str(), "I915_PARAM_MIN_EU_IN_POOL");
@@ -116,6 +119,7 @@ TEST_F(IoctlPrelimHelperTests, whenGettingIoctlRequestStringThenProperStringIsRe
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemContextDestroy).c_str(), "DRM_IOCTL_I915_GEM_CONTEXT_DESTROY");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::regRead).c_str(), "DRM_IOCTL_I915_REG_READ");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::getResetStats).c_str(), "DRM_IOCTL_I915_GET_RESET_STATS");
+    EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::getResetStatsPrelim).c_str(), "PRELIM_DRM_IOCTL_I915_GET_RESET_STATS");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemContextGetparam).c_str(), "DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemContextSetparam).c_str(), "DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::query).c_str(), "DRM_IOCTL_I915_QUERY");
@@ -136,6 +140,9 @@ TEST_F(IoctlPrelimHelperTests, whenGettingIoctlRequestStringThenProperStringIsRe
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemMmapOffset).c_str(), "DRM_IOCTL_I915_GEM_MMAP_OFFSET");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemVmCreate).c_str(), "DRM_IOCTL_I915_GEM_VM_CREATE");
     EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::gemVmDestroy).c_str(), "DRM_IOCTL_I915_GEM_VM_DESTROY");
+    EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::perfOpen).c_str(), "DRM_IOCTL_I915_PERF_OPEN");
+    EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::perfEnable).c_str(), "I915_PERF_IOCTL_ENABLE");
+    EXPECT_STREQ(ioctlHelper.getIoctlString(DrmIoctl::perfDisable).c_str(), "I915_PERF_IOCTL_DISABLE");
 
     EXPECT_THROW(ioctlHelper.getIoctlString(DrmIoctl::dg1GemCreateExt), std::runtime_error);
 }
@@ -166,11 +173,7 @@ TEST_F(IoctlPrelimHelperTests, whenGettingDrmParamValueThenPropertValueIsReturne
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::memoryClassSystem), static_cast<int>(drm_i915_gem_memory_class::I915_MEMORY_CLASS_SYSTEM));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::mmapOffsetWb), static_cast<int>(I915_MMAP_OFFSET_WB));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::mmapOffsetWc), static_cast<int>(I915_MMAP_OFFSET_WC));
-    EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramChipsetId), static_cast<int>(I915_PARAM_CHIPSET_ID));
-    EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramRevision), static_cast<int>(I915_PARAM_REVISION));
-    EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramHasExecSoftpin), static_cast<int>(I915_PARAM_HAS_EXEC_SOFTPIN));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramHasPooledEu), static_cast<int>(I915_PARAM_HAS_POOLED_EU));
-    EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramHasScheduler), static_cast<int>(I915_PARAM_HAS_SCHEDULER));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramEuTotal), static_cast<int>(I915_PARAM_EU_TOTAL));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramSubsliceTotal), static_cast<int>(I915_PARAM_SUBSLICE_TOTAL));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::paramMinEuInPool), static_cast<int>(I915_PARAM_MIN_EU_IN_POOL));
@@ -182,7 +185,6 @@ TEST_F(IoctlPrelimHelperTests, whenGettingDrmParamValueThenPropertValueIsReturne
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::queryMemoryRegions), static_cast<int>(DRM_I915_QUERY_MEMORY_REGIONS));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::queryComputeSlices), static_cast<int>(PRELIM_DRM_I915_QUERY_COMPUTE_SUBSLICES));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::queryTopologyInfo), static_cast<int>(DRM_I915_QUERY_TOPOLOGY_INFO));
-    EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::schedulerCapPreemption), static_cast<int>(I915_SCHEDULER_CAP_PREEMPTION));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::tilingNone), static_cast<int>(I915_TILING_NONE));
     EXPECT_EQ(ioctlHelper.getDrmParamValue(DrmParam::tilingY), static_cast<int>(I915_TILING_Y));
 }
@@ -259,24 +261,37 @@ TEST_F(IoctlPrelimHelperTests, whenGettingFlagsForVmBindThenProperValuesAreRetur
     for (auto &bindCapture : ::testing::Bool()) {
         for (auto &bindImmediate : ::testing::Bool()) {
             for (auto &bindMakeResident : ::testing::Bool()) {
-                auto flags = ioctlHelper.getFlagsForVmBind(bindCapture, bindImmediate, bindMakeResident);
-                if (bindCapture) {
-                    EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_CAPTURE, (flags & PRELIM_I915_GEM_VM_BIND_CAPTURE));
-                }
-                if (bindImmediate) {
-                    EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_IMMEDIATE, (flags & PRELIM_I915_GEM_VM_BIND_IMMEDIATE));
-                }
-                if (bindMakeResident) {
-                    EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_MAKE_RESIDENT, (flags & PRELIM_I915_GEM_VM_BIND_MAKE_RESIDENT));
-                }
-                if (flags == 0) {
-                    EXPECT_FALSE(bindCapture);
-                    EXPECT_FALSE(bindImmediate);
-                    EXPECT_FALSE(bindMakeResident);
+                for (auto &bindLockedMemory : ::testing::Bool()) {
+                    for (auto &readOnlyResource : ::testing::Bool()) {
+                        auto flags = ioctlHelper.getFlagsForVmBind(bindCapture, bindImmediate, bindMakeResident, bindLockedMemory, readOnlyResource);
+                        if (bindCapture) {
+                            EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_CAPTURE, (flags & PRELIM_I915_GEM_VM_BIND_CAPTURE));
+                        }
+                        if (bindImmediate) {
+                            EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_IMMEDIATE, (flags & PRELIM_I915_GEM_VM_BIND_IMMEDIATE));
+                        }
+                        if (bindMakeResident || bindLockedMemory) {
+                            EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_MAKE_RESIDENT, (flags & PRELIM_I915_GEM_VM_BIND_MAKE_RESIDENT));
+                        }
+                        if (readOnlyResource) {
+                            EXPECT_EQ(PRELIM_I915_GEM_VM_BIND_READONLY, (flags & PRELIM_I915_GEM_VM_BIND_READONLY));
+                        }
+                        if (flags == 0) {
+                            EXPECT_FALSE(bindCapture);
+                            EXPECT_FALSE(bindImmediate);
+                            EXPECT_FALSE(bindMakeResident);
+                            EXPECT_FALSE(bindLockedMemory);
+                            EXPECT_FALSE(readOnlyResource);
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+TEST_F(IoctlPrelimHelperTests, givenIoctlHelperisVmBindPatIndexExtSupportedReturnsTrue) {
+    ASSERT_EQ(true, ioctlHelper.isVmBindPatIndexExtSupported());
 }
 
 TEST_F(IoctlPrelimHelperTests, whenGettingVmBindExtFromHandlesThenProperStructsAreReturned) {
@@ -284,7 +299,7 @@ TEST_F(IoctlPrelimHelperTests, whenGettingVmBindExtFromHandlesThenProperStructsA
     bindExtHandles.push_back(1u);
     bindExtHandles.push_back(2u);
     bindExtHandles.push_back(3u);
-    auto retVal = ioctlHelper.prepareVmBindExt(bindExtHandles);
+    auto retVal = ioctlHelper.prepareVmBindExt(bindExtHandles, 0);
     auto vmBindExt = reinterpret_cast<prelim_drm_i915_vm_bind_ext_uuid *>(retVal.get());
 
     for (size_t i = 0; i < bindExtHandles.size(); i++) {
@@ -302,8 +317,8 @@ TEST_F(IoctlPrelimHelperTests, givenPrelimsWhenGetDirectSubmissionFlagThenCorrec
 
 TEST_F(IoctlPrelimHelperTests, givenPrelimsWhenTranslateToEngineCapsThenReturnSameData) {
     std::vector<EngineCapabilities> expectedEngines(2);
-    expectedEngines[0] = {{static_cast<uint16_t>(ioctlHelper.getDrmParamValue(DrmParam::engineClassRender)), 0}, 0};
-    expectedEngines[1] = {{static_cast<uint16_t>(ioctlHelper.getDrmParamValue(DrmParam::engineClassCopy)), 1}, 0};
+    expectedEngines[0] = {{static_cast<uint16_t>(ioctlHelper.getDrmParamValue(DrmParam::engineClassRender)), 0}, {true, false}};
+    expectedEngines[1] = {{static_cast<uint16_t>(ioctlHelper.getDrmParamValue(DrmParam::engineClassCopy)), 1}, {false, true}};
 
     auto engineInfo = getEngineInfo(expectedEngines);
 
@@ -312,7 +327,8 @@ TEST_F(IoctlPrelimHelperTests, givenPrelimsWhenTranslateToEngineCapsThenReturnSa
     for (uint32_t i = 0; i < engines.size(); i++) {
         EXPECT_EQ(expectedEngines[i].engine.engineClass, engines[i].engine.engineClass);
         EXPECT_EQ(expectedEngines[i].engine.engineInstance, engines[i].engine.engineInstance);
-        EXPECT_EQ(expectedEngines[i].capabilities, engines[i].capabilities);
+        EXPECT_EQ(expectedEngines[i].capabilities.copyClassSaturateLink, engines[i].capabilities.copyClassSaturateLink);
+        EXPECT_EQ(expectedEngines[i].capabilities.copyClassSaturatePCIE, engines[i].capabilities.copyClassSaturatePCIE);
     }
 }
 
@@ -354,24 +370,26 @@ TEST_F(IoctlPrelimHelperTests, givenValidInputWhenFillVmBindUserFenceThenProperV
     EXPECT_EQ(expectedSize, sizeof(prelimVmBindExtUserFence));
 }
 
-TEST_F(IoctlPrelimHelperTests, givenPrelimWhenGettingEuStallPropertiesThenCorrectPropertiesAreReturned) {
-    std::array<uint64_t, 12u> properties = {};
-    EXPECT_TRUE(ioctlHelper.getEuStallProperties(properties, 0x101, 0x102, 0x103, 1, 20u));
-    EXPECT_EQ(properties[0], prelim_drm_i915_eu_stall_property_id::PRELIM_DRM_I915_EU_STALL_PROP_BUF_SZ);
-    EXPECT_EQ(properties[1], 0x101u);
-    EXPECT_EQ(properties[2], prelim_drm_i915_eu_stall_property_id::PRELIM_DRM_I915_EU_STALL_PROP_SAMPLE_RATE);
-    EXPECT_EQ(properties[3], 0x102u);
-    EXPECT_EQ(properties[4], prelim_drm_i915_eu_stall_property_id::PRELIM_DRM_I915_EU_STALL_PROP_POLL_PERIOD);
-    EXPECT_EQ(properties[5], 0x103u);
-    EXPECT_EQ(properties[6], prelim_drm_i915_eu_stall_property_id::PRELIM_DRM_I915_EU_STALL_PROP_ENGINE_CLASS);
-    EXPECT_EQ(properties[7], prelim_drm_i915_gem_engine_class::PRELIM_I915_ENGINE_CLASS_COMPUTE);
-    EXPECT_EQ(properties[8], prelim_drm_i915_eu_stall_property_id::PRELIM_DRM_I915_EU_STALL_PROP_ENGINE_INSTANCE);
+TEST_F(IoctlPrelimHelperTests, givenPrelimWhenCallingIsEuStallSupportedThenTrueIsReturned) {
+    EXPECT_TRUE(ioctlHelper.isEuStallSupported());
+}
 
-    EXPECT_EQ(properties[11], 20u);
+TEST_F(IoctlPrelimHelperTests, givenPrelimWhenCallingPerfOpenEuStallStreamWithInvalidArgumentsThenFailureReturned) {
+    int32_t invalidStream = -1;
+    DrmMock *mockDrm = reinterpret_cast<DrmMock *>(drm.get());
+    mockDrm->failPerfOpen = true;
+    uint32_t samplingPeridNs = 10000u;
+    EXPECT_FALSE(ioctlHelper.perfOpenEuStallStream(0u, samplingPeridNs, 1, 20u, 10000u, &invalidStream));
 }
 
 TEST_F(IoctlPrelimHelperTests, givenPrelimWhenGettingEuStallFdParameterThenCorrectIoctlValueIsReturned) {
     EXPECT_EQ(static_cast<uint32_t>(PRELIM_I915_PERF_FLAG_FD_EU_STALL), ioctlHelper.getEuStallFdParameter());
+}
+
+TEST_F(IoctlPrelimHelperTests, givenPrelimWhenQueryDeviceParamsIsCalledThenFalseIsReturned) {
+    uint32_t moduleId = 0;
+    uint16_t serverType = 0;
+    EXPECT_FALSE(ioctlHelper.queryDeviceParams(&moduleId, &serverType));
 }
 
 struct MockIoctlHelperPrelim20 : IoctlHelperPrelim20 {
@@ -385,7 +403,41 @@ struct MockIoctlHelperPrelim20 : IoctlHelperPrelim20 {
                 return *overrideGemCreateExtReturnValue;
             }
         }
+        if (request == DrmIoctl::getResetStatsPrelim) {
+            resetStatsPrelimCalled++;
+            if (overrideResetStatsPrelim.has_value()) {
+                auto resetStats = reinterpret_cast<ResetStats *>(arg);
+                *resetStats = std::get<0>(overrideResetStatsPrelim.value());
+                auto resetStatsPrelim = reinterpret_cast<prelim_drm_i915_reset_stats *>(arg);
+                resetStatsPrelim->status = std::get<1>(overrideResetStatsPrelim.value());
+                auto fault = std::get<2>(overrideResetStatsPrelim.value());
+                resetStatsPrelim->fault = {fault.addr, fault.type, fault.level, fault.access, fault.flags};
+                return overrideResetStatsPrelimReturnValue;
+            }
+        }
+        if (request == DrmIoctl::getResetStats) {
+            resetStatsCalled++;
+            if (overrideResetStats.has_value()) {
+                auto resetStats = reinterpret_cast<ResetStats *>(arg);
+                *resetStats = overrideResetStats.value();
+                return overrideResetStatsReturnValue;
+            }
+        }
+
         return IoctlHelperPrelim20::ioctl(request, arg);
+    }
+    int ioctl(int fd, DrmIoctl request, void *arg) override {
+        if (request == DrmIoctl::perfDisable) {
+            if (failPerfDisable) {
+                return -1;
+            }
+        }
+        if (request == DrmIoctl::perfEnable) {
+            if (failPerfEnable) {
+                return -1;
+            }
+        }
+        return IoctlHelperPrelim20::ioctl(fd, request, arg);
     }
     bool checkWhetherGemCreateExtContainsMemPolicy(void *arg) {
         auto &gemCreateExt = *reinterpret_cast<prelim_drm_i915_gem_create_ext *>(arg);
@@ -408,10 +460,19 @@ struct MockIoctlHelperPrelim20 : IoctlHelperPrelim20 {
     }
     size_t ioctlCallCount = 0;
     bool lastGemCreateContainedMemPolicy = false;
+    bool failPerfDisable = false;
+    bool failPerfEnable = false;
+    bool failPerfOpen = false;
     std::optional<int> overrideGemCreateExtReturnValue{};
     uint32_t lastPolicyMode = 0;
     uint32_t lastPolicyFlags = 0;
     std::vector<unsigned long> lastPolicyNodeMask{};
+    std::optional<std::tuple<ResetStats, uint32_t, ResetStatsFault>> overrideResetStatsPrelim{};
+    int overrideResetStatsPrelimReturnValue = 0;
+    std::optional<ResetStats> overrideResetStats{};
+    int overrideResetStatsReturnValue = 0;
+    size_t resetStatsPrelimCalled = 0;
+    size_t resetStatsCalled = 0;
 };
 
 TEST(IoctlPrelimHelperCreateGemExtTests, givenPrelimWhenCreateGemExtWithMemPolicyThenMemPolicyExtensionsIsAdded) {
@@ -431,7 +492,7 @@ TEST(IoctlPrelimHelperCreateGemExtTests, givenPrelimWhenCreateGemExtWithMemPolic
     uint32_t memPolicyMode = 0;
     mockIoctlHelper.overrideGemCreateExtReturnValue = 0;
     mockIoctlHelper.initialize();
-    auto ret = mockIoctlHelper.createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, memPolicyMode, memPolicy);
+    auto ret = mockIoctlHelper.createGemExt(memClassInstance, 1024, handle, 0, {}, -1, false, numOfChunks, memPolicyMode, memPolicy, false);
 
     std::string output = testing::internal::GetCapturedStdout();
     std::string expectedSubstring("memory policy:");
@@ -457,13 +518,69 @@ TEST(IoctlPrelimHelperCreateGemExtTests, givenPrelimWhenCreateGemExtWithMemPolic
     uint32_t memPolicyMode = 0;
     mockIoctlHelper.overrideGemCreateExtReturnValue = 0;
     mockIoctlHelper.initialize();
-    auto ret = mockIoctlHelper.createGemExt(memClassInstance, size, handle, 0, {}, -1, true, numOfChunks, memPolicyMode, memPolicy);
+    auto ret = mockIoctlHelper.createGemExt(memClassInstance, size, handle, 0, {}, -1, true, numOfChunks, memPolicyMode, memPolicy, false);
 
     EXPECT_EQ(0, ret);
     EXPECT_TRUE(mockIoctlHelper.lastGemCreateContainedMemPolicy);
     EXPECT_EQ(0u, mockIoctlHelper.lastPolicyFlags);
     EXPECT_EQ(memPolicyMode, mockIoctlHelper.lastPolicyMode);
     EXPECT_EQ(memPolicy, mockIoctlHelper.lastPolicyNodeMask);
+}
+
+TEST(IoctlPrelimHelperPerfTests, givenCalltoPerfDisableEuStallStreamWithValidStreamButCloseFailsThenFailureReturned) {
+    VariableBackup<decltype(NEO::SysCalls::sysCallsClose)> mockClose(&NEO::SysCalls::sysCallsClose, [](int fileDescriptor) -> int {
+        return -1;
+    });
+
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    mockIoctlHelper.initialize();
+    NEO::SysCalls::closeFuncCalled = 0;
+    NEO::SysCalls::closeFuncRetVal = -1;
+    int32_t invalidFd = 10;
+    EXPECT_FALSE(mockIoctlHelper.perfDisableEuStallStream(&invalidFd));
+    EXPECT_EQ(1u, NEO::SysCalls::closeFuncCalled);
+    EXPECT_EQ(10, NEO::SysCalls::closeFuncArgPassed);
+    NEO::SysCalls::closeFuncCalled = 0;
+    NEO::SysCalls::closeFuncArgPassed = 0;
+    NEO::SysCalls::closeFuncRetVal = 0;
+}
+
+TEST(IoctlPrelimHelperPerfTests, givenCalltoPerfDisableEuStallStreamWithInvalidStreamThenFailureIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    mockIoctlHelper.initialize();
+    int32_t invalidFd = -1;
+    mockIoctlHelper.failPerfDisable = true;
+    EXPECT_FALSE(mockIoctlHelper.perfDisableEuStallStream(&invalidFd));
+}
+
+TEST(IoctlPrelimHelperPerfTests, givenCalltoPerfOpenEuStallStreamWithInvalidStreamWithEnableSetToFailThenFailureReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    mockIoctlHelper.initialize();
+    int32_t invalidFd = -1;
+    mockIoctlHelper.failPerfEnable = true;
+    uint32_t samplingPeridNs = 10000u;
+    EXPECT_FALSE(mockIoctlHelper.perfOpenEuStallStream(0u, samplingPeridNs, 1, 20u, 10000u, &invalidFd));
+}
+
+TEST(IoctlPrelimHelperPerfTests, givenCalltoPerfDisableEuStallStreamWithValidStreamThenSuccessIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    mockIoctlHelper.initialize();
+    int32_t validFd = -1;
+    uint32_t samplingPeridNs = 10000u;
+    EXPECT_TRUE(mockIoctlHelper.perfOpenEuStallStream(0u, samplingPeridNs, 1, 20u, 10000u, &validFd));
+    EXPECT_TRUE(mockIoctlHelper.perfDisableEuStallStream(&validFd));
 }
 
 class DrmMockIoctl : public DrmMock {
@@ -664,6 +781,30 @@ TEST_F(IoctlPrelimHelperTests, whenChangingBufferBindingThenWaitIsNeededOnlyBefo
     EXPECT_FALSE(ioctlHelper.isWaitBeforeBindRequired(false));
 }
 
+TEST_F(IoctlPrelimHelperTests, whenChangingBufferBindingAndForcingFenceWaitThenCallReturnsTrueForBindAndUnbind) {
+    DebugManagerStateRestore restorer;
+    MockExecutionEnvironment executionEnvironment{};
+    std::unique_ptr<Drm> drm{Drm::create(std::make_unique<HwDeviceIdDrm>(0, ""), *executionEnvironment.rootDeviceEnvironments[0])};
+
+    IoctlHelperPrelim20 ioctlHelper{*drm};
+
+    debugManager.flags.EnableUserFenceUponUnbind.set(1);
+    EXPECT_TRUE(ioctlHelper.isWaitBeforeBindRequired(true));
+    EXPECT_TRUE(ioctlHelper.isWaitBeforeBindRequired(false));
+}
+
+TEST_F(IoctlPrelimHelperTests, whenChangingBufferBindingAndNotForcingFenceWaitThenCallReturnsTrueForBindOnly) {
+    DebugManagerStateRestore restorer;
+    MockExecutionEnvironment executionEnvironment{};
+    std::unique_ptr<Drm> drm{Drm::create(std::make_unique<HwDeviceIdDrm>(0, ""), *executionEnvironment.rootDeviceEnvironments[0])};
+
+    IoctlHelperPrelim20 ioctlHelper{*drm};
+
+    debugManager.flags.EnableUserFenceUponUnbind.set(0);
+    EXPECT_TRUE(ioctlHelper.isWaitBeforeBindRequired(true));
+    EXPECT_FALSE(ioctlHelper.isWaitBeforeBindRequired(false));
+}
+
 TEST_F(IoctlPrelimHelperTests, whenGettingPreferredLocationRegionThenReturnCorrectMemoryClassAndInstance) {
     DebugManagerStateRestore restorer;
 
@@ -740,7 +881,7 @@ TEST_F(IoctlPrelimHelperTests, givenInvalidDrmWhenGettingGpuTimeThenFails) {
 
 TEST_F(IoctlPrelimHelperTests, whenGettingTimeThenTimeIsCorrect) {
     MockExecutionEnvironment executionEnvironment{};
-    auto drm = std::make_unique<DrmMockCustom>(*executionEnvironment.rootDeviceEnvironments[0]);
+    auto drm = DrmMockCustom::create(*executionEnvironment.rootDeviceEnvironments[0]);
     ASSERT_NE(nullptr, drm);
 
     MockIoctlHelperPrelim ioctlHelper{*drm};
@@ -772,7 +913,7 @@ TEST_F(IoctlPrelimHelperTests, givenInitializeGetGpuTimeFunctionNotCalledWhenSet
     auto &rootDeviceEnvironment = *executionEnvironment.rootDeviceEnvironments[0];
     rootDeviceEnvironment.osInterface = std::make_unique<OSInterface>();
     rootDeviceEnvironment.osInterface->setDriverModel(std::make_unique<DrmMockTime>(mockFd, rootDeviceEnvironment));
-    auto drm = std::make_unique<DrmMockCustom>(rootDeviceEnvironment);
+    auto drm = DrmMockCustom::create(rootDeviceEnvironment);
     IoctlHelperPrelim20 ioctlHelper{*drm};
 
     drm->ioctlRes = -1;
@@ -782,8 +923,143 @@ TEST_F(IoctlPrelimHelperTests, givenInitializeGetGpuTimeFunctionNotCalledWhenSet
     EXPECT_EQ(false, ret);
 }
 
-TEST_F(IoctlPrelimHelperTests, givenUpstreamWhenGetFdFromVmExportIsCalledThenFalseIsReturned) {
+TEST_F(IoctlPrelimHelperTests, givenPrelimWhenGetFdFromVmExportIsCalledThenFalseIsReturned) {
     uint32_t vmId = 0, flags = 0;
     int32_t fd = 0;
     EXPECT_FALSE(ioctlHelper.getFdFromVmExport(vmId, flags, &fd));
+}
+
+TEST_F(IoctlPrelimHelperTests, whenGetResetStatsIsCalledThenCorrectValueIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    uint32_t status = 1;
+    ResetStatsFault fault{};
+    fault.flags = 1;
+
+    ResetStats resetStats{};
+    resetStats.contextId = 0;
+    mockIoctlHelper.overrideResetStatsPrelim = {resetStats, status, fault};
+
+    status = 0;
+    fault.flags = 0;
+
+    EXPECT_EQ(0, mockIoctlHelper.getResetStats(resetStats, nullptr, nullptr));
+    EXPECT_EQ(1u, mockIoctlHelper.resetStatsPrelimCalled);
+    EXPECT_EQ(0u, mockIoctlHelper.resetStatsCalled);
+
+    EXPECT_EQ(0, mockIoctlHelper.getResetStats(resetStats, &status, nullptr));
+    EXPECT_EQ(1u, status);
+    EXPECT_EQ(2u, mockIoctlHelper.resetStatsPrelimCalled);
+    EXPECT_EQ(0u, mockIoctlHelper.resetStatsCalled);
+
+    status = 0;
+    EXPECT_EQ(0, mockIoctlHelper.getResetStats(resetStats, &status, &fault));
+    EXPECT_EQ(1u, status);
+    EXPECT_EQ(1, fault.flags);
+    EXPECT_EQ(3u, mockIoctlHelper.resetStatsPrelimCalled);
+    EXPECT_EQ(0u, mockIoctlHelper.resetStatsCalled);
+}
+
+TEST_F(IoctlPrelimHelperTests, givenNonZeroReturnValuewhenGetResetStatsIsCalledThenReturnsValueFromRegularResetStatsIoctl) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 mockIoctlHelper{*drm};
+
+    uint32_t status = 1;
+    ResetStatsFault fault{};
+    fault.flags = 1;
+
+    ResetStats resetStats{};
+    resetStats.contextId = 0;
+    mockIoctlHelper.overrideResetStatsPrelim = {resetStats, status, fault};
+    mockIoctlHelper.overrideResetStats = resetStats;
+
+    status = 0;
+    fault.flags = 0;
+    mockIoctlHelper.overrideResetStatsPrelimReturnValue = -1;
+    EXPECT_EQ(0, mockIoctlHelper.getResetStats(resetStats, &status, &fault));
+    EXPECT_EQ(1u, mockIoctlHelper.resetStatsPrelimCalled);
+    EXPECT_EQ(1u, mockIoctlHelper.resetStatsCalled);
+}
+TEST_F(IoctlPrelimHelperTests, whenCallingGetStatusAndFlagsForResetStatsThenExpectedValueIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 ioctlHelper{*drm};
+
+    EXPECT_EQ(static_cast<uint32_t>(I915_RESET_STATS_BANNED), ioctlHelper.getStatusForResetStats(true));
+    EXPECT_EQ(0u, ioctlHelper.getStatusForResetStats(false));
+
+    EXPECT_TRUE(ioctlHelper.validPageFault(static_cast<uint16_t>(I915_RESET_STATS_FAULT_VALID)));
+    EXPECT_FALSE(ioctlHelper.validPageFault(0u));
+}
+
+TEST_F(IoctlPrelimHelperTests, whenCallingGetTileIdFromGtIdThenMinusOneIsReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    auto drm = std::make_unique<DrmMock>(*executionEnvironment->rootDeviceEnvironments[0]);
+    MockIoctlHelperPrelim20 ioctlHelper{*drm};
+
+    EXPECT_EQ(-1, ioctlHelper.getTileIdFromGtId(0));
+    EXPECT_EQ(-1, ioctlHelper.getTileIdFromGtId(1));
+}
+
+TEST(DrmTest, GivenDrmWhenAskedForPreemptionThenCorrectValueReturned) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    DrmMock *pDrm = new DrmMock(*executionEnvironment->rootDeviceEnvironments[0]);
+    pDrm->storedRetVal = 0;
+    pDrm->storedPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
+    pDrm->checkPreemptionSupport();
+    EXPECT_TRUE(pDrm->isPreemptionSupported());
+
+    pDrm->storedPreemptionSupport = 0;
+    pDrm->checkPreemptionSupport();
+    EXPECT_FALSE(pDrm->isPreemptionSupported());
+
+    pDrm->storedRetVal = -1;
+    pDrm->storedPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
+    pDrm->checkPreemptionSupport();
+    EXPECT_FALSE(pDrm->isPreemptionSupported());
+
+    pDrm->storedPreemptionSupport = 0;
+    pDrm->checkPreemptionSupport();
+    EXPECT_FALSE(pDrm->isPreemptionSupported());
+
+    delete pDrm;
+}
+
+TEST(DrmTest, givenDrmPreemptionEnabledAndLowPriorityEngineWhenCreatingOsContextThenCallSetContextPriorityIoctl) {
+    auto executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(defaultHwInfo.get());
+    executionEnvironment->rootDeviceEnvironments[0]->initGmm();
+
+    DrmMock drmMock(*executionEnvironment->rootDeviceEnvironments[0]);
+    drmMock.preemptionSupported = false;
+
+    OsContextLinux osContext1(drmMock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
+    osContext1.ensureContextInitialized(false);
+    OsContextLinux osContext2(drmMock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::lowPriority}));
+    osContext2.ensureContextInitialized(false);
+
+    EXPECT_EQ(4u, drmMock.receivedContextParamRequestCount);
+
+    drmMock.preemptionSupported = true;
+
+    OsContextLinux osContext3(drmMock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor());
+    osContext3.ensureContextInitialized(false);
+    EXPECT_EQ(6u, drmMock.receivedContextParamRequestCount);
+
+    OsContextLinux osContext4(drmMock, 0, 0u, EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::lowPriority}));
+    osContext4.ensureContextInitialized(false);
+    EXPECT_EQ(9u, drmMock.receivedContextParamRequestCount);
+    EXPECT_EQ(drmMock.storedDrmContextId, drmMock.receivedContextParamRequest.contextId);
+    EXPECT_EQ(static_cast<uint64_t>(I915_CONTEXT_PARAM_PRIORITY), drmMock.receivedContextParamRequest.param);
+    EXPECT_EQ(static_cast<uint64_t>(-1023), drmMock.receivedContextParamRequest.value);
+    EXPECT_EQ(0u, drmMock.receivedContextParamRequest.size);
 }

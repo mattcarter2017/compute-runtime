@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 
 #include "shared/source/command_container/encode_surface_state.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
+#include "shared/source/helpers/state_base_address_helper.h"
 #include "shared/source/memory_manager/allocation_properties.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/mocks/mock_device.h"
@@ -20,8 +21,6 @@ using IsBetweenSklAndTgllp = IsWithinProducts<IGFX_SKYLAKE, IGFX_TIGERLAKE_LP>;
 
 HWTEST2_F(SbaTest, WhenAppendStateBaseAddressParametersIsCalledThenSBACmdHasBindingSurfaceStateProgrammed, IsBetweenSklAndTgllp) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     STATE_BASE_ADDRESS stateBaseAddress;
     stateBaseAddress.setBindlessSurfaceStateSize(0);
@@ -37,10 +36,8 @@ HWTEST2_F(SbaTest, WhenAppendStateBaseAddressParametersIsCalledThenSBACmdHasBind
     EXPECT_TRUE(stateBaseAddress.getBindlessSurfaceStateBaseAddressModifyEnable());
 }
 
-HWTEST2_F(SbaTest, WhenProgramStateBaseAddressParametersIsCalledThenSBACmdHasBindingSurfaceStateProgrammed, IsAtLeastSkl) {
+HWTEST2_F(SbaTest, WhenProgramStateBaseAddressParametersIsCalledThenSBACmdHasBindingSurfaceStateProgrammed, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     STATE_BASE_ADDRESS stateBaseAddress;
     stateBaseAddress.setBindlessSurfaceStateSize(0);
@@ -63,10 +60,8 @@ HWTEST2_F(SbaTest, WhenProgramStateBaseAddressParametersIsCalledThenSBACmdHasBin
 }
 
 HWTEST2_F(SbaTest,
-          givenProgramSurfaceStateBaseAddressUsingHeapBaseWhenOverrideSurfaceStateBaseAddressUsedThenSbaDispatchedWithOverrideValue, IsAtLeastSkl) {
+          givenProgramSurfaceStateBaseAddressUsingHeapBaseWhenOverrideSurfaceStateBaseAddressUsedThenSbaDispatchedWithOverrideValue, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t surfaceStateBaseAddress = 0xBADA550000;
 
@@ -84,10 +79,8 @@ HWTEST2_F(SbaTest,
 
 using SbaForBindlessTests = SbaTest;
 
-HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenProgramStateBaseAddressThenSbaProgrammedCorrectly, IsAtLeastSkl) {
+HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenProgramStateBaseAddressThenSbaProgrammedCorrectly, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
 
@@ -98,6 +91,7 @@ HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenProgramStateBas
     StateBaseAddressHelperArgs<FamilyType> args = createSbaHelperArgs<FamilyType>(cmd, pDevice->getGmmHelper());
     args.globalHeapsBaseAddress = globalBindlessHeapsBaseAddress;
     args.useGlobalHeapsBaseAddress = true;
+    args.ssh = &ssh;
 
     StateBaseAddressHelper<FamilyType>::programStateBaseAddress(args);
 
@@ -115,14 +109,13 @@ HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenProgramStateBas
     EXPECT_EQ(globalBindlessHeapsBaseAddress, cmd->getDynamicStateBaseAddress());
 
     EXPECT_TRUE(cmd->getSurfaceStateBaseAddressModifyEnable());
-    EXPECT_EQ(globalBindlessHeapsBaseAddress, cmd->getSurfaceStateBaseAddress());
+    EXPECT_NE(globalBindlessHeapsBaseAddress, cmd->getSurfaceStateBaseAddress());
+    EXPECT_EQ(ssh.getHeapGpuBase(), cmd->getSurfaceStateBaseAddress());
 }
 
 HWTEST2_F(SbaForBindlessTests,
-          givenGlobalBindlessBaseAddressOverridenSurfaceStateBaseAddressWhenProgramStateBaseAddressThenSbaProgrammedCorrectly, IsAtLeastSkl) {
+          givenGlobalBindlessBaseAddressOverridenSurfaceStateBaseAddressWhenProgramStateBaseAddressThenSbaProgrammedCorrectly, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
     constexpr uint64_t surfaceStateBaseAddress = 0xBADA550000;
@@ -156,12 +149,10 @@ HWTEST2_F(SbaForBindlessTests,
     EXPECT_EQ(surfaceStateBaseAddress, cmd->getSurfaceStateBaseAddress());
 }
 
-using IohSupported = IsWithinGfxCore<GFXCORE_FAMILY::IGFX_GEN9_CORE, GFXCORE_FAMILY::IGFX_GEN12LP_CORE>;
+using IohSupported = IsGen12LP;
 
 HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenPassingIndirectBaseAddressThenIndirectBaseAddressIsSet, IohSupported) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
     constexpr uint64_t indirectObjectBaseAddress = 0x12340000;
@@ -180,10 +171,8 @@ HWTEST2_F(SbaForBindlessTests, givenGlobalBindlessBaseAddressWhenPassingIndirect
     EXPECT_EQ(cmd->getIndirectObjectBaseAddress(), indirectObjectBaseAddress);
 }
 
-HWTEST2_F(SbaTest, givenSbaWhenOverrideBindlessSurfaceBaseIsFalseThenBindlessSurfaceBaseIsNotSet, IsAtLeastSkl) {
+HWTEST2_F(SbaTest, givenSbaWhenOverrideBindlessSurfaceBaseIsFalseThenBindlessSurfaceBaseIsNotSet, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     STATE_BASE_ADDRESS stateBaseAddress;
     stateBaseAddress.setBindlessSurfaceStateSize(0);
@@ -198,10 +187,8 @@ HWTEST2_F(SbaTest, givenSbaWhenOverrideBindlessSurfaceBaseIsFalseThenBindlessSur
     EXPECT_EQ(0u, stateBaseAddress.getBindlessSurfaceStateBaseAddress());
 }
 
-HWTEST2_F(SbaTest, givenGlobalBindlessBaseAddressWhenSshIsPassedThenBindlessSurfaceBaseIsGlobalHeapBase, IsAtLeastSkl) {
+HWTEST2_F(SbaTest, givenGlobalBindlessBaseAddressWhenSshIsPassedThenBindlessSurfaceBaseIsGlobalHeapBase, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
 
@@ -217,10 +204,8 @@ HWTEST2_F(SbaTest, givenGlobalBindlessBaseAddressWhenSshIsPassedThenBindlessSurf
 
     EXPECT_EQ(cmd->getBindlessSurfaceStateBaseAddress(), globalBindlessHeapsBaseAddress);
 }
-HWTEST2_F(SbaTest, givenSurfaceStateHeapWhenNotUsingGlobalHeapBaseThenBindlessSurfaceBaseIsSshBase, IsAtLeastSkl) {
+HWTEST2_F(SbaTest, givenSurfaceStateHeapWhenNotUsingGlobalHeapBaseThenBindlessSurfaceBaseIsSshBase, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
 
@@ -236,10 +221,8 @@ HWTEST2_F(SbaTest, givenSurfaceStateHeapWhenNotUsingGlobalHeapBaseThenBindlessSu
     EXPECT_EQ(ssh.getHeapGpuBase(), cmd->getBindlessSurfaceStateBaseAddress());
 }
 
-HWTEST2_F(SbaTest, givenNotUsedGlobalHeapBaseAndSshPassedWhenBindlessSurfStateBaseIsPassedThenBindlessSurfaceBaseIsSetToPassedValue, IsAtLeastSkl) {
+HWTEST2_F(SbaTest, givenNotUsedGlobalHeapBaseAndSshPassedWhenBindlessSurfStateBaseIsPassedThenBindlessSurfaceBaseIsSetToPassedValue, MatchAny) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    EXPECT_NE(IGFX_BROADWELL, ::productFamily);
 
     constexpr uint64_t globalBindlessHeapsBaseAddress = 0x12340000;
 
@@ -278,7 +261,6 @@ HWTEST2_F(SbaTest, givenStateBaseAddressAndDebugFlagSetWhenAppendExtraCacheSetti
 }
 
 HWTEST2_F(SbaTest, givenStateBaseAddressAndDebugFlagSetWhenAppendExtraCacheSettingsThenProgramCorrectL1CachePolicy, IsAtLeastXeHpgCore) {
-    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     auto stateBaseAddress = FamilyType::cmdInitStateBaseAddress;
 
     StateBaseAddressHelperArgs<FamilyType> args = createSbaHelperArgs<FamilyType>(&stateBaseAddress, pDevice->getGmmHelper(), &ssh, nullptr, nullptr);
@@ -288,31 +270,31 @@ HWTEST2_F(SbaTest, givenStateBaseAddressAndDebugFlagSetWhenAppendExtraCacheSetti
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WBP, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WBP, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(2);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WB, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WB, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(3);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WT, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WT, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(4);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WS, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WS, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceAllResourcesUncached.set(true);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_UC, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_UC, stateBaseAddress.getL1CacheControlCachePolicy());
     }
     args.isDebuggerActive = true;
     {
@@ -320,31 +302,31 @@ HWTEST2_F(SbaTest, givenStateBaseAddressAndDebugFlagSetWhenAppendExtraCacheSetti
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WBP, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WBP, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(2);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WB, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WB, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(3);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WT, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WT, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceStatelessL1CachingPolicy.set(4);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WS, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WS, stateBaseAddress.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceAllResourcesUncached.set(true);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendExtraCacheSettings(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_UC, stateBaseAddress.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_UC, stateBaseAddress.getL1CacheControlCachePolicy());
     }
 }
 
@@ -353,12 +335,12 @@ HWTEST2_F(SbaTest, givenDebugFlagSetWhenAppendingSbaThenProgramCorrectL1CachePol
 
     struct {
         uint32_t option;
-        typename FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY cachePolicy;
+        typename FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL cachePolicy;
     } testInputs[] = {
-        {0, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WBP},
-        {2, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WB},
-        {3, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WT},
-        {4, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_WS}};
+        {0, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WBP},
+        {2, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WB},
+        {3, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WT},
+        {4, FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_WS}};
 
     StateBaseAddressHelperArgs<FamilyType> args = createSbaHelperArgs<FamilyType>(&sbaCmd, pDevice->getRootDeviceEnvironment().getGmmHelper(), &ssh, nullptr, nullptr);
     args.setGeneralStateBaseAddress = true;
@@ -372,13 +354,13 @@ HWTEST2_F(SbaTest, givenDebugFlagSetWhenAppendingSbaThenProgramCorrectL1CachePol
 
         StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
 
-        EXPECT_EQ(input.cachePolicy, sbaCmd.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(input.cachePolicy, sbaCmd.getL1CacheControlCachePolicy());
 
         debugManager.flags.ForceAllResourcesUncached.set(true);
         updateSbaHelperArgsL1CachePolicy<FamilyType>(args, productHelper);
 
         StateBaseAddressHelper<FamilyType>::appendStateBaseAddressParameters(args);
-        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_POLICY_UC, sbaCmd.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(FamilyType::STATE_BASE_ADDRESS::L1_CACHE_CONTROL_UC, sbaCmd.getL1CacheControlCachePolicy());
     }
 }
 
@@ -405,23 +387,23 @@ HWTEST2_F(SbaTest, givenDebugFlagSetWhenAppendingRssThenProgramCorrectL1CachePol
 
     struct {
         uint32_t option;
-        typename FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY cachePolicy;
+        typename FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL cachePolicy;
     } testInputs[] = {
-        {0, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WBP},
-        {2, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WB},
-        {3, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WT},
-        {4, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_POLICY_WS}};
+        {0, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WBP},
+        {2, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WB},
+        {3, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WT},
+        {4, FamilyType::RENDER_SURFACE_STATE::L1_CACHE_CONTROL_WS}};
 
     for (const auto &input : testInputs) {
         DebugManagerStateRestore restore;
         debugManager.flags.OverrideL1CachePolicyInSurfaceStateAndStateless.set(input.option);
         EncodeSurfaceState<FamilyType>::encodeBuffer(args);
-        EXPECT_EQ(input.cachePolicy, rssCmd.getL1CachePolicyL1CacheControl());
+        EXPECT_EQ(input.cachePolicy, rssCmd.getL1CacheControlCachePolicy());
     }
     memoryManager->freeGraphicsMemory(allocation);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, SbaTest, whenGeneralStateBaseAddressIsProgrammedThenDecanonizedAddressIsWritten) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, SbaTest, whenGeneralStateBaseAddressIsProgrammedThenDecanonizedAddressIsWritten) {
     constexpr uint64_t generalStateBaseAddress = 0xffff800400010000ull;
 
     auto gmmHelper = pDevice->getGmmHelper();
@@ -474,7 +456,7 @@ HWTEST_F(SbaTest, givenNonZeroInternalHeapBaseAddressWhenProgrammingIsDisabledTh
     EXPECT_EQ(0u, sbaCmd.getInstructionMemoryObjectControlState());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, SbaTest, givenSbaProgrammingWhenHeapsAreNotProvidedThenDontProgram) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, SbaTest, givenSbaProgrammingWhenHeapsAreNotProvidedThenDontProgram) {
     auto gmmHelper = pDevice->getGmmHelper();
 
     constexpr uint64_t internalHeapBase = 0x10000;
@@ -668,7 +650,7 @@ HWTEST_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingDynamicStateSurfaceS
     EXPECT_EQ((mocsIndex << 1), sbaCmd.getStatelessDataPortAccessMemoryObjectControlState());
 }
 
-using IndirectBaseAddressPlatforms = IsAtMostGen12lp;
+using IndirectBaseAddressPlatforms = IsGen12LP;
 
 HWTEST2_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingIndirectStatePropertyThenCommandDispatchedCorrectlyIndirectBaseAddress, IndirectBaseAddressPlatforms) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
@@ -703,53 +685,7 @@ HWTEST2_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingIndirectStateProper
 
 using GlobalBaseAddressPlatforms = IsAtLeastXeHpCore;
 
-HWTEST2_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingIndirectStateAndGlobalAtomicsPropertyThenCommandDispatchedCorrectlyGlobalBaseAddressAndGlobalAtomics, GlobalBaseAddressPlatforms) {
-    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
-
-    constexpr uint64_t indirectHeapBase = 0x10000;
-    constexpr uint32_t indirectHeapSize = 0x10;
-    constexpr uint32_t constGlobalHeapSize = 0xfffff;
-
-    auto gmmHelper = pDevice->getGmmHelper();
-    StateBaseAddressProperties sbaProperties;
-
-    STATE_BASE_ADDRESS sbaCmd;
-    StateBaseAddressHelperArgs<FamilyType> args = createSbaHelperArgs<FamilyType>(&sbaCmd, gmmHelper, &sbaProperties);
-    args.isMultiOsContextCapable = true;
-
-    StateBaseAddressHelper<FamilyType>::programStateBaseAddress(args);
-
-    EXPECT_FALSE(sbaCmd.getGeneralStateBaseAddressModifyEnable());
-    EXPECT_FALSE(sbaCmd.getGeneralStateBufferSizeModifyEnable());
-    EXPECT_EQ(0u, sbaCmd.getGeneralStateBaseAddress());
-    EXPECT_EQ(0u, sbaCmd.getGeneralStateBufferSize());
-
-    EXPECT_TRUE(sbaCmd.getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-
-    sbaProperties.setPropertiesIndirectState(indirectHeapBase, indirectHeapSize);
-    sbaProperties.globalAtomics.set(1);
-
-    sbaCmd = FamilyType::cmdInitStateBaseAddress;
-
-    StateBaseAddressHelper<FamilyType>::programStateBaseAddress(args);
-
-    EXPECT_TRUE(sbaCmd.getGeneralStateBaseAddressModifyEnable());
-    EXPECT_TRUE(sbaCmd.getGeneralStateBufferSizeModifyEnable());
-    EXPECT_EQ(indirectHeapBase, sbaCmd.getGeneralStateBaseAddress());
-    EXPECT_EQ(constGlobalHeapSize, sbaCmd.getGeneralStateBufferSize());
-
-    EXPECT_FALSE(sbaCmd.getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-
-    sbaProperties.globalAtomics.set(0);
-
-    sbaCmd = FamilyType::cmdInitStateBaseAddress;
-
-    StateBaseAddressHelper<FamilyType>::programStateBaseAddress(args);
-
-    EXPECT_TRUE(sbaCmd.getDisableSupportForMultiGpuAtomicsForStatelessAccesses());
-}
-
-using BindlessSurfaceAddressPlatforms = IsAtLeastGen9;
+using BindlessSurfaceAddressPlatforms = MatchAny;
 
 HWTEST2_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingBindlessSurfaceStatePropertyThenCommandDispatchedCorrectlyBindlessBaseAddress, BindlessSurfaceAddressPlatforms) {
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
@@ -789,4 +725,40 @@ HWTEST2_F(SbaTest, givenStateBaseAddressPropertiesWhenSettingBindlessSurfaceStat
     EXPECT_EQ(surfaceHeapSize * MemoryConstants::pageSize / sizeof(RENDER_SURFACE_STATE), sbaCmd.getBindlessSurfaceStateSize());
     EXPECT_EQ(surfaceHeapBase, sbaCmd.getBindlessSurfaceStateBaseAddress());
     EXPECT_TRUE(sbaCmd.getBindlessSurfaceStateBaseAddressModifyEnable());
+}
+
+TEST(SbaHelperTest, givenIndirectHeapWhenGetStateBaseAddressAndGetStateSizeThenReturnValuesBasedOnGlobalHeapsPresence) {
+    auto cpuBaseAddress = reinterpret_cast<void *>(0x3000);
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
+
+    IndirectHeap heap(&graphicsAllocation, false);
+
+    auto gpuAddress = heap.getGraphicsAllocation()->getGpuAddress();
+    auto gpuBaseAddress = heap.getGraphicsAllocation()->getGpuBaseAddress();
+    auto heapSize = (static_cast<uint32_t>(heap.getMaxAvailableSpace()) + MemoryConstants::pageMask) / MemoryConstants::pageSize;
+
+    bool useGlobalHeaps = false;
+
+    {
+        useGlobalHeaps = false;
+        EXPECT_EQ(gpuAddress, NEO::getStateBaseAddress(heap, useGlobalHeaps));
+        EXPECT_EQ(heapSize, NEO::getStateSize(heap, useGlobalHeaps));
+    }
+    {
+        useGlobalHeaps = true;
+        EXPECT_EQ(gpuBaseAddress, NEO::getStateBaseAddress(heap, useGlobalHeaps));
+        EXPECT_EQ(MemoryConstants::sizeOf4GBinPageEntities, NEO::getStateSize(heap, useGlobalHeaps));
+    }
+
+    {
+        useGlobalHeaps = true;
+        EXPECT_EQ(gpuAddress, NEO::getStateBaseAddressForSsh(heap, useGlobalHeaps));
+        EXPECT_EQ(heapSize, NEO::getStateSizeForSsh(heap, useGlobalHeaps));
+    }
+    {
+        useGlobalHeaps = false;
+        EXPECT_EQ(gpuAddress, NEO::getStateBaseAddressForSsh(heap, useGlobalHeaps));
+        EXPECT_EQ(heapSize, NEO::getStateSizeForSsh(heap, useGlobalHeaps));
+    }
 }

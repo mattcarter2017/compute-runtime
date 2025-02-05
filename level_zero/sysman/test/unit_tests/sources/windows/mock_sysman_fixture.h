@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,6 +27,8 @@ class PublicWddmSysmanImp : public L0::Sysman::WddmSysmanImp {
   public:
     using WddmSysmanImp::pFwUtilInterface;
     using WddmSysmanImp::pKmdSysManager;
+    using WddmSysmanImp::pPmt;
+    using WddmSysmanImp::pSysmanProductHelper;
 };
 
 class SysmanDeviceFixture : public ::testing::Test {
@@ -44,6 +46,7 @@ class SysmanDeviceFixture : public ::testing::Test {
         driverHandle = std::make_unique<L0::Sysman::SysmanDriverHandleImp>();
         driverHandle->initialize(*execEnv);
         pSysmanDevice = driverHandle->sysmanDevices[0];
+        L0::Sysman::globalSysmanDriver = driverHandle.get();
 
         L0::Sysman::sysmanOnlyInit = true;
 
@@ -55,6 +58,7 @@ class SysmanDeviceFixture : public ::testing::Test {
 
     void TearDown() override {
         L0::Sysman::sysmanOnlyInit = false;
+        L0::Sysman::globalSysmanDriver = nullptr;
     }
 
     L0::Sysman::SysmanDevice *pSysmanDevice = nullptr;

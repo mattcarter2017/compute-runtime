@@ -1,6 +1,6 @@
 /*========================== begin_copyright_notice ============================
 
-Copyright (C) 2020-2023 Intel Corporation
+Copyright (C) 2020-2024 Intel Corporation
 
 SPDX-License-Identifier: MIT
 
@@ -72,6 +72,7 @@ enum class ClientGen : uint32_t
     XeHP    = 9,
     XeHPG   = 10,
     XeHPC   = 11,
+    Xe2HPG  = 12,
     // ...
     Last
 };
@@ -357,8 +358,7 @@ struct CommandBufferOverride_1_0
 //////////////////////////////////////////////////////////////////////////
 struct CommandBufferMarkerStreamUser_1_0
 {
-    uint32_t    Reserved : 7;
-    uint32_t    Value    : 25;
+    uint32_t    Value;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -738,6 +738,6 @@ using ContextDeleteFunction_1_0 = StatusCode ( ML_STDCALL* ) ( const ContextHand
 //////////////////////////////////////////////////////////////////////////
 #define METRICS_LIBRARY_MAJOR_NUMBER 1
 #define METRICS_LIBRARY_MINOR_NUMBER 0
-#define METRICS_LIBRARY_BUILD_NUMBER 156
+#define METRICS_LIBRARY_BUILD_NUMBER 182
 
 } // namespace MetricsLibraryApi

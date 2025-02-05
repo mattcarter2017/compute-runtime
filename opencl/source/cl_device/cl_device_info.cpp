@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,7 +7,6 @@
 
 #include "opencl/source/cl_device/cl_device_info.h"
 
-#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/device/device.h"
 #include "shared/source/device/device_info.h"
 #include "shared/source/execution_environment/root_device_environment.h"
@@ -106,7 +105,6 @@ cl_int ClDevice::getDeviceInfo(cl_device_info paramName,
     case CL_DEVICE_HALF_FP_CONFIG:                              getCap<CL_DEVICE_HALF_FP_CONFIG                              >(src, srcSize, retSize); break;
     case CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL:                 getCap<CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL                 >(src, srcSize, retSize); break;
     case CL_DEVICE_HOST_UNIFIED_MEMORY:                         getCap<CL_DEVICE_HOST_UNIFIED_MEMORY                         >(src, srcSize, retSize); break;
-    case CL_DEVICE_ILS_WITH_VERSION:                            getCap<CL_DEVICE_ILS_WITH_VERSION                            >(src, srcSize, retSize); break;
     case CL_DEVICE_IL_VERSION:                                  getStr<CL_DEVICE_IL_VERSION                                  >(src, srcSize, retSize); break;
     case CL_DEVICE_IMAGE_SUPPORT:                               getCap<CL_DEVICE_IMAGE_SUPPORT                               >(src, srcSize, retSize); break;
     case CL_DEVICE_LATEST_CONFORMANCE_VERSION_PASSED:           getStr<CL_DEVICE_LATEST_CONFORMANCE_VERSION_PASSED           >(src, srcSize, retSize); break;
@@ -236,6 +234,10 @@ cl_int ClDevice::getDeviceInfo(cl_device_info paramName,
         src = deviceInfo.openclCFeatures.data();
         retSize = srcSize = deviceInfo.openclCFeatures.size() * sizeof(cl_name_version);
         break;
+    case CL_DEVICE_ILS_WITH_VERSION:
+        src = deviceInfo.ilsWithVersion.data();
+        retSize = srcSize = deviceInfo.ilsWithVersion.size() * sizeof(cl_name_version);
+        break;
     case CL_DEVICE_BUILT_IN_KERNELS_WITH_VERSION:
         src = deviceInfo.builtInKernelsWithVersion.data();
         retSize = srcSize = deviceInfo.builtInKernelsWithVersion.size() * sizeof(cl_name_version);
@@ -256,13 +258,8 @@ cl_int ClDevice::getDeviceInfo(cl_device_info paramName,
         retSize = srcSize = deviceInfo.supportedThreadArbitrationPolicies.size() * sizeof(cl_uint);
         break;
     case CL_DEVICE_IP_VERSION_INTEL: {
-        if (debugManager.flags.UseDeprecatedClDeviceIpVersion.get()) {
-            auto &clGfxCoreHelper = this->getRootDeviceEnvironment().getHelper<ClGfxCoreHelper>();
-            param.uint = clGfxCoreHelper.getDeviceIpVersion(getHardwareInfo());
-        } else {
-            auto &compilerProductHelper = device.getCompilerProductHelper();
-            param.uint = static_cast<cl_version>(compilerProductHelper.getHwIpVersion(getHardwareInfo()));
-        }
+        auto &compilerProductHelper = device.getCompilerProductHelper();
+        param.uint = static_cast<cl_version>(compilerProductHelper.getHwIpVersion(getHardwareInfo()));
         src = &param.uint;
         retSize = srcSize = sizeof(cl_version);
         break;
@@ -278,8 +275,7 @@ cl_int ClDevice::getDeviceInfo(cl_device_info paramName,
         retSize = srcSize = sizeof(cl_uint);
         break;
     case CL_DEVICE_NUM_SUB_SLICES_PER_SLICE_INTEL: {
-        const auto &gtSysInfo = getHardwareInfo().gtSystemInfo;
-        param.uint = gtSysInfo.SubSliceCount / gtSysInfo.SliceCount;
+        param.uint = static_cast<cl_uint>(getNumSubSlicesPerSlice(getHardwareInfo()));
         src = &param.uint;
         retSize = srcSize = sizeof(cl_uint);
         break;
@@ -354,10 +350,14 @@ cl_int ClDevice::getDeviceInfo(cl_device_info paramName,
         retSize = srcSize = (getSharedDeviceInfo().threadsPerEUConfigs.size() * sizeof(uint32_t));
         break;
     default:
-        if (getDeviceInfoForImage(paramName, src, srcSize, retSize) && !getSharedDeviceInfo().imageSupport) {
-            src = &value;
+        if (getDeviceInfoForImage(paramName, src, srcSize, retSize)) {
+            if (false == getSharedDeviceInfo().imageSupport) {
+                src = &value;
+            }
+        } else if (getDeviceInfoExtra(paramName, param, src, srcSize, retSize)) {
             break;
         }
+        break;
     }
 
     auto getInfoStatus = GetInfo::getInfo(paramValue, paramValueSize, src, srcSize);

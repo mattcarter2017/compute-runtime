@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #include "shared/source/device/device.h"
 #include "shared/source/gmm_helper/gmm.h"
 #include "shared/source/helpers/array_count.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/libult/ult_command_stream_receiver.h"
@@ -97,7 +98,7 @@ TEST_F(GlSharingTests, givenMockGlWhenGlBufferIsCreatedThenMemObjectHasGlHandler
 
 class FailingMemoryManager : public MockMemoryManager {
   public:
-    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override {
+    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override {
         return nullptr;
     }
 };
@@ -308,6 +309,35 @@ TEST_F(GlSharingTests, givenClGLBufferWhenItIsAcquireCountIsDecrementedToZeroThe
     EXPECT_EQ(bufferId, mockGlSharing->dllParam->getBufferInfo().bufferName);
 }
 
+TEST_F(GlSharingTests, givenClGlBufferWhenCreatingSharedBufferThenCreateOrDestroyFlagInBufferInfoIsSet) {
+    std::unique_ptr<Buffer> buffer(GlBuffer::createSharedGlBuffer(&context, CL_MEM_READ_WRITE, bufferId, nullptr));
+    CL_GL_BUFFER_INFO info = mockGlSharing->dllParam->getBufferInfo();
+    EXPECT_TRUE(info.createOrDestroy);
+}
+
+class MyGlBuffer : public GlBuffer {
+  public:
+    using GlBuffer::releaseResource;
+    MyGlBuffer(GLSharingFunctions *sharingFunctions, unsigned int glObjectId) : GlBuffer(sharingFunctions, glObjectId) {}
+};
+
+TEST_F(GlSharingTests, givenClGlBufferWhenReleaseResourceCalledThenDoNotSetCreateOrDestroyFlag) {
+    auto glSharingHandler = std::make_unique<MyGlBuffer>(context.getSharing<GLSharingFunctions>(), bufferId);
+
+    glSharingHandler->releaseResource(nullptr, 0u);
+    CL_GL_BUFFER_INFO info = mockGlSharing->dllParam->getBufferInfo();
+    EXPECT_EQ(1, mockGlSharing->dllParam->getParam("glReleaseSharedBufferCalled"));
+    EXPECT_FALSE(info.createOrDestroy);
+}
+
+TEST_F(GlSharingTests, givenClGlBufferWhenDestroyClGLResourceThenReleaseWithCreateOrDestroyFlagSetIs) {
+    auto glSharingHandler = std::make_unique<MyGlBuffer>(context.getSharing<GLSharingFunctions>(), bufferId);
+
+    glSharingHandler.reset();
+    CL_GL_BUFFER_INFO info = mockGlSharing->dllParam->getBufferInfo();
+    EXPECT_EQ(1, mockGlSharing->dllParam->getParam("glReleaseSharedBufferCalled"));
+    EXPECT_TRUE(info.createOrDestroy);
+}
 TEST_F(GlSharingTests, givenClGLBufferWhenItIsAcquiredWithDifferentOffsetThenGraphicsAllocationContainsLatestOffsetValue) {
     auto retVal = CL_SUCCESS;
     auto rootDeviceIndex = context.getDevice(0)->getRootDeviceIndex();
@@ -904,12 +934,15 @@ TEST_F(GlSharingTests, givenClGLBufferWhenMapAndUnmapBufferIsCalledThenCopyOnGpu
     for (auto handleId = 0u; handleId < gfxAllocation->getNumGmms(); handleId++) {
         gfxAllocation->setGmm(new MockGmm(pClDevice->getGmmHelper()), handleId);
     }
+    auto &compilerProductHelper = pClDevice->getCompilerProductHelper();
+    auto heapless = compilerProductHelper.isHeaplessModeEnabled();
+    auto heaplessStateInit = compilerProductHelper.isHeaplessStateInitEnabled(heapless);
 
     auto commandQueue = CommandQueue::create(&context, pClDevice, 0, false, retVal);
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     size_t offset = 1;
-    auto taskCount = commandQueue->taskCount;
+    auto taskCount = commandQueue->taskCount + (heaplessStateInit ? 1u : 0u);
     auto mappedPtr = clEnqueueMapBuffer(commandQueue, glBuffer, CL_TRUE, CL_MAP_WRITE, offset, (buffer->getSize() - offset),
                                         0, nullptr, nullptr, &retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -36,6 +36,7 @@
 #include "shared/test/common/helpers/test_files.h"
 #include "shared/test/common/libult/global_environment.h"
 #include "shared/test/common/libult/ult_command_stream_receiver.h"
+#include "shared/test/common/mocks/mock_ail_configuration.h"
 #include "shared/test/common/mocks/mock_allocation_properties.h"
 #include "shared/test/common/mocks/mock_compiler_interface.h"
 #include "shared/test/common/mocks/mock_elf.h"
@@ -680,7 +681,7 @@ void MinimumProgramFixture::TearDown() {
     NEO::PlatformFixture::tearDown();
 }
 
-HWTEST2_F(MinimumProgramFixture, givenEmptyAilWhenCreateProgramWithSourcesThenSourcesDoNotChange, IsDG2) {
+TEST_F(MinimumProgramFixture, givenEmptyAilWhenCreateProgramWithSourcesThenSourcesDoNotChange) {
     auto pDevice = pContext->getDevice(0);
     auto rootDeviceEnvironment = pDevice->getExecutionEnvironment()->rootDeviceEnvironments[rootDeviceIndex].get();
     rootDeviceEnvironment->ailConfiguration.reset(nullptr);
@@ -701,24 +702,35 @@ HWTEST2_F(MinimumProgramFixture, givenEmptyAilWhenCreateProgramWithSourcesThenSo
     pProgram->release();
 }
 
-HWTEST2_F(MinimumProgramFixture, givenEmptyAilWhenCreateProgramWithSourcesAndWithDummyKernelThenDoNotMarkApplicationContextAsNonZebin, IsAtLeastSkl) {
+TEST_F(MinimumProgramFixture, givenAILReturningTrueForFallbackRequirementWhenBuildingProgramThenMarkContextAsNonZebin) {
+    class MockAIL : public MockAILConfiguration {
+      public:
+        bool isFallbackToPatchtokensRequired() override {
+            return true;
+        }
+    };
     auto pDevice = pContext->getDevice(0);
     auto rootDeviceEnvironment = pDevice->getExecutionEnvironment()->rootDeviceEnvironments[rootDeviceIndex].get();
-    rootDeviceEnvironment->ailConfiguration.reset(nullptr);
-    const char *dummyKernelSources[] = {"kernel void _(){}"}; // if detected - should trigger fallback to CTNI
-    size_t knownSourceSize = strlen(dummyKernelSources[0]);
+    rootDeviceEnvironment->ailConfiguration.reset(new MockAIL());
 
-    auto pProgram = Program::create<MockProgram>(
+    ASSERT_FALSE(pContext->checkIfContextIsNonZebin());
+
+    const char *kernelSources[] = {"some source code"};
+    size_t knownSourceSize = strlen(kernelSources[0]);
+    MockProgram *pProgram = nullptr;
+    pProgram = Program::create<SucceedingGenBinaryProgram>(
         pContext,
         1,
-        dummyKernelSources,
+        kernelSources,
         &knownSourceSize,
         retVal);
 
     ASSERT_NE(nullptr, pProgram);
     ASSERT_EQ(CL_SUCCESS, retVal);
 
-    EXPECT_FALSE(pProgram->getContext().checkIfContextIsNonZebin());
+    retVal = pProgram->build(pProgram->getDevices(), "");
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_TRUE(pContext->checkIfContextIsNonZebin());
     pProgram->release();
 }
 
@@ -745,38 +757,6 @@ TEST_F(MinimumProgramFixture, givenApplicationContextMarkedAsNonZebinWhenBuildin
     retVal = pProgram->build(pProgram->getDevices(), "");
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_TRUE(CompilerOptions::contains(cip->buildInternalOptions, CompilerOptions::disableZebin));
-    pProgram->release();
-}
-
-HWTEST2_F(MinimumProgramFixture, givenAILReturningTrueForFallbackRequirementWhenBuildingProgramThenMarkContextAsNonZebin, IsAtLeastSkl) {
-    class MockAIL : public AILConfigurationHw<productFamily> {
-      public:
-        bool isFallbackToPatchtokensRequired(const std::string &kernelSources) override {
-            return true;
-        }
-    };
-    auto pDevice = pContext->getDevice(0);
-    auto rootDeviceEnvironment = pDevice->getExecutionEnvironment()->rootDeviceEnvironments[rootDeviceIndex].get();
-    rootDeviceEnvironment->ailConfiguration.reset(new MockAIL());
-
-    ASSERT_FALSE(pContext->checkIfContextIsNonZebin());
-
-    const char *kernelSources[] = {"some source code"};
-    size_t knownSourceSize = strlen(kernelSources[0]);
-    MockProgram *pProgram = nullptr;
-    pProgram = Program::create<SucceedingGenBinaryProgram>(
-        pContext,
-        1,
-        kernelSources,
-        &knownSourceSize,
-        retVal);
-
-    ASSERT_NE(nullptr, pProgram);
-    ASSERT_EQ(CL_SUCCESS, retVal);
-
-    retVal = pProgram->build(pProgram->getDevices(), "");
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_TRUE(pContext->checkIfContextIsNonZebin());
     pProgram->release();
 }
 
@@ -1479,7 +1459,7 @@ class PatchTokenFromBinaryTest : public ProgramSimpleFixture {
 using PatchTokenTests = Test<PatchTokenFromBinaryTest>;
 
 TEST_F(PatchTokenTests, WhenBuildingProgramThenGwsIsSet) {
-    createProgramFromBinary(pContext, pContext->getDevices(), "kernel_data_param");
+    createProgramFromBinary(pContext, pContext->getDevices(), "simple_kernels");
 
     ASSERT_NE(nullptr, pProgram);
     retVal = pProgram->build(
@@ -1488,7 +1468,7 @@ TEST_F(PatchTokenTests, WhenBuildingProgramThenGwsIsSet) {
 
     ASSERT_EQ(CL_SUCCESS, retVal);
 
-    auto pKernelInfo = pProgram->getKernelInfo("test", rootDeviceIndex);
+    auto pKernelInfo = pProgram->getKernelInfo("test_get_global_size", rootDeviceIndex);
 
     ASSERT_NE(static_cast<uint32_t>(-1), pKernelInfo->kernelDescriptor.payloadMappings.dispatchTraits.globalWorkSize[0]);
     ASSERT_NE(static_cast<uint32_t>(-1), pKernelInfo->kernelDescriptor.payloadMappings.dispatchTraits.globalWorkSize[1]);
@@ -1498,7 +1478,7 @@ TEST_F(PatchTokenTests, WhenBuildingProgramThenGwsIsSet) {
 TEST_F(PatchTokenTests, WhenBuildingProgramThenConstantKernelArgsAreAvailable) {
     // PATCH_TOKEN_STATELESS_CONSTANT_MEMORY_OBJECT_KERNEL_ARGUMENT
 
-    createProgramFromBinary(pContext, pContext->getDevices(), "test_basic_constant");
+    createProgramFromBinary(pContext, pContext->getDevices(), "simple_kernels");
 
     ASSERT_NE(nullptr, pProgram);
     retVal = pProgram->build(
@@ -1750,7 +1730,7 @@ HWTEST2_F(ProgramTests, givenDebugFlagSetForceAllResourcesUncachedWhenGetInterna
     debugManager.flags.ForceAllResourcesUncached.set(true);
     MockProgram program(pContext, false, toClDeviceVector(*pClDevice));
     auto internalOptions = program.getInternalOptions();
-    EXPECT_TRUE(CompilerOptions::contains(internalOptions, "-cl-store-cache-default=1 -cl-load-cache-default=1"));
+    EXPECT_TRUE(CompilerOptions::contains(internalOptions, "-cl-store-cache-default=2 -cl-load-cache-default=2"));
 }
 
 HWTEST2_F(ProgramTests, givenAtLeastXeHpgCoreWhenGetInternalOptionsThenCorrectBuildOptionIsSet, IsAtLeastXeHpgCore) {
@@ -2130,21 +2110,26 @@ TEST_F(ProgramTests, GivenNullContextWhenCreatingProgramFromGenBinaryThenSuccess
     delete pProgram;
 }
 
-TEST_F(ProgramTests, whenCreatingFromZebinThenAppendEnableZebinFlagToBuildOptions) {
+TEST_F(ProgramTests, whenCreatingFromZebinThenDontAppendEnableZebinFlagToBuildOptions) {
     if (sizeof(void *) != 8U) {
         GTEST_SKIP();
     }
 
+    auto copyHwInfo = *defaultHwInfo;
+    MockExecutionEnvironment mockExecutionEnvironment{};
+    auto &compilerProductHelper = mockExecutionEnvironment.rootDeviceEnvironments[0]->getHelper<CompilerProductHelper>();
+    compilerProductHelper.adjustHwInfoForIgc(copyHwInfo);
+
     ZebinTestData::ValidEmptyProgram zebin;
-    zebin.elfHeader->machine = defaultHwInfo->platform.eProductFamily;
+    zebin.elfHeader->machine = copyHwInfo.platform.eProductFamily;
 
     auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr, mockRootDeviceIndex));
     auto program = std::make_unique<MockProgram>(toClDeviceVector(*device));
     cl_int retVal = program->createProgramFromBinary(zebin.storage.data(), zebin.storage.size(), *device);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
-    auto expectedOptions = " " + NEO::CompilerOptions::enableZebin.str();
-    EXPECT_STREQ(expectedOptions.c_str(), program->options.c_str());
+    auto expectedOptions = "";
+    EXPECT_STREQ(expectedOptions, program->options.c_str());
 }
 
 TEST_F(ProgramTests, givenProgramFromGenBinaryWhenSLMSizeIsBiggerThenDeviceLimitThenPrintDebugMsgAndReturnError) {
@@ -2731,6 +2716,40 @@ TEST_F(ProgramTests, GivenInjectInternalBuildOptionsWhenBuildingBuiltInProgramTh
     EXPECT_FALSE(CompilerOptions::contains(cip->buildInternalOptions, "-abc")) << cip->buildInternalOptions;
 }
 
+TEST_F(ProgramTests, GivenAilWithHandleDivergentBarriersSetTrueOptionsWhenCompilingProgramThenInternalOptionsWereAppended) {
+    auto cip = new MockCompilerInterfaceCaptureBuildOptions();
+    auto pDevice = pContext->getDevice(0);
+    pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->ailConfiguration.get());
+    mockAIL->setHandleDivergentBarriers(true);
+    pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->compilerInterface.reset(cip);
+    auto program = std::make_unique<SucceedingGenBinaryProgram>(toClDeviceVector(*pDevice));
+    program->sourceCode = "__kernel mock() {}";
+    program->createdFrom = Program::CreatedFrom::source;
+
+    cl_int retVal = program->build(program->getDevices(), "");
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_TRUE(CompilerOptions::contains(cip->buildInternalOptions, CompilerOptions::enableDivergentBarriers)) << cip->buildInternalOptions;
+}
+
+TEST_F(ProgramTests, GivenAilWithHandleDivergentBarriersSetFalseOptionsWhenCompilingProgramThenInternalOptionsWereAppended) {
+    auto cip = new MockCompilerInterfaceCaptureBuildOptions();
+    auto pDevice = pContext->getDevice(0);
+    pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->ailConfiguration.reset(new MockAILConfiguration());
+    auto mockAIL = static_cast<MockAILConfiguration *>(pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->ailConfiguration.get());
+    mockAIL->setHandleDivergentBarriers(false);
+    pDevice->getExecutionEnvironment()->rootDeviceEnvironments[pDevice->getRootDeviceIndex()]->compilerInterface.reset(cip);
+    auto program = std::make_unique<SucceedingGenBinaryProgram>(toClDeviceVector(*pDevice));
+    program->sourceCode = "__kernel mock() {}";
+    program->createdFrom = Program::CreatedFrom::source;
+
+    cl_int retVal = program->build(program->getDevices(), "");
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_FALSE(CompilerOptions::contains(cip->buildInternalOptions, CompilerOptions::enableDivergentBarriers)) << cip->buildInternalOptions;
+}
+
 TEST_F(ProgramTests, GivenInjectInternalBuildOptionsWhenCompilingProgramThenInternalOptionsWereAppended) {
     DebugManagerStateRestore dbgRestorer;
     debugManager.flags.InjectInternalBuildOptions.set("-abc");
@@ -2904,6 +2923,50 @@ TEST(CreateProgramFromBinaryTests, givenBinaryProgramNotBuiltInWhenBuiltInKernel
     EXPECT_EQ(0U, pProgram->buildInfos[rootDeviceIndex].packedDeviceBinarySize);
 }
 
+TEST(CreateProgramFromBinaryTests, givenBinaryWithBindlessKernelWhenCreateProgramFromBinaryThenDeviceBinaryIsNotUsedAndRebuildIsRequired) {
+    std::string validZeInfo = std::string("version :\'") + versionToString(NEO::Zebin::ZeInfo::zeInfoDecoderVersion) + R"===('
+kernels:
+    - name : kernel_bindless
+      execution_env:
+        simd_size: 8
+      payload_arguments:
+        - arg_type:        arg_bypointer
+          offset:          0
+          size:            4
+          arg_index:       0
+          addrmode:        bindless
+          addrspace:       global
+          access_type:     readwrite
+...
+)===";
+
+    uint8_t kernelIsa[8]{0U};
+    ZebinTestData::ValidEmptyProgram zebin;
+    zebin.removeSection(NEO::Zebin::Elf::SectionHeaderTypeZebin::SHT_ZEBIN_ZEINFO, NEO::Zebin::Elf::SectionNames::zeInfo);
+    zebin.appendSection(NEO::Zebin::Elf::SectionHeaderTypeZebin::SHT_ZEBIN_ZEINFO, NEO::Zebin::Elf::SectionNames::zeInfo, ArrayRef<const uint8_t>::fromAny(validZeInfo.data(), validZeInfo.size()));
+    zebin.appendSection(NEO::Elf::SHT_PROGBITS, NEO::Zebin::Elf::SectionNames::textPrefix.str() + "kernel_bindless", {kernelIsa, sizeof(kernelIsa)});
+    constexpr auto mockSpirvDataSize = 0x10;
+    uint8_t mockSpirvData[mockSpirvDataSize]{0};
+    zebin.appendSection(Elf::SHT_OPENCL_SPIRV, Elf::SectionNamesOpenCl::spirvObject, ArrayRef<const uint8_t>::fromAny(mockSpirvData, mockSpirvDataSize));
+    zebin.elfHeader->machine = NEO::defaultHwInfo->platform.eProductFamily;
+
+    cl_int retVal = CL_INVALID_BINARY;
+
+    auto clDevice = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    std::unique_ptr<MockProgram> pProgram(Program::createBuiltInFromGenBinary<MockProgram>(nullptr, toClDeviceVector(*clDevice), zebin.storage.data(), zebin.storage.size(), &retVal));
+    ASSERT_NE(nullptr, pProgram.get());
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    auto rootDeviceIndex = clDevice->getRootDeviceIndex();
+    retVal = pProgram->createProgramFromBinary(zebin.storage.data(), zebin.storage.size(), *clDevice);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pProgram->buildInfos[rootDeviceIndex].unpackedDeviceBinary.get());
+    EXPECT_EQ(0U, pProgram->buildInfos[rootDeviceIndex].unpackedDeviceBinarySize);
+    EXPECT_EQ(nullptr, pProgram->buildInfos[rootDeviceIndex].packedDeviceBinary);
+    EXPECT_EQ(0U, pProgram->buildInfos[rootDeviceIndex].packedDeviceBinarySize);
+    ASSERT_TRUE(pProgram->requiresRebuild);
+}
+
 TEST(CreateProgramFromBinaryTests, givenBinaryProgramWhenKernelRebulildIsNotForcedThenDeviceBinaryIsUsed) {
     cl_int retVal = CL_INVALID_BINARY;
 
@@ -3033,7 +3096,7 @@ TEST_F(ProgramBinTest, givenPrintProgramBinaryProcessingTimeSetWhenBuildProgramT
     debugManager.flags.PrintProgramBinaryProcessingTime.set(true);
     testing::internal::CaptureStdout();
 
-    createProgramFromBinary(pContext, pContext->getDevices(), "kernel_data_param");
+    createProgramFromBinary(pContext, pContext->getDevices(), "simple_kernels");
 
     auto retVal = pProgram->build(
         pProgram->getDevices(),
@@ -3452,14 +3515,14 @@ TEST(ProgramInternalOptionsTests, givenProgramWhenPossibleInternalOptionsChecked
     MockClDevice device{new MockDevice()};
     MockProgram program(toClDeviceVector(device));
     auto &optsToExtract = program.internalOptionsToExtract;
-    EXPECT_EQ(1U, std::count(optsToExtract.begin(), optsToExtract.end(), CompilerOptions::largeGrf));
+    EXPECT_EQ(1, std::count(optsToExtract.begin(), optsToExtract.end(), CompilerOptions::largeGrf));
 }
 
 TEST(ProgramInternalOptionsTests, givenProgramWhenPossibleInternalOptionsCheckedThenDefaultGRFOptionIsPresent) {
     MockClDevice device{new MockDevice()};
     MockProgram program(toClDeviceVector(device));
     auto &optsToExtract = program.internalOptionsToExtract;
-    EXPECT_EQ(1U, std::count(optsToExtract.begin(), optsToExtract.end(), CompilerOptions::defaultGrf));
+    EXPECT_EQ(1, std::count(optsToExtract.begin(), optsToExtract.end(), CompilerOptions::defaultGrf));
 }
 
 TEST(ProgramInternalOptionsTests, givenProgramWhenPossibleInternalOptionsCheckedThenNumThreadsPerUsIsPresent) {
@@ -3601,28 +3664,10 @@ TEST(ProgramVmeUsage, givenVmeOptionsWhenDisableZebinIfVmeEnabledIsCalledThenZeb
     MockProgram program(toClDeviceVector(device));
 
     {
-        std::string options = CompilerOptions::enableZebin.str();
+        std::string options = "";
         std::string internalOptions = "";
         program.disableZebinIfVmeEnabled(options, internalOptions, "");
-        EXPECT_TRUE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
-        EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
-    }
-
-    {
-        std::string options = CompilerOptions::enableZebin.str() + " cl_intel_device_side_vme_enable";
-        std::string internalOptions = "";
-        debugManager.flags.DontDisableZebinIfVmeUsed = false;
-        program.disableZebinIfVmeEnabled(options, internalOptions, "");
-        EXPECT_FALSE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
-        EXPECT_TRUE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
-    }
-    {
-
-        std::string options = CompilerOptions::enableZebin.str() + " cl_intel_device_side_vme_enable";
-        std::string internalOptions = "";
-        debugManager.flags.DontDisableZebinIfVmeUsed = true;
-        program.disableZebinIfVmeEnabled(options, internalOptions, "");
-        EXPECT_TRUE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+        EXPECT_TRUE(options.empty());
         EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
     }
     {
@@ -3630,7 +3675,7 @@ TEST(ProgramVmeUsage, givenVmeOptionsWhenDisableZebinIfVmeEnabledIsCalledThenZeb
         std::string internalOptions = "";
         debugManager.flags.DontDisableZebinIfVmeUsed = false;
         program.disableZebinIfVmeEnabled(options, internalOptions, "");
-        EXPECT_FALSE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+        EXPECT_STREQ(options.c_str(), "cl_intel_device_side_vme_enable");
         EXPECT_TRUE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
     }
     {
@@ -3638,7 +3683,7 @@ TEST(ProgramVmeUsage, givenVmeOptionsWhenDisableZebinIfVmeEnabledIsCalledThenZeb
         std::string internalOptions = "";
         debugManager.flags.DontDisableZebinIfVmeUsed = true;
         program.disableZebinIfVmeEnabled(options, internalOptions, "");
-        EXPECT_FALSE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+        EXPECT_STREQ(options.c_str(), "cl_intel_device_side_vme_enable");
         EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
     }
 }
@@ -3649,20 +3694,20 @@ TEST(ProgramVmeUsage, givenVmeExtensionsEnabledInSourceCodeWhenDisableZebinIfVme
     MockProgram program(toClDeviceVector(device));
 
     {
-        std::string options = CompilerOptions::enableZebin.str();
+        std::string options = "";
         std::string internalOptions = "";
         std::string sourceCode = "cl_intel_motion_estimation";
         program.disableZebinIfVmeEnabled(options, internalOptions, sourceCode);
-        EXPECT_TRUE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+        EXPECT_TRUE(options.empty());
         EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
     }
 
     {
-        std::string options = CompilerOptions::enableZebin.str();
+        std::string options = "";
         std::string internalOptions = "";
         std::string sourceCode = "cl_intel_motion_estimation : disable";
         program.disableZebinIfVmeEnabled(options, internalOptions, sourceCode);
-        EXPECT_TRUE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+        EXPECT_TRUE(options.empty());
         EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
     }
 
@@ -3675,20 +3720,20 @@ TEST(ProgramVmeUsage, givenVmeExtensionsEnabledInSourceCodeWhenDisableZebinIfVme
         std::string sourceCode = extension;
 
         {
-            std::string options = CompilerOptions::enableZebin.str();
+            std::string options = "";
             std::string internalOptions = "";
             debugManager.flags.DontDisableZebinIfVmeUsed = false;
             program.disableZebinIfVmeEnabled(options, internalOptions, sourceCode);
-            EXPECT_FALSE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+            EXPECT_TRUE(options.empty());
             EXPECT_TRUE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
         }
 
         {
-            std::string options = CompilerOptions::enableZebin.str();
+            std::string options = "";
             std::string internalOptions = "";
             debugManager.flags.DontDisableZebinIfVmeUsed = true;
             program.disableZebinIfVmeEnabled(options, internalOptions, sourceCode);
-            EXPECT_TRUE(CompilerOptions::contains(options, CompilerOptions::enableZebin));
+            EXPECT_TRUE(options.empty());
             EXPECT_FALSE(CompilerOptions::contains(internalOptions, CompilerOptions::disableZebin));
         }
     }
@@ -3936,7 +3981,7 @@ TEST_P(ProgramGenerateDefaultArgsMetadataImagesTest, whenGeneratingDefaultMetada
     buildInfo.unpackedDeviceBinary.release();
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     ProgramGenerateDefaultArgsMetadataImagesTestValues,
     ProgramGenerateDefaultArgsMetadataImagesTest,
     ::testing::ValuesIn(imgTypes));

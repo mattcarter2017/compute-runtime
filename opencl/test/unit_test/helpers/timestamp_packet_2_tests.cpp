@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -69,8 +69,56 @@ class MockCommandStreamReceiverHW : public UltCommandStreamReceiver<FamilyType> 
             dispatchFlags,
             device);
     }
+
+    CompletionStamp flushTaskStateless(
+        LinearStream &commandStream,
+        size_t commandStreamStart,
+        const IndirectHeap *dsh,
+        const IndirectHeap *ioh,
+        const IndirectHeap *ssh,
+        TaskCountType taskLevel,
+        DispatchFlags &dispatchFlags,
+        Device &device) override {
+        stream = &commandStream;
+        return UltCommandStreamReceiver<FamilyType>::flushTaskStateless(
+            commandStream,
+            commandStreamStart,
+            dsh,
+            ioh,
+            ssh,
+            taskLevel,
+            dispatchFlags,
+            device);
+    }
     LinearStream *stream = nullptr;
 };
+
+HWTEST_F(TimestampPacketTests, givenEmptyWaitlistAndEventWheBarrierProfilingEnabledThenPipeControlAddedBeforeWritingTimestamp) {
+    using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    auto commandStreamReceiver = std::make_unique<MockCommandStreamReceiverHW<FamilyType>>(*device->getExecutionEnvironment(), device->getRootDeviceIndex(), device->getDeviceBitfield());
+    auto commandStreamReceiverPtr = commandStreamReceiver.get();
+    commandStreamReceiver->timestampPacketWriteEnabled = true;
+    device->resetCommandStreamReceiver(commandStreamReceiver.release());
+
+    auto cmdQ = clUniquePtr(new MockCommandQueueHw<FamilyType>(context, device.get(), nullptr));
+    cmdQ->setProfilingEnabled();
+
+    cl_event event;
+    cmdQ->enqueueBarrierWithWaitList(0, nullptr, &event);
+
+    HardwareParse hwParser;
+    hwParser.parseCommands<FamilyType>(*(commandStreamReceiverPtr->stream), 0);
+    GenCmdList storeRegMemList = hwParser.getCommandsList<MI_STORE_REGISTER_MEM>();
+    EXPECT_EQ(0u, storeRegMemList.size() % 4u);
+    auto storeRegMemIt = find<MI_STORE_REGISTER_MEM *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
+    EXPECT_NE(storeRegMemIt, hwParser.cmdList.end());
+    auto pipeControlIt = find<PIPE_CONTROL *>(hwParser.cmdList.begin(), storeRegMemIt);
+    EXPECT_NE(storeRegMemIt, pipeControlIt);
+    EXPECT_NE(hwParser.cmdList.end(), pipeControlIt);
+
+    clReleaseEvent(event);
+}
 
 HWTEST_F(TimestampPacketTests, givenEmptyWaitlistAndEventWhenMarkerProfilingEnabledThenPipeControlAddedBeforeWritingTimestamp) {
     using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
@@ -89,7 +137,7 @@ HWTEST_F(TimestampPacketTests, givenEmptyWaitlistAndEventWhenMarkerProfilingEnab
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(*(commandStreamReceiverPtr->stream), 0);
     GenCmdList storeRegMemList = hwParser.getCommandsList<MI_STORE_REGISTER_MEM>();
-    EXPECT_EQ(4u, storeRegMemList.size());
+    EXPECT_EQ(0u, storeRegMemList.size() % 4u);
     auto storeRegMemIt = find<MI_STORE_REGISTER_MEM *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
     EXPECT_NE(storeRegMemIt, hwParser.cmdList.end());
     auto pipeControlIt = find<PIPE_CONTROL *>(hwParser.cmdList.begin(), storeRegMemIt);
@@ -125,7 +173,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, TimestampPacketTests, givenEmptyWaitlistAndEventWhe
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(*(commandStreamReceiverPtr->stream), 0);
     GenCmdList storeRegMemList = hwParser.getCommandsList<MI_STORE_REGISTER_MEM>();
-    EXPECT_EQ(4u, storeRegMemList.size());
+    EXPECT_EQ(0u, storeRegMemList.size() % 4u);
     auto storeRegMemIt = find<MI_STORE_REGISTER_MEM *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
     EXPECT_NE(storeRegMemIt, hwParser.cmdList.end());
     GenCmdList::reverse_iterator rItorStoreRegMemIt(storeRegMemIt);
@@ -392,7 +440,12 @@ HWTEST_F(TimestampPacketTests, givenPipeControlRequestWhenFlushingThenProgramPip
 
     auto pipeControl = genCmdCast<typename FamilyType::PIPE_CONTROL *>(*hwParser.pipeControlList.begin());
     ASSERT_NE(nullptr, pipeControl);
-    EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION::POST_SYNC_OPERATION_NO_WRITE, pipeControl->getPostSyncOperation());
+
+    if (cmdQ.heaplessStateInitEnabled) {
+        EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, pipeControl->getPostSyncOperation());
+    } else {
+        EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION::POST_SYNC_OPERATION_NO_WRITE, pipeControl->getPostSyncOperation());
+    }
     EXPECT_TRUE(pipeControl->getCommandStreamerStallEnable());
 
     cmdQ.enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, nullptr);

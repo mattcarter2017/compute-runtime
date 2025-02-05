@@ -5,6 +5,7 @@
  *
  */
 
+#include "shared/source/ail/ail_configuration.h"
 #include "shared/source/aub/aub_helper.h"
 #include "shared/source/command_container/command_encoder.h"
 #include "shared/source/command_container/implicit_scaling.h"
@@ -54,37 +55,21 @@ bool GfxCoreHelperHw<GfxFamily>::timestampPacketWriteSupported() const {
 
 template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::isTimestampWaitSupportedForQueues() const {
-    return false;
+    return true;
 }
 
 template <typename GfxFamily>
-const EngineInstancesContainer GfxCoreHelperHw<GfxFamily>::getGpgpuEngineInstances(const RootDeviceEnvironment &rootDeviceEnvironment) const {
-    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
-    auto defaultEngine = getChosenEngineType(hwInfo);
-
-    EngineInstancesContainer engines;
-
-    if (hwInfo.featureTable.flags.ftrCCSNode) {
-        for (uint32_t i = 0; i < hwInfo.gtSystemInfo.CCSInfo.NumberOfCCSEnabled; i++) {
-            engines.push_back({static_cast<aub_stream::EngineType>(i + aub_stream::ENGINE_CCS), EngineUsage::regular});
-        }
+uint32_t GfxCoreHelperHw<GfxFamily>::getAmountOfAllocationsToFill() const {
+    if (debugManager.flags.SetAmountOfReusableAllocations.get() != -1) {
+        return debugManager.flags.SetAmountOfReusableAllocations.get();
     }
+    return 1u;
+}
 
-    if ((debugManager.flags.NodeOrdinal.get() == static_cast<int32_t>(aub_stream::EngineType::ENGINE_RCS)) ||
-        hwInfo.featureTable.flags.ftrRcsNode) {
-        engines.push_back({aub_stream::ENGINE_RCS, EngineUsage::regular});
-    }
-
-    engines.push_back({defaultEngine, EngineUsage::lowPriority});
-    engines.push_back({defaultEngine, EngineUsage::internal});
-
-    if (hwInfo.capabilityTable.blitterOperationsSupported && hwInfo.featureTable.ftrBcsInfo.test(0)) {
-        engines.push_back({aub_stream::ENGINE_BCS, EngineUsage::regular});
-        engines.push_back({aub_stream::ENGINE_BCS, EngineUsage::internal}); // internal usage
-    }
-
-    return engines;
-};
+template <typename GfxFamily>
+bool GfxCoreHelperHw<GfxFamily>::makeResidentBeforeLockNeeded(bool precondition) const {
+    return true;
+}
 
 template <typename GfxFamily>
 EngineGroupType GfxCoreHelperHw<GfxFamily>::getEngineGroupType(aub_stream::EngineType engineType, EngineUsage engineUsage, const HardwareInfo &hwInfo) const {
@@ -121,7 +106,7 @@ inline uint32_t GfxCoreHelperHw<GfxFamily>::calculateMaxWorkGroupSize(const Kern
     if (kernelDescriptor.kernelAttributes.simdSize != 32 && kernelDescriptor.kernelAttributes.numGrfRequired == GrfConfig::largeGrfNumber) {
         defaultMaxGroupSize >>= 1;
     }
-    return defaultMaxGroupSize;
+    return std::min(defaultMaxGroupSize, CommonConstants::maxWorkgroupSize);
 }
 
 constexpr uint32_t planarYuvMaxHeight = 16128;
@@ -165,7 +150,7 @@ bool GfxCoreHelperHw<GfxFamily>::isScratchSpaceSurfaceStateAccessible() const {
     return true;
 }
 template <typename GfxFamily>
-uint32_t GfxCoreHelperHw<GfxFamily>::getMaxScratchSize() const {
+uint32_t GfxCoreHelperHw<GfxFamily>::getMaxScratchSize(const NEO::ProductHelper &productHelper) const {
     return 256 * MemoryConstants::kiloByte;
 }
 
@@ -194,14 +179,9 @@ bool GfxCoreHelperHw<Family>::isChipsetUniqueUUIDSupported() const {
     return true;
 }
 
-template <>
-bool GfxCoreHelperHw<Family>::largeGrfModeSupported() const {
-    return true;
-}
-
 template <typename GfxFamily>
 uint32_t GfxCoreHelperHw<GfxFamily>::getKernelPrivateMemSize(const KernelDescriptor &kernelDescriptor) const {
     const auto &kernelAttributes = kernelDescriptor.kernelAttributes;
-    return (kernelAttributes.perThreadScratchSize[1] > 0) ? kernelAttributes.perThreadScratchSize[1] : kernelAttributes.perHwThreadPrivateMemorySize;
+    return (kernelAttributes.privateScratchMemorySize > 0) ? kernelAttributes.privateScratchMemorySize : kernelAttributes.perHwThreadPrivateMemorySize;
 }
 } // namespace NEO

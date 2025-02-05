@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019-2024 Intel Corporation
+# Copyright (C) 2019-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -40,28 +40,30 @@ set(NEO_CORE_OS_INTERFACE_LINUX
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_memory_operations_handler_default.h
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_memory_operations_handler_with_aub_dump.h
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_memory_manager_create_multi_host_allocation.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/drm_version.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_wrappers_checks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_wrappers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/drm_wrappers.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/external_semaphore_linux.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/product_helper_drm.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/file_descriptor.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/gmm_helper_linux.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/hw_device_id.h
     ${CMAKE_CURRENT_SOURCE_DIR}/hw_device_id_linux.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/kmd_notify_properties_linux.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/linux_inc.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/i915.h
     ${CMAKE_CURRENT_SOURCE_DIR}/i915_prelim.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/i915_upstream.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_i915.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_prelim.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}ioctl_helper_getter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_getter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_upstream.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine_info.h
     ${CMAKE_CURRENT_SOURCE_DIR}/engine_info.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_info.h
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_info.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}memory_info_populate_tile_to_lmem_region_map.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/numa_library.h
     ${CMAKE_CURRENT_SOURCE_DIR}/numa_library.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/os_context_linux.cpp
@@ -120,23 +122,12 @@ else()
   )
 endif()
 
-if("${BRANCH_TYPE}" STREQUAL "")
+if(NOT NEO_ENABLE_I915_PRELIM_DETECTION)
   list(APPEND NEO_CORE_OS_INTERFACE_LINUX
-       ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_upstream.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_getter_upstream.cpp
   )
-  if(NOT NEO_ENABLE_i915_PRELIM_DETECTION)
-    list(APPEND NEO_CORE_OS_INTERFACE_LINUX
-         ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_getter_upstream.cpp
-    )
-    list(REMOVE_ITEM NEO_CORE_OS_INTERFACE_LINUX
-         ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_getter.cpp
-    )
-  endif()
-endif()
-
-if(NEO_ENABLE_XE_DRM_DETECTION)
   list(REMOVE_ITEM NEO_CORE_OS_INTERFACE_LINUX
-       ${CMAKE_CURRENT_SOURCE_DIR}/drm_version.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/ioctl_helper_getter.cpp
   )
 endif()
 

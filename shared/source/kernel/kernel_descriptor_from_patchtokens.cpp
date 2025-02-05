@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -58,7 +58,6 @@ void populateKernelDescriptor(KernelDescriptor &dst, const SPatchExecutionEnviro
     dst.kernelAttributes.flags.requiresDisabledEUFusion = (0 != execEnv.RequireDisableEUFusion);
     dst.kernelAttributes.flags.requiresDisabledMidThreadPreemption = (0 != execEnv.DisableMidThreadPreemption);
     dst.kernelAttributes.flags.requiresSubgroupIndependentForwardProgress = (0 != execEnv.SubgroupIndependentForwardProgressRequired);
-    dst.kernelAttributes.flags.useGlobalAtomics = (0 != execEnv.HasGlobalAtomics);
     dst.kernelAttributes.flags.usesFencesForReadWriteImages = (0 != execEnv.UsesFencesForReadWriteImages);
     dst.kernelAttributes.flags.usesSystolicPipelineSelectMode = (0 != execEnv.HasDPAS);
     dst.kernelAttributes.flags.usesStatelessWrites = (0 != execEnv.StatelessWritesCount);
@@ -88,6 +87,11 @@ void populateKernelDescriptor(KernelDescriptor &dst, const SPatchAllocateLocalSu
 void populateKernelDescriptor(KernelDescriptor &dst, const SPatchMediaVFEState &token, uint32_t slot) {
     UNRECOVERABLE_IF(slot >= 2U);
     dst.kernelAttributes.perThreadScratchSize[slot] = token.PerThreadScratchSpace;
+    if (slot == 0) {
+        dst.kernelAttributes.spillFillScratchMemorySize = token.PerThreadScratchSpace;
+    } else if (slot == 1) {
+        dst.kernelAttributes.privateScratchMemorySize = token.PerThreadScratchSpace;
+    }
 }
 
 void populateKernelDescriptor(KernelDescriptor &dst, const SPatchThreadPayload &token) {
@@ -178,10 +182,6 @@ void populateKernelDescriptor(KernelDescriptor &dst, const SPatchAllocateStatele
     dst.kernelAttributes.flags.usesPrintf = true;
     dst.kernelAttributes.flags.usesStringMapForPrintf = true;
     populatePointerKernelArg(dst, dst.payloadMappings.implicitArgs.printfSurfaceAddress, token, dst.kernelAttributes.bufferAddressingMode);
-}
-
-void populateKernelDescriptor(KernelDescriptor &dst, const SPatchAllocateStatelessEventPoolSurface &token) {
-    populatePointerKernelArg(dst, dst.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress, token, dst.kernelAttributes.bufferAddressingMode);
 }
 
 void populateKernelDescriptor(KernelDescriptor &dst, const SPatchAllocateStatelessDefaultDeviceQueueSurface &token) {
@@ -474,7 +474,6 @@ void populateKernelDescriptor(KernelDescriptor &dst, const PatchTokenBinary::Ker
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateStatelessConstantMemorySurfaceWithInitialization);
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateStatelessGlobalMemorySurfaceWithInitialization);
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateStatelessPrintfSurface);
-    populateKernelDescriptorIfNotNull(dst, src.tokens.allocateStatelessEventPoolSurface);
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateStatelessDefaultDeviceQueueSurface);
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateSyncBuffer);
     populateKernelDescriptorIfNotNull(dst, src.tokens.allocateRTGlobalBuffer);

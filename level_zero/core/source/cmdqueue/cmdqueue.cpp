@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,6 +28,7 @@
 #include "level_zero/core/source/device/device_imp.h"
 #include "level_zero/core/source/driver/driver_handle_imp.h"
 #include "level_zero/core/source/gfx_core_helpers/l0_gfx_core_helper.h"
+#include "level_zero/core/source/helpers/properties_parser.h"
 #include "level_zero/core/source/kernel/kernel.h"
 
 #include "igfxfmid.h"
@@ -72,7 +73,6 @@ ze_result_t CommandQueueImp::destroy() {
 ze_result_t CommandQueueImp::initialize(bool copyOnly, bool isInternal, bool immediateCmdListQueue) {
     ze_result_t returnValue;
     internalUsage = isInternal;
-    internalQueueForImmediateCommandList = immediateCmdListQueue;
     returnValue = buffers.initialize(device, totalCmdBufferSize);
     if (returnValue == ZE_RESULT_SUCCESS) {
         NEO::GraphicsAllocation *bufferAllocation = buffers.getCurrentBufferAllocation();
@@ -101,6 +101,7 @@ ze_result_t CommandQueueImp::initialize(bool copyOnly, bool isInternal, bool imm
         this->dispatchCmdListBatchBufferAsPrimary = L0GfxCoreHelper::dispatchCmdListBatchBufferAsPrimary(rootDeviceEnvironment, !immediateCmdListQueue);
         auto &compilerProductHelper = rootDeviceEnvironment.getHelper<NEO::CompilerProductHelper>();
         this->heaplessModeEnabled = compilerProductHelper.isHeaplessModeEnabled();
+        this->heaplessStateInitEnabled = compilerProductHelper.isHeaplessStateInitEnabled(this->heaplessModeEnabled);
     }
     return returnValue;
 }
@@ -125,8 +126,8 @@ NEO::SubmissionStatus CommandQueueImp::submitBatchBuffer(size_t offset, NEO::Res
     UNRECOVERABLE_IF(csr == nullptr);
 
     NEO::BatchBuffer batchBuffer(this->startingCmdBuffer->getGraphicsAllocation(), offset, 0, 0, nullptr, false,
-                                 NEO::QueueThrottle::HIGH, NEO::QueueSliceCount::defaultSliceCount,
-                                 this->startingCmdBuffer->getUsed(), this->startingCmdBuffer, endingCmdPtr, csr->getNumClients(), true, false, true);
+                                 NEO::getThrottleFromPowerSavingUint(csr->getUmdPowerHintValue()), NEO::QueueSliceCount::defaultSliceCount,
+                                 this->startingCmdBuffer->getUsed(), this->startingCmdBuffer, endingCmdPtr, csr->getNumClients(), true, false, true, false);
     batchBuffer.disableFlatRingBuffer = true;
 
     if (this->startingCmdBuffer != &this->commandStream) {
@@ -165,18 +166,19 @@ ze_result_t CommandQueueImp::synchronize(uint64_t timeout) {
     }
 }
 
-ze_result_t CommandQueueImp::synchronizeByPollingForTaskCount(uint64_t timeout) {
+ze_result_t CommandQueueImp::synchronizeByPollingForTaskCount(uint64_t timeoutNanoseconds) {
     UNRECOVERABLE_IF(csr == nullptr);
 
     auto taskCountToWait = getTaskCount();
     bool enableTimeout = true;
-    int64_t timeoutMicroseconds = static_cast<int64_t>(timeout);
-    if (timeout == std::numeric_limits<uint64_t>::max()) {
+    auto microsecondResolution = device->getNEODevice()->getMicrosecondResolution();
+    int64_t timeoutMicroseconds = static_cast<int64_t>(timeoutNanoseconds / microsecondResolution);
+    if (timeoutNanoseconds == std::numeric_limits<uint64_t>::max()) {
         enableTimeout = false;
         timeoutMicroseconds = NEO::TimeoutControls::maxTimeout;
     }
 
-    const auto waitStatus = csr->waitForCompletionWithTimeout(NEO::WaitParams{false, enableTimeout, timeoutMicroseconds}, taskCountToWait);
+    const auto waitStatus = csr->waitForCompletionWithTimeout(NEO::WaitParams{false, enableTimeout, false, timeoutMicroseconds}, taskCountToWait);
     if (waitStatus == NEO::WaitStatus::notReady) {
         return ZE_RESULT_NOT_READY;
     }
@@ -248,7 +250,7 @@ CommandQueue *CommandQueue::create(uint32_t productFamily, Device *device, NEO::
         osContext.reInitializeContext();
     }
 
-    csr->initializeResources();
+    csr->initializeResources(false, device->getDevicePreemptionMode());
     csr->initDirectSubmission();
     if (commandQueue->cmdListHeapAddressModel == NEO::HeapAddressModel::globalStateless) {
         csr->createGlobalStatelessHeap();
@@ -326,14 +328,9 @@ NEO::WaitStatus CommandQueueImp::CommandBufferManager::switchBuffers(NEO::Comman
 void CommandQueueImp::handleIndirectAllocationResidency(UnifiedMemoryControls unifiedMemoryControls, std::unique_lock<std::mutex> &lockForIndirect, bool performMigration) {
     NEO::Device *neoDevice = this->device->getNEODevice();
     auto svmAllocsManager = this->device->getDriverHandle()->getSvmAllocsManager();
-    auto submitAsPack = this->device->getDriverHandle()->getMemoryManager()->allowIndirectAllocationsAsPack(neoDevice->getRootDeviceIndex());
-    if (NEO::debugManager.flags.MakeIndirectAllocationsResidentAsPack.get() != -1) {
-        submitAsPack = !!NEO::debugManager.flags.MakeIndirectAllocationsResidentAsPack.get();
-    }
+    auto submittedAsPack = svmAllocsManager->submitIndirectAllocationsAsPack(*(this->csr));
 
-    if (submitAsPack) {
-        svmAllocsManager->makeIndirectAllocationsResident(*(this->csr), this->csr->peekTaskCount() + 1u);
-    } else {
+    if (!submittedAsPack) {
         lockForIndirect = this->device->getDriverHandle()->getSvmAllocsManager()->obtainOwnership();
         NEO::ResidencyContainer residencyAllocations;
         svmAllocsManager->addInternalAllocationsToResidencyContainer(neoDevice->getRootDeviceIndex(),
@@ -354,6 +351,38 @@ void CommandQueueImp::makeResidentAndMigrate(bool performMigration, const NEO::R
             pageFaultManager->moveAllocationToGpuDomain(reinterpret_cast<void *>(alloc->getGpuAddress()));
         }
     }
+}
+
+ze_result_t CommandQueueImp::getOrdinal(uint32_t *pOrdinal) {
+    *pOrdinal = desc.ordinal;
+    return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t CommandQueueImp::getIndex(uint32_t *pIndex) {
+    *pIndex = desc.index;
+    return ZE_RESULT_SUCCESS;
+}
+
+QueueProperties CommandQueue::extractQueueProperties(const ze_command_queue_desc_t &desc) {
+    QueueProperties queueProperties = {};
+
+    auto baseProperties = static_cast<const ze_base_desc_t *>(desc.pNext);
+
+    while (baseProperties) {
+        if (baseProperties->stype == ZEX_INTEL_STRUCTURE_TYPE_QUEUE_ALLOCATE_MSIX_HINT_EXP_PROPERTIES) { // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
+            queueProperties.interruptHint = static_cast<const zex_intel_queue_allocate_msix_hint_exp_desc_t *>(desc.pNext)->uniqueMsix;
+        } else if (auto syncDispatchMode = getSyncDispatchMode(baseProperties)) {
+            if (syncDispatchMode.has_value()) {
+                queueProperties.synchronizedDispatchMode = syncDispatchMode.value();
+            }
+        } else if (baseProperties->stype == ZEX_INTEL_STRUCTURE_TYPE_QUEUE_COPY_OPERATIONS_OFFLOAD_HINT_EXP_PROPERTIES) { // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange), NEO-12901
+            queueProperties.copyOffloadHint = static_cast<const zex_intel_queue_copy_operations_offload_hint_exp_desc_t *>(desc.pNext)->copyOffloadEnabled;
+        }
+
+        baseProperties = static_cast<const ze_base_desc_t *>(baseProperties->pNext);
+    }
+
+    return queueProperties;
 }
 
 } // namespace L0

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -59,10 +59,19 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
                               const IndirectHeap *dsh, const IndirectHeap *ioh, const IndirectHeap *ssh,
                               TaskCountType taskLevel, DispatchFlags &dispatchFlags, Device &device) override;
 
+    CompletionStamp flushTaskStateless(LinearStream &commandStream, size_t commandStreamStart,
+                                       const IndirectHeap *dsh, const IndirectHeap *ioh, const IndirectHeap *ssh,
+                                       TaskCountType taskLevel, DispatchFlags &dispatchFlags, Device &device) override;
+
+    void addPipeControlFlushTaskIfNeeded(LinearStream &commandStreamCSR, TaskCountType taskLevel);
+
     CompletionStamp flushBcsTask(LinearStream &commandStreamTask, size_t commandStreamTaskStart, const DispatchBcsFlags &dispatchBcsFlags, const HardwareInfo &hwInfo) override;
 
     CompletionStamp flushImmediateTask(LinearStream &immediateCommandStream, size_t immediateCommandStreamStart,
                                        ImmediateDispatchFlags &dispatchFlags, Device &device) override;
+
+    CompletionStamp flushImmediateTaskStateless(LinearStream &immediateCommandStream, size_t immediateCommandStreamStart,
+                                                ImmediateDispatchFlags &dispatchFlags, Device &device) override;
 
     void forcePipeControl(NEO::LinearStream &commandStreamCSR);
 
@@ -71,7 +80,7 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     size_t getCmdsSizeForHardwareContext() const override;
 
     static void addBatchBufferEnd(LinearStream &commandStream, void **patchLocation);
-    void programEndingCmd(LinearStream &commandStream, void **patchLocation, bool directSubmissionEnabled, bool hasRelaxedOrderingDependencies);
+    void programEndingCmd(LinearStream &commandStream, void **patchLocation, bool directSubmissionEnabled, bool hasRelaxedOrderingDependencies, bool isBcs);
     void addBatchBufferStart(MI_BATCH_BUFFER_START *commandBufferMemory, uint64_t startAddress, bool secondary);
 
     size_t getRequiredStateBaseAddressSize(const Device &device) const;
@@ -79,6 +88,10 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     size_t getRequiredCmdStreamSizeAligned(const DispatchFlags &dispatchFlags, Device &device);
     size_t getRequiredCmdStreamSize(const DispatchBcsFlags &dispatchBcsFlags);
     size_t getRequiredCmdStreamSizeAligned(const DispatchBcsFlags &dispatchBcsFlags);
+
+    size_t getRequiredCmdStreamHeaplessSize(const DispatchFlags &dispatchFlags, Device &device);
+    size_t getRequiredCmdStreamHeaplessSizeAligned(const DispatchFlags &dispatchFlags, Device &device);
+
     size_t getRequiredCmdSizeForPreamble(Device &device) const;
     size_t getCmdSizeForPreemption(const DispatchFlags &dispatchFlags) const;
     size_t getCmdSizeForEpilogue(const DispatchFlags &dispatchFlags) const;
@@ -114,17 +127,17 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     void resetKmdNotifyHelper(KmdNotifyHelper *newHelper);
 
     CommandStreamReceiverType getType() const override {
-        return CommandStreamReceiverType::CSR_HW;
+        return CommandStreamReceiverType::hardware;
     }
 
-    TaskCountType flushBcsTask(const BlitPropertiesContainer &blitPropertiesContainer, bool blocking, bool profilingEnabled, Device &device) override;
+    TaskCountType flushBcsTask(const BlitPropertiesContainer &blitPropertiesContainer, bool blocking, Device &device) override;
 
     SubmissionStatus flushTagUpdate() override;
-    SubmissionStatus flushMiFlushDW();
+    SubmissionStatus flushMiFlushDW(bool initializeProlog);
     SubmissionStatus flushPipeControl(bool stateCacheFlush);
     SubmissionStatus flushSmallTask(LinearStream &commandStreamTask,
                                     size_t commandStreamStartTask);
-    SubmissionStatus flushHandler(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency);
+    MOCKABLE_VIRTUAL SubmissionStatus flushHandler(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency);
     SubmissionStatus sendRenderStateCacheFlush() override;
 
     bool isUpdateTagFromWaitEnabled() override;
@@ -143,8 +156,11 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     }
 
     bool directSubmissionRelaxedOrderingEnabled() const override;
+    uint32_t getDirectSubmissionRelaxedOrderingQueueDepth() const override;
 
     void stopDirectSubmission(bool blocking) override;
+
+    QueueThrottle getLastDirectSubmissionThrottle() override;
 
     virtual bool isKmdWaitModeActive() { return true; }
 
@@ -152,7 +168,7 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     GraphicsAllocation *getClearColorAllocation() override;
 
     TagAllocatorBase *getTimestampPacketAllocator() override;
-    std::unique_ptr<TagAllocatorBase> createMultiRootDeviceTimestampPacketAllocator(const RootDeviceIndicesContainer rootDeviceIndices) override;
+    std::unique_ptr<TagAllocatorBase> createMultiRootDeviceTimestampPacketAllocator(const RootDeviceIndicesContainer &rootDeviceIndices) override;
 
     void postInitFlagsSetup() override;
     void programActivePartitionConfig(LinearStream &csr);
@@ -164,7 +180,7 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
         return getCmdSizeForStallingNoPostSyncCommands();
     }
     void programStallingCommandsForBarrier(LinearStream &cmdStream, TimestampPacketContainer *barrierTimestampPacketNodes, const bool isDcFlushRequired) override;
-    SubmissionStatus initializeDeviceWithFirstSubmission() override;
+    SubmissionStatus initializeDeviceWithFirstSubmission(Device &device) override;
 
     HeapDirtyState &getDshState() {
         return dshState;
@@ -179,9 +195,18 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     void dispatchRayTracingStateCommand(LinearStream &cmdStream, Device &device);
     uint64_t getScratchPatchAddress();
 
+    SubmissionStatus programHeaplessProlog(Device &device);
+    MOCKABLE_VIRTUAL void programHeaplessStateProlog(Device &device, LinearStream &commandStream);
+    void programStateBaseAddressHeapless(Device &device, LinearStream &commandStream);
+    void programComputeModeHeapless(Device &device, LinearStream &commandStream);
+    void handleAllocationsResidencyForflushTaskStateless(const IndirectHeap *dsh, const IndirectHeap *ioh, const IndirectHeap *ssh, Device &device);
+    bool submitDependencyUpdate(TagNodeBase *tag) override;
+
+    void unblockPagingFenceSemaphore(uint64_t pagingFenceValue) override;
+
   protected:
     void programPreemption(LinearStream &csr, DispatchFlags &dispatchFlags);
-    void programL3(LinearStream &csr, uint32_t &newL3Config);
+    void programL3(LinearStream &csr, uint32_t &newL3Config, bool isBcs);
     void programPreamble(LinearStream &csr, Device &device, uint32_t &newL3Config);
     void programPipelineSelect(LinearStream &csr, PipelineSelectArgs &pipelineSelectArgs);
     void programEpilogue(LinearStream &csr, Device &device, void **batchBufferEndLocation, DispatchFlags &dispatchFlags);
@@ -198,8 +223,9 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
 
     void programEnginePrologue(LinearStream &csr);
     size_t getCmdSizeForPrologue() const;
+    size_t getCmdSizeForHeaplessPrologue(Device &device) const;
+    void handleAllocationsResidencyForHeaplessProlog(LinearStream &linearStream, Device &device);
 
-    void setClearSlmWorkAroundParameter(PipeControlArgs &args);
     void addPipeControlBeforeStateSip(LinearStream &commandStream, Device &device);
     void addPipeControlBefore3dState(LinearStream &commandStream, DispatchFlags &dispatchFlags);
     bool are4GbHeapsAvailable() const;
@@ -241,6 +267,27 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
                                               bool areMultipleSubDevicesInContext,
                                               bool setGeneralStateBaseAddress);
 
+    inline void processBarrierWithPostSync(LinearStream &commandStreamTask,
+                                           DispatchFlags &dispatchFlags,
+                                           bool &levelClosed,
+                                           void *&currentPipeControlForNooping,
+                                           void *&epiloguePipeControlLocation,
+                                           bool &hasStallingCmdsOnTaskStream,
+                                           PipeControlArgs &args);
+
+    inline CompletionStamp handleFlushTaskSubmission(BatchBuffer &&batchBuffer,
+                                                     const DispatchFlags &dispatchFlags,
+                                                     Device &device,
+                                                     void *currentPipeControlForNooping,
+                                                     void *epiloguePipeControlLocation,
+                                                     PipeControlArgs &args,
+                                                     bool submitTask,
+                                                     bool submitCSR,
+                                                     bool hasStallingCmdsOnTaskStream,
+                                                     bool levelClosed,
+                                                     bool implicitFlush);
+
+    inline CompletionStamp updateTaskCountAndGetCompletionStamp(bool levelClosed);
     inline void programSamplerCacheFlushBetweenRedescribedSurfaceReads(LinearStream &commandStreamCSR);
     bool bcsRelaxedOrderingAllowed(const BlitPropertiesContainer &blitPropertiesContainer, bool hasStallingCmds) const;
     inline void handleImmediateFlushPipelineSelectState(ImmediateDispatchFlags &dispatchFlags, ImmediateFlushData &flushData);
@@ -264,6 +311,10 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
                                                            LinearStream &immediateCommandStream,
                                                            ImmediateFlushData &flushData);
 
+    void handleImmediateFlushStatelessAllocationsResidency(size_t csrEstimatedSize,
+                                                           LinearStream &csrStream,
+                                                           Device &device);
+
     inline void handleImmediateFlushAllocationsResidency(Device &device,
                                                          LinearStream &immediateCommandStream,
                                                          ImmediateFlushData &flushData,
@@ -274,6 +325,25 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
                                                                ImmediateDispatchFlags &dispatchFlags,
                                                                ImmediateFlushData &flushData,
                                                                LinearStream &csrStream);
+
+    inline void handleBatchedDispatchImplicitFlush(uint64_t globalMemorySize, bool implicitFlush);
+
+    inline BatchBuffer prepareBatchBufferForSubmission(LinearStream &commandStreamTask,
+                                                       size_t commandStreamStartTask,
+                                                       LinearStream &commandStreamCSR,
+                                                       size_t commandStreamStartCSR,
+                                                       DispatchFlags &dispatchFlags,
+                                                       Device &device,
+                                                       bool submitTask,
+                                                       bool submitCSR,
+                                                       bool hasStallingCmdsOnTaskStream);
+
+    inline void chainCsrWorkToTask(LinearStream &commandStreamCSR,
+                                   LinearStream &commandStreamTask,
+                                   size_t commandStreamStartTask,
+                                   void *bbEndLocation,
+                                   size_t &chainedBatchBufferStartOffset,
+                                   GraphicsAllocation *&chainedBatchBuffer);
 
     HeapDirtyState dshState;
     HeapDirtyState iohState;

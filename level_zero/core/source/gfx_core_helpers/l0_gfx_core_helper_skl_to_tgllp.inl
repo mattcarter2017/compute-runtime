@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -30,7 +30,7 @@ bool L0GfxCoreHelperHw<Family>::platformSupportsPipelineSelectTracking() const {
 }
 
 template <typename Family>
-bool L0GfxCoreHelperHw<Family>::platformSupportsStateBaseAddressTracking() const {
+bool L0GfxCoreHelperHw<Family>::platformSupportsStateBaseAddressTracking(const NEO::RootDeviceEnvironment &rootDeviceEnvironment) const {
     return false;
 }
 
@@ -45,17 +45,12 @@ uint32_t L0GfxCoreHelperHw<Family>::getEventBaseMaxPacketCount(const NEO::RootDe
 }
 
 template <typename Family>
-bool L0GfxCoreHelperHw<Family>::platformSupportsRayTracing() const {
-    return false;
-}
-
-template <typename Family>
 bool L0GfxCoreHelperHw<Family>::isZebinAllowed(const NEO::Debugger *debugger) const {
     return !debugger;
 }
 
 template <typename Family>
-NEO::HeapAddressModel L0GfxCoreHelperHw<Family>::getPlatformHeapAddressModel() const {
+NEO::HeapAddressModel L0GfxCoreHelperHw<Family>::getPlatformHeapAddressModel(const NEO::RootDeviceEnvironment &rootDeviceEnvironment) const {
     return NEO::HeapAddressModel::privateHeaps;
 }
 
@@ -72,6 +67,21 @@ bool L0GfxCoreHelperHw<Family>::platformSupportsPrimaryBatchBufferCmdList() cons
 template <typename Family>
 bool L0GfxCoreHelperHw<Family>::platformSupportsImmediateComputeFlushTask() const {
     return false;
+}
+
+template <typename Family>
+ze_mutable_command_exp_flags_t L0GfxCoreHelperHw<Family>::getPlatformCmdListUpdateCapabilities() const {
+    return 0;
+}
+
+template <typename Family>
+zet_debug_regset_type_intel_gpu_t L0GfxCoreHelperHw<Family>::getRegsetTypeForLargeGrfDetection() const {
+    return ZET_DEBUG_REGSET_TYPE_INVALID_INTEL_GPU;
+}
+
+template <typename Family>
+uint32_t L0GfxCoreHelperHw<Family>::getGrfRegisterCount(uint32_t *regPtr) const {
+    return 128;
 }
 
 } // namespace L0

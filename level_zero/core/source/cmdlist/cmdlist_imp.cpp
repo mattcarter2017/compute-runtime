@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -25,9 +25,11 @@
 #include "level_zero/core/source/device/device.h"
 #include "level_zero/core/source/device/device_imp.h"
 #include "level_zero/core/source/gfx_core_helpers/l0_gfx_core_helper.h"
+#include "level_zero/core/source/helpers/properties_parser.h"
 #include "level_zero/tools/source/metrics/metric.h"
 
 #include "igfxfmid.h"
+#include "log_manager.h"
 
 #include <algorithm>
 
@@ -49,30 +51,32 @@ ze_result_t CommandListImp::destroy() {
 
     if (isImmediateType() && this->isFlushTaskSubmissionEnabled && !this->isSyncModeQueue) {
         auto timeoutMicroseconds = NEO::TimeoutControls::maxTimeout;
-        this->csr->waitForCompletionWithTimeout(NEO::WaitParams{false, false, timeoutMicroseconds}, this->csr->peekTaskCount());
+        getCsr(false)->waitForCompletionWithTimeout(NEO::WaitParams{false, false, false, timeoutMicroseconds}, getCsr(false)->peekTaskCount());
     }
 
-    if (!isImmediateType() &&
-        !isCopyOnly() &&
-        this->stateBaseAddressTracking &&
+    auto flushCachesForDebugger = this->getDevice() && this->getDevice()->getL0Debugger() && this->getDevice()->getProductHelper().isDcFlushAllowed();
+    if (!isCopyOnly(false) &&
+        ((!isImmediateType() && this->stateBaseAddressTracking) || flushCachesForDebugger) &&
         this->cmdListHeapAddressModel == NEO::HeapAddressModel::privateHeaps) {
 
         auto surfaceStateHeap = this->commandContainer.getIndirectHeap(NEO::HeapType::surfaceState);
-        if (surfaceStateHeap) {
-            auto heapAllocation = surfaceStateHeap->getGraphicsAllocation();
 
+        if (flushCachesForDebugger || surfaceStateHeap) {
             auto rootDeviceIndex = device->getRootDeviceIndex();
             auto &deviceEngines = device->getNEODevice()->getMemoryManager()->getRegisteredEngines(rootDeviceIndex);
             for (auto &engine : deviceEngines) {
                 if (NEO::EngineHelpers::isComputeEngine(engine.getEngineType())) {
                     auto contextId = engine.osContext->getContextId();
-                    if (heapAllocation->isUsedByOsContext(contextId) && engine.osContext->isInitialized() && heapAllocation->getTaskCount(contextId) > 0) {
+                    if (engine.osContext->isInitialized() &&
+                        ((flushCachesForDebugger && engine.commandStreamReceiver->isDirectSubmissionEnabled()) || (surfaceStateHeap && surfaceStateHeap->getGraphicsAllocation()->isUsedByOsContext(contextId) && surfaceStateHeap->getGraphicsAllocation()->getTaskCount(contextId) > 0))) {
                         engine.commandStreamReceiver->sendRenderStateCacheFlush();
                     }
                 }
             }
         }
     }
+
+    this->forceDcFlushForDcFlushMitigation();
 
     delete this;
     return ZE_RESULT_SUCCESS;
@@ -119,12 +123,37 @@ CommandList *CommandList::create(uint32_t productFamily, Device *device, NEO::En
         if (returnValue != ZE_RESULT_SUCCESS) {
             commandList->destroy();
             commandList = nullptr;
-        } else {
-            commandList->getCmdContainer().setHandleFenceCompletionRequired();
         }
     }
 
     return commandList;
+}
+
+ze_result_t CommandListImp::getDeviceHandle(ze_device_handle_t *phDevice) {
+    *phDevice = getDevice()->toHandle();
+    return ZE_RESULT_SUCCESS;
+}
+ze_result_t CommandListImp::getContextHandle(ze_context_handle_t *phContext) {
+    *phContext = getCmdListContext();
+    return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t CommandListImp::getOrdinal(uint32_t *pOrdinal) {
+    UNRECOVERABLE_IF(ordinal == std::nullopt);
+    *pOrdinal = ordinal.value();
+    return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t CommandListImp::getImmediateIndex(uint32_t *pIndex) {
+    if (isImmediateType()) {
+        return cmdQImmediate->getIndex(pIndex);
+    }
+    return ZE_RESULT_ERROR_INVALID_ARGUMENT;
+}
+
+ze_result_t CommandListImp::isImmediate(ze_bool_t *pIsImmediate) {
+    *pIsImmediate = isImmediateType();
+    return ZE_RESULT_SUCCESS;
 }
 
 CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device,
@@ -132,6 +161,12 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
                                           bool internalUsage, NEO::EngineGroupType engineGroupType,
                                           ze_result_t &returnValue) {
 
+    ze_command_queue_desc_t cmdQdesc = *desc;
+
+    int32_t overrideImmediateCmdListSyncMode = NEO::debugManager.flags.OverrideImmediateCmdListSynchronousMode.get();
+    if (overrideImmediateCmdListSyncMode != -1) {
+        cmdQdesc.mode = static_cast<ze_command_queue_mode_t>(overrideImmediateCmdListSyncMode);
+    }
     CommandListAllocatorFn allocator = nullptr;
     if (productFamily < IGFX_MAX_PRODUCT) {
         allocator = commandListFactoryImmediate[productFamily];
@@ -139,6 +174,8 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
 
     CommandListImp *commandList = nullptr;
     returnValue = ZE_RESULT_ERROR_UNINITIALIZED;
+
+    auto queueProperties = CommandQueue::extractQueueProperties(cmdQdesc);
 
     if (allocator) {
         NEO::CommandStreamReceiver *csr = nullptr;
@@ -154,19 +191,23 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
                 engineGroupType = deviceImp->getInternalEngineGroupType();
             }
         } else {
-            returnValue = device->getCsrForOrdinalAndIndexWithPriority(&csr, desc->ordinal, desc->index, desc->priority);
+            returnValue = device->getCsrForOrdinalAndIndex(&csr, cmdQdesc.ordinal, cmdQdesc.index, cmdQdesc.priority, queueProperties.interruptHint);
             if (returnValue != ZE_RESULT_SUCCESS) {
                 return commandList;
             }
         }
 
+        LOG_CRITICAL_FOR_CORE(unlikely(csr == nullptr), "Error during creation of immediate command queue. Unable to create CSR object. Aborting!!");
+
         UNRECOVERABLE_IF(nullptr == csr);
 
         commandList = static_cast<CommandListImp *>((*allocator)(CommandList::commandListimmediateIddsPerBlock));
-        commandList->csr = csr;
         commandList->internalUsage = internalUsage;
         commandList->cmdListType = CommandListType::typeImmediate;
-        commandList->isSyncModeQueue = (desc->mode == ZE_COMMAND_QUEUE_MODE_SYNCHRONOUS);
+        commandList->isSyncModeQueue = (cmdQdesc.mode == ZE_COMMAND_QUEUE_MODE_SYNCHRONOUS);
+        if (NEO::debugManager.flags.MakeEachEnqueueBlocking.get()) {
+            commandList->isSyncModeQueue |= true;
+        }
 
         if (!internalUsage) {
             auto &productHelper = device->getProductHelper();
@@ -180,12 +221,30 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
             bool enabledCmdListSharing = !NEO::EngineHelper::isCopyOnlyEngineType(engineGroupType) && commandList->isFlushTaskSubmissionEnabled;
             commandList->immediateCmdListHeapSharing = L0GfxCoreHelper::enableImmediateCmdListHeapSharing(rootDeviceEnvironment, enabledCmdListSharing);
         }
-        csr->initializeResources();
+        csr->initializeResources(false, device->getDevicePreemptionMode());
         csr->initDirectSubmission();
+
+        auto commandQueue = CommandQueue::create(productFamily, device, csr, &cmdQdesc, NEO::EngineHelper::isCopyOnlyEngineType(engineGroupType), internalUsage, true, returnValue);
+        if (!commandQueue) {
+            commandList->destroy();
+            commandList = nullptr;
+            return commandList;
+        }
+
+        commandList->cmdQImmediate = commandQueue;
+
         returnValue = commandList->initialize(device, engineGroupType, 0);
 
-        if ((desc->flags & ZE_COMMAND_QUEUE_FLAG_IN_ORDER) || (NEO::debugManager.flags.ForceInOrderImmediateCmdListExecution.get() == 1)) {
+        if ((cmdQdesc.flags & ZE_COMMAND_QUEUE_FLAG_IN_ORDER) || (NEO::debugManager.flags.ForceInOrderImmediateCmdListExecution.get() == 1)) {
             commandList->enableInOrderExecution();
+        }
+
+        if (queueProperties.synchronizedDispatchMode != NEO::SynchronizedDispatchMode::disabled) {
+            if (commandList->isInOrderExecutionEnabled()) {
+                commandList->enableSynchronizedDispatch(queueProperties.synchronizedDispatchMode);
+            } else {
+                returnValue = ZE_RESULT_ERROR_INVALID_ARGUMENT;
+            }
         }
 
         if (returnValue != ZE_RESULT_SUCCESS) {
@@ -194,20 +253,16 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
             return commandList;
         }
 
-        auto commandQueue = CommandQueue::create(productFamily, device, csr, desc, commandList->isCopyOnly(), internalUsage, true, returnValue);
-        if (!commandQueue) {
-            commandList->destroy();
-            commandList = nullptr;
-            return commandList;
-        }
-
-        commandList->cmdQImmediate = commandQueue;
         commandList->isTbxMode = csr->isTbxMode();
         commandList->commandListPreemptionMode = device->getDevicePreemptionMode();
 
-        commandList->isBcsSplitNeeded = deviceImp->bcsSplit.setupDevice(productFamily, internalUsage, desc, csr);
+        commandList->isBcsSplitNeeded = deviceImp->bcsSplit.setupDevice(productFamily, internalUsage, &cmdQdesc, csr);
 
         commandList->copyThroughLockedPtrEnabled = gfxCoreHelper.copyThroughLockedPtrEnabled(hwInfo, device->getProductHelper());
+
+        if ((NEO::debugManager.flags.ForceCopyOperationOffloadForComputeCmdList.get() == 1 || queueProperties.copyOffloadHint) && !commandList->isCopyOnly(false) && commandList->isInOrderExecutionEnabled()) {
+            commandList->enableCopyOperationOffload(productFamily, device, desc);
+        }
 
         return commandList;
     }
@@ -215,24 +270,48 @@ CommandList *CommandList::createImmediate(uint32_t productFamily, Device *device
     return commandList;
 }
 
-void CommandListImp::setStreamPropertiesDefaultSettings(NEO::StreamProperties &streamProperties) {
-    if (this->stateComputeModeTracking) {
-        streamProperties.stateComputeMode.setPropertiesCoherencyDevicePreemption(cmdListDefaultCoherency, this->commandListPreemptionMode, true);
-    }
+void CommandListImp::enableCopyOperationOffload(uint32_t productFamily, Device *device, const ze_command_queue_desc_t *desc) {
+    NEO::CommandStreamReceiver *copyCsr = nullptr;
+    uint32_t ordinal = static_cast<DeviceImp *>(device)->getCopyEngineOrdinal();
 
-    streamProperties.frontEndState.setPropertiesDisableOverdispatchEngineInstanced(cmdListDefaultDisableOverdispatch, cmdListDefaultEngineInstancedDevice, true);
-    streamProperties.pipelineSelect.setPropertiesModeSelectedMediaSamplerClockGate(cmdListDefaultPipelineSelectModeSelected, cmdListDefaultMediaSamplerClockGate, true);
-    streamProperties.stateBaseAddress.setPropertyGlobalAtomics(cmdListDefaultGlobalAtomics, true);
+    device->getCsrForOrdinalAndIndex(&copyCsr, ordinal, 0, desc->priority, false);
+    UNRECOVERABLE_IF(!copyCsr);
+
+    ze_command_queue_desc_t copyQueueDesc = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
+    copyQueueDesc.ordinal = ordinal;
+    copyQueueDesc.mode = desc->mode;
+    copyQueueDesc.priority = desc->priority;
+
+    ze_result_t returnValue = ZE_RESULT_SUCCESS;
+    auto offloadCommandQueue = CommandQueue::create(productFamily, device, copyCsr, &copyQueueDesc, true, false, true, returnValue);
+    UNRECOVERABLE_IF(!offloadCommandQueue);
+
+    this->cmdQImmediateCopyOffload = offloadCommandQueue;
+    this->copyOperationOffloadEnabled = true;
 }
 
-bool CommandListImp::duplicatedInOrderCounterStorageEnabled() const {
-    return (NEO::debugManager.flags.InOrderDuplicatedCounterStorageEnabled.get() == 1);
+void CommandListImp::setStreamPropertiesDefaultSettings(NEO::StreamProperties &streamProperties) {
+    if (this->stateComputeModeTracking) {
+        streamProperties.stateComputeMode.setPropertiesPerContext(cmdListDefaultCoherency, this->commandListPreemptionMode, true);
+    }
+
+    streamProperties.frontEndState.setPropertiesDisableOverdispatch(cmdListDefaultDisableOverdispatch, true);
+    streamProperties.pipelineSelect.setPropertiesModeSelectedMediaSamplerClockGate(cmdListDefaultPipelineSelectModeSelected, cmdListDefaultMediaSamplerClockGate, true);
 }
 
 void CommandListImp::enableInOrderExecution() {
     UNRECOVERABLE_IF(inOrderExecInfo.get());
 
-    inOrderExecInfo = NEO::InOrderExecInfo::create(*this->device->getNEODevice(), this->partitionCount, !isImmediateType(), inOrderAtomicSignallingEnabled(), duplicatedInOrderCounterStorageEnabled());
+    auto deviceCounterNode = this->device->getDeviceInOrderCounterAllocator()->getTag();
+    NEO::TagNodeBase *hostCounterNode = nullptr;
+
+    auto &gfxCoreHelper = device->getGfxCoreHelper();
+
+    if (gfxCoreHelper.duplicatedInOrderCounterStorageEnabled(device->getNEODevice()->getRootDeviceEnvironment())) {
+        hostCounterNode = this->device->getHostInOrderCounterAllocator()->getTag();
+    }
+
+    inOrderExecInfo = NEO::InOrderExecInfo::create(deviceCounterNode, hostCounterNode, *this->device->getNEODevice(), this->partitionCount, !isImmediateType());
 }
 
 void CommandListImp::storeReferenceTsToMappedEvents(bool isClearEnabled) {
@@ -250,7 +329,7 @@ void CommandListImp::storeReferenceTsToMappedEvents(bool isClearEnabled) {
 }
 
 void CommandListImp::addToMappedEventList(Event *event) {
-    if (event && event->hasKerneMappedTsCapability) {
+    if (event && event->hasKernelMappedTsCapability) {
         if (std::find(mappedTsEventList.begin(), mappedTsEventList.end(), event) == mappedTsEventList.end()) {
             mappedTsEventList.push_back(event);
         }
@@ -260,6 +339,27 @@ void CommandListImp::addToMappedEventList(Event *event) {
 void CommandListImp::addRegularCmdListSubmissionCounter() {
     if (isInOrderExecutionEnabled()) {
         inOrderExecInfo->addRegularCmdListSubmissionCounter(1);
+    }
+}
+
+void CommandListImp::enableSynchronizedDispatch(NEO::SynchronizedDispatchMode mode) {
+    if (!device->isImplicitScalingCapable() || this->synchronizedDispatchMode != NEO::SynchronizedDispatchMode::disabled) {
+        return;
+    }
+
+    this->synchronizedDispatchMode = mode;
+
+    if (mode == NEO::SynchronizedDispatchMode::full) {
+        this->syncDispatchQueueId = device->getNextSyncDispatchQueueId();
+    } else if (mode == NEO::SynchronizedDispatchMode::limited) {
+        // Limited mode doesnt acquire new token during execution. It only checks if token is already acquired by full sync dispatch.
+        device->ensureSyncDispatchTokenAllocation();
+    }
+}
+
+void CommandListImp::setInterruptEventsCsr(NEO::CommandStreamReceiver &csr) {
+    for (auto &event : interruptEvents) {
+        event->setCsr(&csr, true);
     }
 }
 

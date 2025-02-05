@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,12 +9,11 @@
 #include "shared/source/command_stream/preemption.h"
 #include "shared/source/device/device.h"
 #include "shared/source/execution_environment/root_device_environment.h"
+#include "shared/source/gen_common/reg_configs_common.h"
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/preamble.h"
 #include "shared/source/helpers/register_offsets.h"
-
-#include "reg_configs_common.h"
 
 #include <cstddef>
 
@@ -30,13 +29,14 @@ void PreambleHelper<GfxFamily>::programGenSpecificPreambleWorkArounds(LinearStre
 }
 
 template <typename GfxFamily>
-void PreambleHelper<GfxFamily>::programSemaphoreDelay(LinearStream *pCommandStream) {
+void PreambleHelper<GfxFamily>::programSemaphoreDelay(LinearStream *pCommandStream, bool isBcs) {
     if (debugManager.flags.ForceSemaphoreDelayBetweenWaits.get() > -1) {
         uint32_t valueOfNewSemaphoreDelay = debugManager.flags.ForceSemaphoreDelayBetweenWaits.get();
         LriHelper<GfxFamily>::program(pCommandStream,
                                       RegisterOffsets::semaWaitPoll,
                                       valueOfNewSemaphoreDelay,
-                                      true);
+                                      true,
+                                      isBcs);
     };
 }
 
@@ -55,16 +55,18 @@ size_t PreambleHelper<GfxFamily>::getAdditionalCommandsSize(const Device &device
 
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programPreamble(LinearStream *pCommandStream, Device &device, uint32_t l3Config,
-                                                GraphicsAllocation *preemptionCsr) {
-    programL3(pCommandStream, l3Config);
+                                                GraphicsAllocation *preemptionCsr, bool isBcs) {
+    programL3(pCommandStream, l3Config, isBcs);
     programPreemption(pCommandStream, device, preemptionCsr);
     programGenSpecificPreambleWorkArounds(pCommandStream, device.getHardwareInfo());
-    programSemaphoreDelay(pCommandStream);
+    programSemaphoreDelay(pCommandStream, isBcs);
 }
 
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programPreemption(LinearStream *pCommandStream, Device &device, GraphicsAllocation *preemptionCsr) {
-    PreemptionHelper::programCsrBaseAddress<GfxFamily>(*pCommandStream, device, preemptionCsr);
+    if (preemptionCsr) {
+        PreemptionHelper::programCsrBaseAddress<GfxFamily>(*pCommandStream, device, preemptionCsr);
+    }
 }
 
 template <typename GfxFamily>

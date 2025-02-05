@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,7 +7,7 @@
 
 #include "shared/source/command_stream/command_stream_receiver_hw_base.inl"
 #include "shared/source/helpers/address_patch.h"
-#include "shared/source/helpers/state_base_address_bdw_and_later.inl"
+#include "shared/source/helpers/state_base_address_tgllp_and_later.inl"
 
 namespace NEO {
 
@@ -15,24 +15,7 @@ template <typename GfxFamily>
 bool CommandStreamReceiverHw<GfxFamily>::are4GbHeapsAvailable() const { return true; }
 
 template <typename GfxFamily>
-inline void CommandStreamReceiverHw<GfxFamily>::programL3(LinearStream &csr, uint32_t &newL3Config) {
-    typedef typename GfxFamily::PIPE_CONTROL PIPE_CONTROL;
-    if (csrSizeRequestFlags.l3ConfigChanged && this->isPreambleSent) {
-        // Add a PIPE_CONTROL w/ CS_stall
-        PipeControlArgs args = {};
-        args.dcFlushEnable = true;
-        setClearSlmWorkAroundParameter(args);
-        MemorySynchronizationCommands<GfxFamily>::addSingleBarrier(csr, args);
-
-        PreambleHelper<GfxFamily>::programL3(&csr, newL3Config);
-        this->lastSentL3Config = newL3Config;
-    }
-}
-
-template <typename GfxFamily>
 size_t CommandStreamReceiverHw<GfxFamily>::getRequiredStateBaseAddressSize(const Device &device) const {
-    using PIPELINE_SELECT = typename GfxFamily::PIPELINE_SELECT;
-
     size_t size = 0;
     const auto &productHelper = getProductHelper();
     if (productHelper.is3DPipelineSelectWARequired()) {
@@ -40,16 +23,6 @@ size_t CommandStreamReceiverHw<GfxFamily>::getRequiredStateBaseAddressSize(const
     }
     size += sizeof(typename GfxFamily::STATE_BASE_ADDRESS) + sizeof(PIPE_CONTROL);
     return size;
-}
-
-template <typename GfxFamily>
-inline size_t CommandStreamReceiverHw<GfxFamily>::getCmdSizeForL3Config() const {
-    if (!this->isPreambleSent) {
-        return sizeof(typename GfxFamily::MI_LOAD_REGISTER_IMM);
-    } else if (csrSizeRequestFlags.l3ConfigChanged) {
-        return sizeof(typename GfxFamily::MI_LOAD_REGISTER_IMM) + sizeof(typename GfxFamily::PIPE_CONTROL);
-    }
-    return 0;
 }
 
 template <typename GfxFamily>

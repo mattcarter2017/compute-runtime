@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -62,7 +62,7 @@ HWTEST_P(AUBCopyBuffer, WhenCopyingThenExpectationsMet) {
     cl_event *eventWaitList = nullptr;
     cl_event *event = nullptr;
 
-    auto pDstMemory = reinterpret_cast<cl_float *>(dstBuffer->getGraphicsAllocation(pDevice->getRootDeviceIndex())->getGpuAddress());
+    auto pDstMemory = reinterpret_cast<cl_float *>(ptrOffset(dstBuffer->getGraphicsAllocation(pDevice->getRootDeviceIndex())->getGpuAddress(), dstBuffer->getOffset()));
 
     retVal = pCmdQ->enqueueCopyBuffer(
         srcBuffer,
@@ -98,16 +98,16 @@ HWTEST_P(AUBCopyBuffer, WhenCopyingThenExpectationsMet) {
     delete dstBuffer;
 }
 
-INSTANTIATE_TEST_CASE_P(AUBCopyBuffer_simple,
-                        AUBCopyBuffer,
-                        ::testing::Combine(
-                            ::testing::Values( // srcOffset
-                                0 * sizeof(cl_float),
-                                1 * sizeof(cl_float),
-                                2 * sizeof(cl_float),
-                                3 * sizeof(cl_float)),
-                            ::testing::Values( // dstOffset
-                                0 * sizeof(cl_float),
-                                1 * sizeof(cl_float),
-                                2 * sizeof(cl_float),
-                                3 * sizeof(cl_float))));
+INSTANTIATE_TEST_SUITE_P(AUBCopyBuffer_simple,
+                         AUBCopyBuffer,
+                         ::testing::Combine(
+                             ::testing::Values( // srcOffset
+                                 0 * sizeof(cl_float),
+                                 1 * sizeof(cl_float),
+                                 2 * sizeof(cl_float),
+                                 3 * sizeof(cl_float)),
+                             ::testing::Values( // dstOffset
+                                 0 * sizeof(cl_float),
+                                 1 * sizeof(cl_float),
+                                 2 * sizeof(cl_float),
+                                 3 * sizeof(cl_float))));

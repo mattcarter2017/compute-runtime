@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -272,7 +272,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmCsrCreatedWithInactiveG
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmAllocationWhenGetBufferObjectToModifyIsCalledForAGivenHandleIdThenTheCorrespondingBufferObjectGetsModified) {
     auto size = 1024u;
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, nullptr, nullptr, size, static_cast<osHandle>(0u), MemoryPool::memoryNull);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, nullptr, nullptr, size, static_cast<osHandle>(0u), MemoryPool::memoryNull);
 
     auto &bos = allocation->getBOs();
     for (auto handleId = 0u; handleId < EngineLimits::maxHandleCount; handleId++) {
@@ -292,7 +292,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmAllocationWhenGetBuffer
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, WhenMakingResidentThenSucceeds) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, buffer, nullptr, buffer->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer, nullptr, buffer->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
     EXPECT_EQ(nullptr, allocation->getUnderlyingBuffer());
 
     csr->makeResident(*allocation);
@@ -310,8 +310,8 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, WhenMakingResidentThenSucceeds)
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, GivenMultipleAllocationsWhenMakingResidentThenEachSucceeds) {
     BufferObject *buffer1 = this->createBO(4096);
     BufferObject *buffer2 = this->createBO(4096);
-    auto allocation1 = new DrmAllocation(0, AllocationType::unknown, buffer1, nullptr, buffer1->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
-    auto allocation2 = new DrmAllocation(0, AllocationType::unknown, buffer2, nullptr, buffer2->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
+    auto allocation1 = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer1, nullptr, buffer1->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
+    auto allocation2 = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer2, nullptr, buffer2->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
     EXPECT_EQ(nullptr, allocation1->getUnderlyingBuffer());
     EXPECT_EQ(nullptr, allocation2->getUnderlyingBuffer());
 
@@ -334,7 +334,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, GivenMultipleAllocationsWhenMak
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, WhenMakingResidentTwiceThenRefCountIsOne) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, buffer, nullptr, buffer->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, buffer, nullptr, buffer->peekSize(), static_cast<osHandle>(0u), MemoryPool::memoryNull);
 
     csr->makeResident(*allocation);
     csr->processResidency(csr->getResidencyAllocations(), 0u);
@@ -831,7 +831,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmCommandStreamReceiverWh
 
 struct MockDrmAllocationBindBO : public DrmAllocation {
     MockDrmAllocationBindBO(uint32_t rootDeviceIndex, AllocationType allocationType, BufferObjects &bos, void *ptrIn, uint64_t gpuAddress, size_t sizeIn, MemoryPool pool)
-        : DrmAllocation(rootDeviceIndex, allocationType, bos, ptrIn, gpuAddress, sizeIn, pool) {
+        : DrmAllocation(rootDeviceIndex, 1u /*num gmms*/, allocationType, bos, ptrIn, gpuAddress, sizeIn, pool) {
     }
 
     ADDMETHOD_NOBASE(bindBO, int, 0,
@@ -840,7 +840,7 @@ struct MockDrmAllocationBindBO : public DrmAllocation {
 
 struct MockDrmAllocationBindBOs : public DrmAllocation {
     MockDrmAllocationBindBOs(uint32_t rootDeviceIndex, AllocationType allocationType, BufferObjects &bos, void *ptrIn, uint64_t gpuAddress, size_t sizeIn, MemoryPool pool)
-        : DrmAllocation(rootDeviceIndex, allocationType, bos, ptrIn, gpuAddress, sizeIn, pool) {
+        : DrmAllocation(rootDeviceIndex, 1u /*num gmms*/, allocationType, bos, ptrIn, gpuAddress, sizeIn, pool) {
     }
 
     ADDMETHOD_NOBASE(bindBOs, int, 0,
@@ -950,7 +950,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocationWithSingleBuffer
     auto size = 1024u;
     auto bo = this->createBO(size);
     BufferObjects bos{bo};
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
     EXPECT_EQ(bo, allocation->getBO());
 
     makeResidentBufferObjects<FamilyType>(&csr->getOsContext(), allocation);
@@ -1068,7 +1068,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenWaitUserFenceFlagNotSetWhe
                                                        1);
     EXPECT_FALSE(testedCsr->useUserFenceWait);
     EXPECT_FALSE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_FALSE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
 
@@ -1091,7 +1090,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenGemWaitUsedWhenKmdTimeoutU
                                                        1);
     EXPECT_FALSE(testedCsr->useUserFenceWait);
     EXPECT_FALSE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_FALSE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
 
@@ -1107,7 +1105,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                    givenWaitUserFenceFlagSetAndVmBindAvailableAndUseDrmCtxWhenDrmCsrWaitsForFlushStampThenExpectUseDrmWaitUserFenceCallWithNonZeroContext) {
     DebugManagerStateRestore restorer;
     debugManager.flags.EnableUserFenceForCompletionWait.set(1);
-    debugManager.flags.EnableUserFenceUseCtxId.set(1);
 
     mock->isVmBindAvailableCall.callParent = false;
     mock->isVmBindAvailableCall.returnValue = true;
@@ -1118,7 +1115,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                                                        1);
     EXPECT_TRUE(testedCsr->useUserFenceWait);
     EXPECT_TRUE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_TRUE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
     mock->isVmBindAvailableCall.called = 0u;
@@ -1131,6 +1127,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
     }
 
     FlushStamp handleToWait = 123;
+    *testedCsr->getTagAddress() = 0;
     testedCsr->waitForFlushStamp(handleToWait);
 
     EXPECT_EQ(0, mock->ioctlCnt.gemWait);
@@ -1146,6 +1143,65 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
 }
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
+                   givenWaitUserFenceFlagSetAndVmBindAvailableAndUseDrmCtxWhenDrmCsrWaitsForFlushStampiAndDifferentScratchPageOptionsThenCallResetStatusOnlyScratchPageDisabled) {
+    DebugManagerStateRestore restorer;
+    debugManager.flags.EnableUserFenceForCompletionWait.set(1);
+
+    mock->isVmBindAvailableCall.callParent = false;
+    mock->isVmBindAvailableCall.returnValue = true;
+
+    for (int err : {EIO, ETIME}) {
+        for (bool disableScratchPage : {false, true}) {
+            for (int gpuFaultCheckThreshold : {0, 10}) {
+                debugManager.flags.DisableScratchPages.set(disableScratchPage);
+                debugManager.flags.GpuFaultCheckThreshold.set(gpuFaultCheckThreshold);
+                mock->configureScratchPagePolicy();
+                mock->configureGpuFaultCheckThreshold();
+
+                TestedDrmCommandStreamReceiver<FamilyType> *testedCsr =
+                    new TestedDrmCommandStreamReceiver<FamilyType>(GemCloseWorkerMode::gemCloseWorkerInactive,
+                                                                   *this->executionEnvironment,
+                                                                   1);
+                EXPECT_TRUE(testedCsr->useUserFenceWait);
+                EXPECT_TRUE(testedCsr->isUsedNotifyEnableForPostSync());
+
+                device->resetCommandStreamReceiver(testedCsr);
+                mock->ioctlCnt.reset();
+                mock->waitUserFenceCall.called = 0u;
+                mock->checkResetStatusCalled = 0u;
+
+                mock->waitUserFenceCall.failOnWaitUserFence = true;
+                mock->errnoValue = err;
+
+                testedCsr->waitUserFenceResult.callParent = true;
+
+                auto osContextLinux = static_cast<const OsContextLinux *>(device->getDefaultEngine().osContext);
+                std::vector<uint32_t> &drmCtxIds = const_cast<std::vector<uint32_t> &>(osContextLinux->getDrmContextIds());
+                size_t drmCtxSize = drmCtxIds.size();
+                for (uint32_t i = 0; i < drmCtxSize; i++) {
+                    drmCtxIds[i] = 5u + i;
+                }
+
+                TaskCountType waitValue = 2;
+                TaskCountType currentValue = 1;
+                uint64_t addr = castToUint64(&currentValue);
+                testedCsr->waitUserFence(waitValue, addr, -1, false, NEO::InterruptId::notUsed, nullptr);
+
+                EXPECT_EQ(0, mock->ioctlCnt.gemWait);
+                EXPECT_EQ(1u, testedCsr->waitUserFenceResult.called);
+                EXPECT_EQ(2u, testedCsr->waitUserFenceResult.waitValue);
+
+                EXPECT_EQ(1u, mock->waitUserFenceCall.called);
+                if (err == EIO && disableScratchPage && gpuFaultCheckThreshold != 0) {
+                    EXPECT_EQ(1u, mock->checkResetStatusCalled);
+                } else {
+                    EXPECT_EQ(0u, mock->checkResetStatusCalled);
+                }
+            }
+        }
+    }
+}
+HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                    givenWaitUserFenceFlagSetAndVmBindNotAvailableWhenDrmCsrWaitsForFlushStampThenExpectUseDrmGemWaitCall) {
     DebugManagerStateRestore restorer;
     debugManager.flags.EnableUserFenceForCompletionWait.set(1);
@@ -1159,7 +1215,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                                                        1);
     EXPECT_TRUE(testedCsr->useUserFenceWait);
     EXPECT_TRUE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_FALSE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
     mock->isVmBindAvailableCall.called = 0u;
@@ -1188,7 +1243,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                                                        1);
     EXPECT_FALSE(testedCsr->useUserFenceWait);
     EXPECT_FALSE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_FALSE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
     mock->isVmBindAvailableCall.called = 0u;
@@ -1207,7 +1261,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                    givenWaitUserFenceSetAndUseCtxFlagsNotSetAndVmBindAvailableWhenDrmCsrWaitsForFlushStampThenExpectUseDrmWaitUserFenceCallWithZeroContext) {
     DebugManagerStateRestore restorer;
     debugManager.flags.EnableUserFenceForCompletionWait.set(1);
-    debugManager.flags.EnableUserFenceUseCtxId.set(0);
     debugManager.flags.SetKmdWaitTimeout.set(1000);
 
     mock->isVmBindAvailableCall.callParent = false;
@@ -1219,12 +1272,12 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
                                                        1);
     EXPECT_TRUE(testedCsr->useUserFenceWait);
     EXPECT_TRUE(testedCsr->isUsedNotifyEnableForPostSync());
-    EXPECT_FALSE(testedCsr->useContextForUserFenceWait);
     device->resetCommandStreamReceiver(testedCsr);
     mock->ioctlCnt.gemWait = 0;
     mock->isVmBindAvailableCall.called = 0u;
 
     FlushStamp handleToWait = 123;
+    *testedCsr->getTagAddress() = 0;
     testedCsr->waitForFlushStamp(handleToWait);
 
     EXPECT_EQ(0, mock->ioctlCnt.gemWait);
@@ -1234,7 +1287,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest,
     EXPECT_EQ(1u, mock->waitUserFenceCall.called);
     EXPECT_EQ(1u, mock->isVmBindAvailableCall.called);
 
-    EXPECT_EQ(0u, mock->waitUserFenceCall.ctxId);
+    EXPECT_NE(0u, mock->waitUserFenceCall.ctxId);
     EXPECT_EQ(1000, mock->waitUserFenceCall.timeout);
     EXPECT_EQ(Drm::ValueWidth::u64, mock->waitUserFenceCall.dataWidth);
 }
@@ -1370,7 +1423,7 @@ struct MockMergeResidencyContainerMemoryOperationsHandler : public DrmMemoryOper
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenMergeWithResidencyContainerFailsThenFlushReturnsError) {
     struct MockDrmCsr : public DrmCommandStreamReceiver<FamilyType> {
         using DrmCommandStreamReceiver<FamilyType>::DrmCommandStreamReceiver;
-        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency) override {
+        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
             return SubmissionStatus::success;
         }
     };
@@ -1402,7 +1455,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenMergeWithResidencyContaine
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenMergeWithResidencyContainerReturnsOutOfMemoryThenFlushReturnsError) {
     struct MockDrmCsr : public DrmCommandStreamReceiver<FamilyType> {
         using DrmCommandStreamReceiver<FamilyType>::DrmCommandStreamReceiver;
-        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency) override {
+        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
             return SubmissionStatus::success;
         }
     };
@@ -1437,7 +1490,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenNoAllocsInMemoryOperationH
 
     struct MockDrmCsr : public DrmCommandStreamReceiver<FamilyType> {
         using DrmCommandStreamReceiver<FamilyType>::DrmCommandStreamReceiver;
-        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency) override {
+        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
             auto memoryOperationsInterface = static_cast<MockDrmMemoryOperationsHandler *>(this->executionEnvironment.rootDeviceEnvironments[this->rootDeviceIndex]->memoryOperationsInterface.get());
             EXPECT_TRUE(memoryOperationsInterface->mutex.try_lock());
             memoryOperationsInterface->mutex.unlock();
@@ -1469,7 +1522,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocsInMemoryOperationHan
 
     struct MockDrmCsr : public DrmCommandStreamReceiver<FamilyType> {
         using DrmCommandStreamReceiver<FamilyType>::DrmCommandStreamReceiver;
-        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency) override {
+        SubmissionStatus flushInternal(const BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
             auto memoryOperationsInterface = static_cast<MockDrmMemoryOperationsHandler *>(this->executionEnvironment.rootDeviceEnvironments[this->rootDeviceIndex]->memoryOperationsInterface.get());
             EXPECT_FALSE(memoryOperationsInterface->mutex.try_lock());
             return SubmissionStatus::success;
@@ -1481,7 +1534,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocsInMemoryOperationHan
                                                                                                    PreemptionHelper::getDefaultPreemptionMode(*defaultHwInfo)));
 
     auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{csr->getRootDeviceIndex(), MemoryConstants::pageSize});
-    executionEnvironment->rootDeviceEnvironments[csr->getRootDeviceIndex()]->memoryOperationsInterface->makeResident(device.get(), ArrayRef<GraphicsAllocation *>(&allocation, 1));
+    executionEnvironment->rootDeviceEnvironments[csr->getRootDeviceIndex()]->memoryOperationsInterface->makeResident(device.get(), ArrayRef<GraphicsAllocation *>(&allocation, 1), false);
 
     auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{csr->getRootDeviceIndex(), MemoryConstants::pageSize});
     LinearStream cs(commandBuffer);
@@ -1505,7 +1558,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocInMemoryOperationsInt
     BatchBuffer batchBuffer = BatchBufferHelper::createDefaultBatchBuffer(cs.getGraphicsAllocation(), &cs, cs.getUsed());
 
     auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{csr->getRootDeviceIndex(), MemoryConstants::pageSize});
-    executionEnvironment->rootDeviceEnvironments[csr->getRootDeviceIndex()]->memoryOperationsInterface->makeResident(device.get(), ArrayRef<GraphicsAllocation *>(&allocation, 1));
+    executionEnvironment->rootDeviceEnvironments[csr->getRootDeviceIndex()]->memoryOperationsInterface->makeResident(device.get(), ArrayRef<GraphicsAllocation *>(&allocation, 1), false);
 
     csr->flush(batchBuffer, csr->getResidencyAllocations());
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,13 +8,17 @@
 #include "level_zero/core/test/unit_tests/fixtures/cmdlist_fixture.h"
 
 #include "shared/source/built_ins/sip.h"
+#include "shared/source/command_container/cmdcontainer.h"
 #include "shared/source/command_container/implicit_scaling.h"
+#include "shared/source/helpers/bindless_heaps_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/ray_tracing_helper.h"
+#include "shared/source/indirect_heap/indirect_heap.h"
 #include "shared/source/memory_manager/internal_allocation_storage.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/os_interface.h"
 #include "shared/source/os_interface/product_helper.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_device.h"
 
 #include "level_zero/core/source/driver/driver_imp.h"
@@ -54,6 +58,18 @@ void CommandListFixture::tearDown() {
     eventPool.reset(nullptr);
     commandList.reset(nullptr);
     DeviceFixture::tearDown();
+}
+
+DirectSubmissionCommandListFixture::DirectSubmissionCommandListFixture() = default;
+DirectSubmissionCommandListFixture ::~DirectSubmissionCommandListFixture() = default;
+
+void DirectSubmissionCommandListFixture::setUp() {
+    debugManager.flags.EnableDirectSubmission.set(1);
+    CommandListFixture::setUp();
+}
+
+void DirectSubmissionCommandListFixture::tearDown() {
+    CommandListFixture::tearDown();
 }
 
 void MultiTileCommandListFixtureInit::setUp() {
@@ -150,6 +166,8 @@ uint32_t ModuleMutableCommandListFixture::getMocs(bool l3On) {
 }
 
 void FrontEndCommandListFixtureInit::setUp(int32_t dispatchCmdBufferPrimary) {
+    UnitTestSetter::disableHeapless(this->restorer);
+
     debugManager.flags.DispatchCmdlistCmdBufferPrimary.set(dispatchCmdBufferPrimary);
     debugManager.flags.EnableFrontEndTracking.set(1);
     debugManager.flags.EnableFlushTaskSubmission.set(1);
@@ -186,6 +204,9 @@ void CommandListStateBaseAddressFixture::setUp() {
 }
 
 void CommandListPrivateHeapsFixture::setUp() {
+
+    UnitTestSetter::disableHeapless(this->restore);
+
     constexpr uint32_t storeAllocations = 4;
 
     debugManager.flags.SelectCmdListHeapAddressModel.set(static_cast<int32_t>(NEO::HeapAddressModel::privateHeaps));
@@ -197,7 +218,7 @@ void CommandListPrivateHeapsFixture::setUp() {
         auto heapAllocation = neoDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({device->getRootDeviceIndex(), true, 2 * MemoryConstants::megaByte,
                                                                                                    NEO::AllocationType::linearStream, false, false,
                                                                                                    neoDevice->getDeviceBitfield()});
-        commandListImmediate->csr->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(heapAllocation), REUSABLE_ALLOCATION);
+        static_cast<CommandQueueImp *>(commandListImmediate->cmdQImmediate)->getCsr()->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(heapAllocation), REUSABLE_ALLOCATION);
     }
 
     mockKernelImmData->kernelDescriptor->payloadMappings.samplerTable.numSamplers = 1;
@@ -211,6 +232,15 @@ void CommandListPrivateHeapsFixture::setUp() {
     mockKernelImmData->kernelDescriptor->payloadMappings.bindingTable.tableOffset = 64;
     kernel->surfaceStateHeapDataSize = 128;
     kernel->surfaceStateHeapData.reset(new uint8_t[256]);
+
+    bindlessHeapsHelper = device->getNEODevice()->getBindlessHeapsHelper();
+}
+
+void CommandListPrivateHeapsFixture::checkAndPrepareBindlessKernel() {
+    if (NEO::ApiSpecificConfig::getBindlessMode(*device->getNEODevice())) {
+        const_cast<KernelDescriptor &>(kernel->getKernelDescriptor()).kernelAttributes.bufferAddressingMode = KernelDescriptor::Bindless;
+        isBindlessKernel = true;
+    }
 }
 
 void CommandListGlobalHeapsFixtureInit::setUp() {
@@ -218,6 +248,13 @@ void CommandListGlobalHeapsFixtureInit::setUp() {
 }
 
 void CommandListGlobalHeapsFixtureInit::setUpParams(int32_t globalHeapMode) {
+
+    UnitTestSetter::disableHeaplessStateInit(this->restorer);
+
+    if (globalHeapMode == static_cast<int32_t>(NEO::HeapAddressModel::globalStateless)) {
+        debugManager.flags.UseExternalAllocatorForSshAndDsh.set(0);
+    }
+
     debugManager.flags.SelectCmdListHeapAddressModel.set(globalHeapMode);
     debugManager.flags.UseImmediateFlushTask.set(0);
     CommandListStateBaseAddressFixture::setUp();
@@ -249,7 +286,7 @@ void ImmediateCmdListSharedHeapsFixture::setUp() {
         auto heapAllocation = neoDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({device->getRootDeviceIndex(), true, 2 * MemoryConstants::megaByte,
                                                                                                    NEO::AllocationType::linearStream, false, false,
                                                                                                    neoDevice->getDeviceBitfield()});
-        commandListImmediate->csr->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(heapAllocation), REUSABLE_ALLOCATION);
+        static_cast<CommandQueueImp *>(commandListImmediate->cmdQImmediate)->getCsr()->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(heapAllocation), REUSABLE_ALLOCATION);
     }
 
     ze_result_t returnValue;
@@ -305,6 +342,7 @@ void ImmediateCmdListSharedHeapsFixture::tearDown() {
 void ImmediateCmdListSharedHeapsFlushTaskFixtureInit::setUp(int32_t useImmediateFlushTask) {
     this->useImmediateFlushTask = useImmediateFlushTask;
     debugManager.flags.UseImmediateFlushTask.set(useImmediateFlushTask);
+    debugManager.flags.ContextGroupSize.set(0);
 
     ImmediateCmdListSharedHeapsFixture::setUp();
 }
@@ -316,14 +354,14 @@ void ImmediateCmdListSharedHeapsFlushTaskFixtureInit::appendNonKernelOperation(L
         result = currentCmdList->appendBarrier(nullptr, 0, nullptr, false);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     } else if (operation == NonKernelOperation::SignalEvent) {
-        result = currentCmdList->appendSignalEvent(event->toHandle());
+        result = currentCmdList->appendSignalEvent(event->toHandle(), false);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     } else if (operation == NonKernelOperation::ResetEvent) {
         result = currentCmdList->appendEventReset(event->toHandle());
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     } else if (operation == NonKernelOperation::WaitOnEvents) {
         auto eventHandle = event->toHandle();
-        result = currentCmdList->appendWaitOnEvents(1, &eventHandle, false, false, false);
+        result = currentCmdList->appendWaitOnEvents(1, &eventHandle, nullptr, false, false, false, false, false, false);
         EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     } else if (operation == NonKernelOperation::WriteGlobalTimestamp) {
         uint64_t timestampAddress = 0xfffffffffff0L;
@@ -375,7 +413,7 @@ void AppendFillFixture::setUp() {
 
     neoDevice = NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<Mock<MockDriverFillHandle>>();
@@ -408,7 +446,7 @@ void TbxImmediateCommandListFixture::setEvent() {
     auto mockEvent = static_cast<Event *>(event.get());
 
     size_t offset = event->getCompletionFieldOffset();
-    void *completionAddress = ptrOffset(mockEvent->hostAddress, offset);
+    void *completionAddress = ptrOffset(mockEvent->hostAddressFromPool, offset);
     size_t packets = event->getPacketsInUse();
     EventFieldType signaledValue = Event::STATE_SIGNALED;
     for (size_t i = 0; i < packets; i++) {
@@ -537,7 +575,7 @@ void CommandQueueThreadArbitrationPolicyFixture::setUp() {
     ze_result_t returnValue = ZE_RESULT_SUCCESS;
     auto executionEnvironment = new NEO::MockExecutionEnvironment();
     auto mockBuiltIns = new MockBuiltins();
-    executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     executionEnvironment->rootDeviceEnvironments[0]->initGmm();
 
     neoDevice = NEO::MockDevice::create<NEO::MockDevice>(executionEnvironment, 0u);
@@ -577,6 +615,52 @@ void CommandQueueThreadArbitrationPolicyFixture::tearDown() {
     commandList->destroy();
     commandQueue->destroy();
     L0::globalDriver = nullptr;
+}
+
+void CommandListScratchPatchFixtureInit::setUpParams(int32_t globalStatelessMode, int32_t heaplessStateInitEnabled, bool scratchAddressPatchingEnabled) {
+    fixtureGlobalStatelessMode = globalStatelessMode;
+    debugManager.flags.SelectCmdListHeapAddressModel.set(globalStatelessMode);
+
+    ModuleMutableCommandListFixture::setUp();
+
+    commandList->scratchAddressPatchingEnabled = scratchAddressPatchingEnabled;
+    commandList->heaplessModeEnabled = true;
+    commandList->heaplessStateInitEnabled = !!heaplessStateInitEnabled;
+
+    commandListImmediate->heaplessModeEnabled = true;
+    commandListImmediate->heaplessStateInitEnabled = !!heaplessStateInitEnabled;
+
+    commandQueue->heaplessModeEnabled = true;
+    commandQueue->heaplessStateInitEnabled = !!heaplessStateInitEnabled;
+
+    mockKernelImmData->kernelDescriptor->kernelAttributes.perThreadScratchSize[0] = 0x40;
+    mockKernelImmData->kernelDescriptor->payloadMappings.implicitArgs.scratchPointerAddress.pointerSize = scratchInlinePointerSize;
+    mockKernelImmData->kernelDescriptor->payloadMappings.implicitArgs.scratchPointerAddress.offset = scratchInlineOffset;
+}
+
+void CommandListScratchPatchFixtureInit::tearDown() {
+    ModuleMutableCommandListFixture::tearDown();
+}
+
+uint64_t CommandListScratchPatchFixtureInit::getSurfStateGpuBase(bool useImmediate) {
+    if (fixtureGlobalStatelessMode == 1) {
+        return device->getNEODevice()->getDefaultEngine().commandStreamReceiver->getGlobalStatelessHeapAllocation()->getGpuAddress();
+    } else {
+
+        if (useImmediate) {
+            return device->getNEODevice()->getDefaultEngine().commandStreamReceiver->getIndirectHeap(NEO::surfaceState, 0).getGpuBase();
+        } else {
+            return commandList->commandContainer.getIndirectHeap(NEO::surfaceState)->getGpuBase();
+        }
+    }
+}
+
+uint64_t CommandListScratchPatchFixtureInit::getExpectedScratchPatchAddress(uint64_t controllerScratchAddress) {
+    if (fixtureGlobalStatelessMode == 1) {
+        controllerScratchAddress += device->getNEODevice()->getDefaultEngine().commandStreamReceiver->getGlobalStatelessHeapAllocation()->getGpuAddress();
+    }
+
+    return controllerScratchAddress;
 }
 
 } // namespace ult

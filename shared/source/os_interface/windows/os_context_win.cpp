@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,7 +18,7 @@
 namespace NEO {
 
 OsContext *OsContextWin::create(OSInterface *osInterface, uint32_t rootDeviceIndex, uint32_t contextId, const EngineDescriptor &engineDescriptor) {
-    if (osInterface) {
+    if (osInterface && osInterface->getDriverModel()->getDriverModelType() == DriverModelType::wddm) {
         return new OsContextWin(*osInterface->getDriverModel()->as<Wddm>(), rootDeviceIndex, contextId, engineDescriptor);
     }
     return new OsContext(rootDeviceIndex, contextId, engineDescriptor);
@@ -30,7 +30,7 @@ OsContextWin::OsContextWin(Wddm &wddm, uint32_t rootDeviceIndex, uint32_t contex
       wddm(wddm) {
 }
 
-bool OsContextWin::initializeContext() {
+bool OsContextWin::initializeContext(bool allocateInterrupt) {
 
     NEO::EnvironmentVariableReader envReader;
     bool disableContextCreationFlag = envReader.getSetting("NEO_L0_SYSMAN_NO_CONTEXT_MODE", false);
@@ -102,13 +102,15 @@ bool OsContextWin::isDirectSubmissionSupported() const {
     auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
     auto isWSL = rootDeviceEnvironment.isWddmOnLinux();
 
-    return !isWSL && wddm.getWddmVersion() == WddmVersion::wddm20 && productHelper.isDirectSubmissionSupported(rootDeviceEnvironment.getReleaseHelper());
+    return !isWSL && productHelper.isDirectSubmissionSupported(rootDeviceEnvironment.getReleaseHelper());
 }
 
 OsContextWin::~OsContextWin() {
     if (contextInitialized && (false == this->wddm.skipResourceCleanup())) {
         wddm.getWddmInterface()->destroyHwQueue(hardwareQueue.handle);
-        wddm.getWddmInterface()->destroyMonitorFence(residencyController.getMonitoredFence());
+        if (residencyController.getMonitoredFence().fenceHandle != hardwareQueue.progressFenceHandle) {
+            wddm.getWddmInterface()->destroyMonitorFence(residencyController.getMonitoredFence().fenceHandle);
+        }
         wddm.destroyContext(wddmContextHandle);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #pragma once
 
 #include "shared/source/commands/bxml_generator_glue.h"
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/debug_helpers.h"
 #include "shared/source/xe_hpc_core/hw_info.h"
 
@@ -15,6 +16,7 @@
 
 #include <cstring>
 #include <type_traits>
+#include <variant>
 
 template <class T>
 struct CmdParse;
@@ -38,7 +40,6 @@ struct XeHpcCore {
     static constexpr bool isUsingMiMathMocs = true;
 
     struct StateBaseAddressStateSupport {
-        static constexpr bool globalAtomics = false;
         static constexpr bool bindingTablePoolBaseAddress = true;
     };
 
@@ -74,6 +75,7 @@ struct XeHpcCore {
             return bindlessSurfaceOffset << 6;
         }
     };
+    static constexpr uint32_t cacheLineSize = 0x40;
 
     static_assert(sizeof(DataPortBindlessSurfaceExtendedMessageDescriptor) == sizeof(DataPortBindlessSurfaceExtendedMessageDescriptor::packed), "");
 };
@@ -122,13 +124,13 @@ struct XeHpcCoreFamily : public XeHpcCore {
     static const XY_FAST_COLOR_BLT cmdInitXyColorBlt;
     static const STATE_PREFETCH cmdInitStatePrefetch;
     static const _3DSTATE_BTD cmd3dStateBtd;
-    static const _3DSTATE_BTD_BODY cmd3dStateBtdBody;
     static const MI_MEM_FENCE cmdInitMemFence;
     static const MEM_SET cmdInitMemSet;
     static const STATE_SIP cmdInitStateSip;
     static const STATE_SYSTEM_MEM_FENCE_ADDRESS cmdInitStateSystemMemFenceAddress;
     static constexpr bool isQwordInOrderCounter = false;
     static constexpr bool walkerPostSyncSupport = true;
+    static constexpr size_t indirectDataAlignment = COMPUTE_WALKER::INDIRECTDATASTARTADDRESS_ALIGN_SIZE;
 
     static constexpr bool supportsCmdSet(GFXCORE_FAMILY cmdSetBaseFamily) {
         return cmdSetBaseFamily == IGFX_XE_HP_CORE;
@@ -153,6 +155,18 @@ struct XeHpcCoreFamily : public XeHpcCore {
     static constexpr bool isHeaplessMode() {
         return false;
     }
+
+    template <typename InterfaceDescriptorType>
+    static constexpr bool isInterfaceDescriptorHeaplessMode() {
+        return false;
+    }
+
+    template <typename WalkerType>
+    static constexpr auto getPostSyncType() {
+        return std::decay_t<POSTSYNC_DATA>{};
+    }
+
+    using WalkerVariant = std::variant<COMPUTE_WALKER *>;
 };
 
 } // namespace NEO

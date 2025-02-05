@@ -82,7 +82,8 @@ MemObj::~MemObj() {
         needWait |= multiGraphicsAllocation.getGraphicsAllocations().size() > 1u;
         for (auto graphicsAllocation : multiGraphicsAllocation.getGraphicsAllocations()) {
             auto rootDeviceIndex = graphicsAllocation ? graphicsAllocation->getRootDeviceIndex() : 0;
-            bool doAsyncDestructions = debugManager.flags.EnableAsyncDestroyAllocations.get();
+
+            bool doAsyncDestructions = debugManager.flags.EnableAsyncDestroyAllocations.get() && !this->memoryProperties.flags.useHostPtr;
             if (graphicsAllocation && !associatedMemObject && !isHostPtrSVM && graphicsAllocation->peekReuseCount() == 0) {
                 memoryManager->removeAllocationFromHostPtrManager(graphicsAllocation);
                 if (!doAsyncDestructions) {
@@ -272,6 +273,10 @@ bool MemObj::isMemObjUncacheable() const {
 
 bool MemObj::isMemObjUncacheableForSurfaceState() const {
     return isAnyBitSet(flagsIntel, CL_MEM_LOCALLY_UNCACHED_SURFACE_STATE_RESOURCE | CL_MEM_LOCALLY_UNCACHED_RESOURCE);
+}
+
+bool MemObj::isMemObjDisplayable() const {
+    return this->isDisplayable;
 }
 
 GraphicsAllocation *MemObj::getGraphicsAllocation(uint32_t rootDeviceIndex) const {

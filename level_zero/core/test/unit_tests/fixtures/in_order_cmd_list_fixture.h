@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2024 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -22,29 +22,55 @@ namespace L0 {
 namespace ult {
 
 struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
+    class WhiteboxInOrderExecInfo : public InOrderExecInfo {
+      public:
+        using InOrderExecInfo::numDevicePartitionsToWait;
+        using InOrderExecInfo::numHostPartitionsToWait;
+        using InOrderExecInfo::tempTimestampNodes;
+    };
+
     struct FixtureMockEvent : public EventImp<uint32_t> {
         using EventImp<uint32_t>::Event::counterBasedMode;
+        using EventImp<uint32_t>::Event::isFromIpcPool;
         using EventImp<uint32_t>::Event::counterBasedFlags;
+        using EventImp<uint32_t>::Event::isSharableCounterBased;
+        using EventImp<uint32_t>::eventPoolAllocation;
         using EventImp<uint32_t>::maxPacketCount;
         using EventImp<uint32_t>::inOrderExecInfo;
         using EventImp<uint32_t>::inOrderExecSignalValue;
         using EventImp<uint32_t>::inOrderAllocationOffset;
         using EventImp<uint32_t>::csrs;
         using EventImp<uint32_t>::signalScope;
+        using EventImp<uint32_t>::waitScope;
+        using EventImp<uint32_t>::unsetCmdQueue;
+        using EventImp<uint32_t>::externalInterruptId;
+        using EventImp<uint32_t>::latestUsedCmdQueue;
+        using EventImp<uint32_t>::inOrderTimestampNode;
 
-        void makeCounterBasedInitiallyDisabled() {
+        void makeCounterBasedInitiallyDisabled(MultiGraphicsAllocation &poolAllocation) {
+            resetInOrderTimestampNode(nullptr);
             counterBasedMode = CounterBasedMode::initiallyDisabled;
+            resetCompletionStatus();
             counterBasedFlags = 0;
+            this->eventPoolAllocation = &poolAllocation;
+            this->hostAddressFromPool = ptrOffset(eventPoolAllocation->getGraphicsAllocation(0)->getUnderlyingBuffer(), eventPoolOffset);
+            reset();
         }
 
-        void makeCounterBasedImplicitlyDisabled() {
+        void makeCounterBasedImplicitlyDisabled(MultiGraphicsAllocation &poolAllocation) {
+            resetInOrderTimestampNode(nullptr);
             counterBasedMode = CounterBasedMode::implicitlyDisabled;
+            resetCompletionStatus();
             counterBasedFlags = 0;
+            this->eventPoolAllocation = &poolAllocation;
+            this->hostAddressFromPool = ptrOffset(eventPoolAllocation->getGraphicsAllocation(0)->getUnderlyingBuffer(), eventPoolOffset);
+            reset();
         }
     };
 
     void SetUp() override {
         NEO::debugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(NEO::PreemptionMode::Disabled));
+        NEO::debugManager.flags.ResolveDependenciesViaPipeControls.set(0u);
 
         ::Test<ModuleFixture>::SetUp();
         createKernel();
@@ -58,17 +84,21 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
         ::Test<ModuleFixture>::TearDown();
     }
 
-    DestroyableZeUniquePtr<FixtureMockEvent> createStandaloneCbEvent() {
+    DestroyableZeUniquePtr<FixtureMockEvent> createStandaloneCbEvent(const ze_base_desc_t *pNext) {
         constexpr uint32_t counterBasedFlags = (ZE_EVENT_POOL_COUNTER_BASED_EXP_FLAG_IMMEDIATE | ZE_EVENT_POOL_COUNTER_BASED_EXP_FLAG_NON_IMMEDIATE);
 
-        constexpr EventDescriptor eventDescriptor = {
+        const EventDescriptor eventDescriptor = {
             nullptr,                           // eventPoolAllocation
+            pNext,                             // extension
             0,                                 // totalEventSize
             EventPacketsCount::maxKernelSplit, // maxKernelCount
             0,                                 // maxPacketsCount
             counterBasedFlags,                 // counterBasedFlags
+            0,                                 // index
+            0,                                 // signalScope
+            0,                                 // waitScope
             false,                             // timestampPool
-            false,                             // kerneMappedTsPoolFlag
+            false,                             // kernelMappedTsPoolFlag
             false,                             // importedIpcPool
             false,                             // ipcPool
         };
@@ -78,10 +108,11 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
         uint64_t *hostAddress = &(standaloneCbEventStorage.data()[standaloneCbEventStorage.size() - 1]);
         uint64_t *deviceAddress = ptrOffset(hostAddress, 0x1000);
 
-        auto inOrderExecInfo = NEO::InOrderExecInfo::createFromExternalAllocation(*device->getNEODevice(), castToUint64(deviceAddress), hostAddress, 1);
+        auto inOrderExecInfo = NEO::InOrderExecInfo::createFromExternalAllocation(*device->getNEODevice(), nullptr, castToUint64(deviceAddress), nullptr, hostAddress, 1, 1, 1);
 
-        ze_event_desc_t eventDesc = {};
-        auto event = static_cast<FixtureMockEvent *>(Event::create<uint64_t>(eventDescriptor, &eventDesc, device));
+        ze_result_t result = ZE_RESULT_SUCCESS;
+        auto event = static_cast<FixtureMockEvent *>(Event::create<uint64_t>(eventDescriptor, device, result));
+        EXPECT_EQ(ZE_RESULT_SUCCESS, result);
         event->updateInOrderExecState(inOrderExecInfo, 1, 0);
 
         return DestroyableZeUniquePtr<FixtureMockEvent>(event);
@@ -119,11 +150,11 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
 
     template <GFXCORE_FAMILY gfxCoreFamily>
     DestroyableZeUniquePtr<WhiteBox<L0::CommandListCoreFamilyImmediate<gfxCoreFamily>>> createImmCmdList() {
-        return createImmCmdListImpl<gfxCoreFamily, WhiteBox<L0::CommandListCoreFamilyImmediate<gfxCoreFamily>>>();
+        return createImmCmdListImpl<gfxCoreFamily, WhiteBox<L0::CommandListCoreFamilyImmediate<gfxCoreFamily>>>(false);
     }
 
     template <GFXCORE_FAMILY gfxCoreFamily, typename CmdListT>
-    DestroyableZeUniquePtr<CmdListT> createImmCmdListImpl() {
+    DestroyableZeUniquePtr<CmdListT> createImmCmdListImpl(bool copyOffloadEnabled) {
         auto cmdList = makeZeUniquePtr<CmdListT>();
 
         auto csr = device->getNEODevice()->getDefaultEngine().commandStreamReceiver;
@@ -136,10 +167,14 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
         cmdList->cmdQImmediate = mockCmdQs[createdCmdLists].get();
         cmdList->isFlushTaskSubmissionEnabled = true;
         cmdList->cmdListType = CommandList::CommandListType::typeImmediate;
-        cmdList->csr = csr;
         cmdList->initialize(device, NEO::EngineGroupType::renderCompute, 0u);
         cmdList->commandContainer.setImmediateCmdListCsr(csr);
         cmdList->enableInOrderExecution();
+
+        if (copyOffloadEnabled) {
+            cmdList->enableCopyOperationOffload(device->getHwInfo().platform.eProductFamily, device, &desc);
+            cmdList->copyOperationFenceSupported = device->getProductHelper().isDeviceToHostCopySignalingFenceRequired();
+        }
 
         createdCmdLists++;
 
@@ -172,7 +207,7 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
         cmdList->engineGroupType = EngineGroupType::copy;
 
         mockCopyOsContext = std::make_unique<NEO::MockOsContext>(0, NEO::EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_BCS, EngineUsage::regular}, DeviceBitfield(1)));
-        cmdList->csr->setupContext(*mockCopyOsContext);
+        cmdList->getCsr(false)->setupContext(*mockCopyOsContext);
         return cmdList;
     }
 
@@ -207,7 +242,7 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
     }
 
     template <typename GfxFamily>
-    bool verifyInOrderDependency(GenCmdList::iterator &cmd, uint64_t counter, uint64_t syncVa, bool qwordCounter);
+    bool verifyInOrderDependency(GenCmdList::iterator &cmd, uint64_t counter, uint64_t syncVa, bool qwordCounter, bool isBcs);
 
     DebugManagerStateRestore restorer;
     std::unique_ptr<NEO::MockOsContext> mockCopyOsContext;
@@ -219,10 +254,11 @@ struct InOrderCmdListFixture : public ::Test<ModuleFixture> {
     ze_result_t returnValue = ZE_RESULT_SUCCESS;
     ze_group_count_t groupCount = {3, 2, 1};
     CmdListKernelLaunchParams launchParams = {};
+    CmdListMemoryCopyParams copyParams = {};
 };
 
 template <typename GfxFamily>
-bool InOrderCmdListFixture::verifyInOrderDependency(GenCmdList::iterator &cmd, uint64_t counter, uint64_t syncVa, bool qwordCounter) {
+bool InOrderCmdListFixture::verifyInOrderDependency(GenCmdList::iterator &cmd, uint64_t counter, uint64_t syncVa, bool qwordCounter, bool isBcs) {
     using MI_SEMAPHORE_WAIT = typename GfxFamily::MI_SEMAPHORE_WAIT;
     using MI_LOAD_REGISTER_IMM = typename GfxFamily::MI_LOAD_REGISTER_IMM;
 
@@ -231,13 +267,15 @@ bool InOrderCmdListFixture::verifyInOrderDependency(GenCmdList::iterator &cmd, u
         if (!lri) {
             return false;
         }
+
+        uint32_t base = (isBcs) ? RegisterOffsets::bcs0Base : 0x0;
         EXPECT_EQ(getLowPart(counter), lri->getDataDword());
-        EXPECT_EQ(RegisterOffsets::csGprR0, lri->getRegisterOffset());
+        EXPECT_EQ(RegisterOffsets::csGprR0 + base, lri->getRegisterOffset());
 
         lri++;
 
         EXPECT_EQ(getHighPart(counter), lri->getDataDword());
-        EXPECT_EQ(RegisterOffsets::csGprR0 + 4, lri->getRegisterOffset());
+        EXPECT_EQ(RegisterOffsets::csGprR0 + 4 + base, lri->getRegisterOffset());
 
         std::advance(cmd, 2);
     }
@@ -260,5 +298,42 @@ bool InOrderCmdListFixture::verifyInOrderDependency(GenCmdList::iterator &cmd, u
     cmd++;
     return true;
 }
+
+struct MultiTileInOrderCmdListFixture : public InOrderCmdListFixture {
+    void SetUp() override {
+        NEO::debugManager.flags.CreateMultipleSubDevices.set(partitionCount);
+        NEO::debugManager.flags.EnableImplicitScaling.set(4);
+
+        InOrderCmdListFixture::SetUp();
+    }
+
+    template <GFXCORE_FAMILY gfxCoreFamily>
+    DestroyableZeUniquePtr<WhiteBox<L0::CommandListCoreFamilyImmediate<gfxCoreFamily>>> createMultiTileImmCmdList() {
+        auto cmdList = createImmCmdList<gfxCoreFamily>();
+
+        cmdList->partitionCount = partitionCount;
+
+        return cmdList;
+    }
+
+    template <GFXCORE_FAMILY gfxCoreFamily>
+    DestroyableZeUniquePtr<WhiteBox<L0::CommandListCoreFamily<gfxCoreFamily>>> createMultiTileRegularCmdList(bool copyOnly) {
+        auto cmdList = createRegularCmdList<gfxCoreFamily>(copyOnly);
+
+        cmdList->partitionCount = partitionCount;
+
+        return cmdList;
+    }
+
+    const uint32_t partitionCount = 2;
+};
+
+struct MultiTileSynchronizedDispatchFixture : public MultiTileInOrderCmdListFixture {
+    void SetUp() override {
+        NEO::debugManager.flags.ForceSynchronizedDispatchMode.set(1);
+        MultiTileInOrderCmdListFixture::SetUp();
+    }
+};
+
 } // namespace ult
 } // namespace L0

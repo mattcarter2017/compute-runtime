@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -131,14 +131,14 @@ typedef struct tagINTERFACE_DESCRIPTOR_DATA {
         OVER_DISPATCH_CONTROL_NORMAL = 0x3,
     } OVER_DISPATCH_CONTROL;
     typedef enum tagSHARED_LOCAL_MEMORY_SIZE {
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_0K = 0x0,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_1K = 0x1,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_2K = 0x2,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_4K = 0x3,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_8K = 0x4,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_16K = 0x5,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_32K = 0x6,
-        SHARED_LOCAL_MEMORY_SIZE_ENCODES_64K = 0x7,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_0K = 0x0,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_1K = 0x1,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_2K = 0x2,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_4K = 0x3,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_8K = 0x4,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_16K = 0x5,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_32K = 0x6,
+        SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_64K = 0x7,
     } SHARED_LOCAL_MEMORY_SIZE;
     typedef enum tagROUNDING_MODE {
         ROUNDING_MODE_RTNE = 0x0,
@@ -155,7 +155,7 @@ typedef struct tagINTERFACE_DESCRIPTOR_DATA {
         TheStructure.Common.ThreadPreemptionDisable = THREAD_PREEMPTION_DISABLE_DISABLE;
         TheStructure.Common.SamplerCount = SAMPLER_COUNT_NO_SAMPLERS_USED;
         TheStructure.Common.OverDispatchControl = OVER_DISPATCH_CONTROL_NONE;
-        TheStructure.Common.SharedLocalMemorySize = SHARED_LOCAL_MEMORY_SIZE_ENCODES_0K;
+        TheStructure.Common.SharedLocalMemorySize = SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_0K;
         TheStructure.Common.RoundingMode = ROUNDING_MODE_RTNE;
     }
     static tagINTERFACE_DESCRIPTOR_DATA sInit() {
@@ -226,9 +226,11 @@ typedef struct tagINTERFACE_DESCRIPTOR_DATA {
         return static_cast<DENORM_MODE>(TheStructure.Common.DenormMode);
     }
     inline void setThreadPreemptionDisable(const THREAD_PREEMPTION_DISABLE value) {
+        UNRECOVERABLE_IF(true); // patched
         TheStructure.Common.ThreadPreemptionDisable = value;
     }
     inline THREAD_PREEMPTION_DISABLE getThreadPreemptionDisable() const {
+        UNRECOVERABLE_IF(true); // patched
         return static_cast<THREAD_PREEMPTION_DISABLE>(TheStructure.Common.ThreadPreemptionDisable);
     }
     inline void setSamplerCount(const SAMPLER_COUNT value) {
@@ -915,6 +917,8 @@ typedef struct tagMI_ATOMIC {
         ATOMIC_8B_MOVE = 0x24,
         ATOMIC_8B_INCREMENT = 0x25,
         ATOMIC_8B_DECREMENT = 0x26,
+        ATOMIC_8B_ADD = 0x27,
+        ATOMIC_8B_CMP_WR = 0x2E,
     } ATOMIC_OPCODES;
     inline void init() {
         memset(&TheStructure, 0, sizeof(TheStructure));
@@ -1237,11 +1241,11 @@ typedef struct tagMI_LOAD_REGISTER_IMM {
             uint32_t MiCommandOpcode : BITFIELD_RANGE(23, 28);
             uint32_t CommandType : BITFIELD_RANGE(29, 31);
             // DWORD 1
-            uint64_t Reserved_32 : BITFIELD_RANGE(0, 1);
-            uint64_t RegisterOffset : BITFIELD_RANGE(2, 22);
-            uint64_t Reserved_55 : BITFIELD_RANGE(23, 31);
+            uint32_t Reserved_32 : BITFIELD_RANGE(0, 1);     // patched
+            uint32_t RegisterOffset : BITFIELD_RANGE(2, 22); // patched
+            uint32_t Reserved_55 : BITFIELD_RANGE(23, 31);   // patched
             // DWORD 2
-            uint64_t DataDword : BITFIELD_RANGE(32, 63);
+            uint32_t DataDword; // patched
         } Common;
         uint32_t RawData[3];
     } TheStructure;
@@ -1293,17 +1297,17 @@ typedef struct tagMI_LOAD_REGISTER_IMM {
         REGISTEROFFSET_BIT_SHIFT = 0x2,
         REGISTEROFFSET_ALIGN_SIZE = 0x4,
     } REGISTEROFFSET;
-    inline void setRegisterOffset(const uint64_t value) {
+    inline void setRegisterOffset(const uint32_t value) {
         UNRECOVERABLE_IF(value > 0x7fffffL);
         TheStructure.Common.RegisterOffset = value >> REGISTEROFFSET_BIT_SHIFT;
     }
-    inline uint64_t getRegisterOffset() const {
+    inline uint32_t getRegisterOffset() const {
         return TheStructure.Common.RegisterOffset << REGISTEROFFSET_BIT_SHIFT;
     }
-    inline void setDataDword(const uint64_t value) {
+    inline void setDataDword(const uint32_t value) {
         TheStructure.Common.DataDword = value;
     }
-    inline uint64_t getDataDword() const {
+    inline uint32_t getDataDword() const {
         return TheStructure.Common.DataDword;
     }
 } MI_LOAD_REGISTER_IMM;
@@ -2421,11 +2425,11 @@ typedef struct tagRENDER_SURFACE_STATE {
         SURFACEQPITCH_BIT_SHIFT = 0x2,
         SURFACEQPITCH_ALIGN_SIZE = 0x4,
     } SURFACEQPITCH;
-    inline void setSurfaceQpitch(const uint32_t value) {
+    inline void setSurfaceQPitch(const uint32_t value) {
         DEBUG_BREAK_IF(value > 0x7fff);
         TheStructure.Common.SurfaceQpitch = value >> SURFACEQPITCH_BIT_SHIFT;
     }
-    inline uint32_t getSurfaceQpitch() const {
+    inline uint32_t getSurfaceQPitch() const {
         return TheStructure.Common.SurfaceQpitch << SURFACEQPITCH_BIT_SHIFT;
     }
     inline void setSampleTapDiscardDisable(const SAMPLE_TAP_DISCARD_DISABLE value) {
@@ -2565,25 +2569,25 @@ typedef struct tagRENDER_SURFACE_STATE {
     inline RENDER_TARGET_AND_SAMPLE_UNORM_ROTATION getRenderTargetAndSampleUnormRotation() const {
         return static_cast<RENDER_TARGET_AND_SAMPLE_UNORM_ROTATION>(TheStructure.Common.RenderTargetAndSampleUnormRotation);
     }
-    inline void setMipCountLod(const uint32_t value) {
+    inline void setMIPCountLOD(const uint32_t value) {
         DEBUG_BREAK_IF(value > 0xf);
         TheStructure.Common.MipCountLod = value;
     }
-    inline uint32_t getMipCountLod() const {
+    inline uint32_t getMIPCountLOD() const {
         return TheStructure.Common.MipCountLod;
     }
-    inline void setSurfaceMinLod(const uint32_t value) {
+    inline void setSurfaceMinLOD(const uint32_t value) {
         DEBUG_BREAK_IF(value > 0xf0);
         TheStructure.Common.SurfaceMinLod = value;
     }
-    inline uint32_t getSurfaceMinLod() const {
+    inline uint32_t getSurfaceMinLOD() const {
         return TheStructure.Common.SurfaceMinLod;
     }
-    inline void setMipTailStartLod(const uint32_t value) {
+    inline void setMipTailStartLOD(const uint32_t value) {
         DEBUG_BREAK_IF(value > 0xf00);
         TheStructure.Common.MipTailStartLod = value;
     }
-    inline uint32_t getMipTailStartLod() const {
+    inline uint32_t getMipTailStartLOD() const {
         return TheStructure.Common.MipTailStartLod;
     }
     inline void setCoherencyType(const COHERENCY_TYPE value) {
@@ -2782,11 +2786,11 @@ typedef struct tagRENDER_SURFACE_STATE {
         AUXILIARYSURFACEQPITCH_BIT_SHIFT = 0x2,
         AUXILIARYSURFACEQPITCH_ALIGN_SIZE = 0x4,
     } AUXILIARYSURFACEQPITCH;
-    inline void setAuxiliarySurfaceQpitch(const uint32_t value) {
+    inline void setAuxiliarySurfaceQPitch(const uint32_t value) {
         DEBUG_BREAK_IF(value > 0x7fff0000L);
         TheStructure._SurfaceFormatIsnotPlanar.AuxiliarySurfaceQpitch = value >> AUXILIARYSURFACEQPITCH_BIT_SHIFT;
     }
-    inline uint32_t getAuxiliarySurfaceQpitch() const {
+    inline uint32_t getAuxiliarySurfaceQPitch() const {
         return TheStructure._SurfaceFormatIsnotPlanar.AuxiliarySurfaceQpitch << AUXILIARYSURFACEQPITCH_BIT_SHIFT;
     }
     typedef enum tagAUXILIARYSURFACEBASEADDRESS {
@@ -3131,15 +3135,15 @@ typedef struct tagSAMPLER_STATE {
         INDIRECTSTATEPOINTER_ALIGN_SIZE = 0x40,
     } INDIRECTSTATEPOINTER;
     inline void setIndirectStatePointer(const uint32_t value) {
-        UNRECOVERABLE_IF(value > 0xffffff);
-        TheStructure.Common.IndirectStatePointer = static_cast<uint32_t>(value) >> INDIRECTSTATEPOINTER_BIT_SHIFT;
-    }
-    inline uint32_t getIndirectStatePointer() const {
-        return TheStructure.Common.IndirectStatePointer << INDIRECTSTATEPOINTER_BIT_SHIFT;
+        UNRECOVERABLE_IF(value & 0x3f);
+        TheStructure.Common.IndirectStatePointer = static_cast<uint32_t>(value & 0xffffc0) >> INDIRECTSTATEPOINTER_BIT_SHIFT;
+        setExtendedIndirectStatePointer(value);
     }
     inline void setExtendedIndirectStatePointer(const uint32_t value) {
-        UNRECOVERABLE_IF(value > 0xff);
-        TheStructure.Common.ExtendedIndirectStatePointer = value;
+        TheStructure.Common.ExtendedIndirectStatePointer = static_cast<uint32_t>(value & 0xff000000) >> 24;
+    }
+    inline uint64_t getIndirectStatePointer() const {
+        return (TheStructure.Common.ExtendedIndirectStatePointer << 24) | (TheStructure.Common.IndirectStatePointer << INDIRECTSTATEPOINTER_BIT_SHIFT);
     }
     inline uint32_t getExtendedIndirectStatePointer() const {
         return TheStructure.Common.ExtendedIndirectStatePointer;
@@ -3821,7 +3825,7 @@ typedef struct tagMI_USER_INTERRUPT {
         struct tagCommon {
             // DWORD 0
             uint32_t Reserved_0 : BITFIELD_RANGE(0, 22);
-            uint32_t MICommandOpcode : BITFIELD_RANGE(23, 28);
+            uint32_t MiCommandOpcode : BITFIELD_RANGE(23, 28);
             uint32_t CommandType : BITFIELD_RANGE(29, 31);
         } Common;
         uint32_t RawData[1];
@@ -3834,7 +3838,7 @@ typedef struct tagMI_USER_INTERRUPT {
     } COMMAND_TYPE;
     inline void init() {
         memset(&TheStructure, 0, sizeof(TheStructure));
-        TheStructure.Common.MICommandOpcode = MI_COMMAND_OPCODE_MI_USER_INTERRUPT;
+        TheStructure.Common.MiCommandOpcode = MI_COMMAND_OPCODE_MI_USER_INTERRUPT;
         TheStructure.Common.CommandType = COMMAND_TYPE_MI_COMMAND;
     }
     static tagMI_USER_INTERRUPT sInit() {
@@ -4997,7 +5001,8 @@ typedef struct tagMI_STORE_DATA_IMM {
         struct tagCommon {
             // DWORD 0
             uint32_t DwordLength : BITFIELD_RANGE(0, 9);
-            uint32_t Reserved_10 : BITFIELD_RANGE(10, 20);
+            uint32_t ForceWriteCompletionCheck : BITFIELD_RANGE(10, 10);
+            uint32_t Reserved_11 : BITFIELD_RANGE(11, 20);
             uint32_t StoreQword : BITFIELD_RANGE(21, 21);
             uint32_t UseGlobalGtt : BITFIELD_RANGE(22, 22);
             uint32_t MiCommandOpcode : BITFIELD_RANGE(23, 28);
@@ -5049,6 +5054,12 @@ typedef struct tagMI_STORE_DATA_IMM {
     }
     inline bool getStoreQword() const {
         return TheStructure.Common.StoreQword;
+    }
+    inline void setForceWriteCompletionCheck(const bool value) {
+        TheStructure.Common.ForceWriteCompletionCheck = value;
+    }
+    inline bool getForceWriteCompletionCheck() const {
+        return TheStructure.Common.ForceWriteCompletionCheck;
     }
     inline void setUseGlobalGtt(const bool value) {
         TheStructure.Common.UseGlobalGtt = value;
@@ -5561,7 +5572,7 @@ struct L3_CONTROL {
 };
 
 STATIC_ASSERT(28 == sizeof(L3_CONTROL));
-STATIC_ASSERT(std::is_pod<L3_CONTROL>::value);
+STATIC_ASSERT(NEO::TypeTraits::isPodV<L3_CONTROL>);
 
 typedef struct tagXY_BLOCK_COPY_BLT {
     union tagTheStructure {

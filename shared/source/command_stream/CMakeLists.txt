@@ -32,9 +32,6 @@ set(NEO_CORE_COMMAND_STREAM
     ${CMAKE_CURRENT_SOURCE_DIR}/definitions${BRANCH_DIR_SUFFIX}command_stream_receiver_hw_ext.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/definitions${BRANCH_DIR_SUFFIX}stream_properties.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/device_command_stream.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/experimental_command_buffer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/experimental_command_buffer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/experimental_command_buffer.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/linear_stream.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/linear_stream.h
     ${CMAKE_CURRENT_SOURCE_DIR}/preemption.cpp
@@ -60,6 +57,8 @@ set(NEO_CORE_COMMAND_STREAM
     ${CMAKE_CURRENT_SOURCE_DIR}/tbx_command_stream_receiver_hw.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/tbx_stream.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/thread_arbitration_policy.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/queue_throttle.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/queue_throttle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transfer_direction.h
     ${CMAKE_CURRENT_SOURCE_DIR}/wait_status.h
 )
@@ -84,6 +83,18 @@ endif()
 if(SUPPORT_DG2_AND_LATER)
   list(APPEND NEO_CORE_COMMAND_STREAM
        ${CMAKE_CURRENT_SOURCE_DIR}/command_stream_receiver_hw_dg2_and_later.inl
+  )
+endif()
+
+if(NOT SUPPORTED_HEAPLESS)
+  list(APPEND NEO_CORE_COMMAND_STREAM
+       ${CMAKE_CURRENT_SOURCE_DIR}/command_stream_receiver_hw_heap_addressing.inl
+  )
+endif()
+
+if(SUPPORT_XE2_AND_LATER)
+  list(APPEND NEO_CORE_COMMAND_STREAM
+       ${CMAKE_CURRENT_SOURCE_DIR}/preemption_xe2_and_later.inl
   )
 endif()
 

@@ -13,12 +13,24 @@
 #include <array>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 namespace NEO {
 
 class IndirectHeap;
+struct AddressRange;
+class HeapAllocator;
+
+namespace BindlessImageSlot {
+constexpr uint32_t image = 0;
+constexpr uint32_t implicitArgs = 1;
+constexpr uint32_t sampler = 2;
+constexpr uint32_t redescribedImage = 3;
+constexpr uint32_t max = 4;
+}; // namespace BindlessImageSlot
+
 class BindlessHeapsHelper {
   public:
     enum BindlesHeapType {
@@ -27,7 +39,8 @@ class BindlessHeapsHelper {
         globalDsh,
         numHeapTypes
     };
-    BindlessHeapsHelper(MemoryManager *memManager, bool isMultiOsContextCapable, const uint32_t rootDeviceIndex, DeviceBitfield deviceBitfield);
+
+    BindlessHeapsHelper(Device *rootDevice, bool isMultiOsContextCapable);
     MOCKABLE_VIRTUAL ~BindlessHeapsHelper();
 
     BindlessHeapsHelper(const BindlessHeapsHelper &) = delete;
@@ -48,7 +61,7 @@ class BindlessHeapsHelper {
 
     int getReusedSshVectorIndex(size_t ssSize) {
         int index = 0;
-        if (ssSize == 3 * surfaceStateSize) {
+        if (ssSize == NEO::BindlessImageSlot::max * surfaceStateSize) {
             index = 1;
         } else {
             UNRECOVERABLE_IF(ssSize != surfaceStateSize);
@@ -59,6 +72,13 @@ class BindlessHeapsHelper {
     void clearStateDirtyForContext(uint32_t osContextId);
 
   protected:
+    bool tryReservingMemoryForSpecialSsh(const size_t size, size_t alignment);
+    std::optional<AddressRange> reserveMemoryRange(size_t size, size_t alignment, HeapIndex heapIndex);
+    bool initializeReservedMemory();
+    bool isReservedMemoryModeAvailable();
+
+  protected:
+    Device *rootDevice = nullptr;
     const size_t surfaceStateSize;
     bool growHeap(BindlesHeapType heapType);
     MemoryManager *memManager = nullptr;
@@ -78,5 +98,14 @@ class BindlessHeapsHelper {
     std::mutex mtx;
     DeviceBitfield deviceBitfield;
     bool globalBindlessDsh = false;
+
+    bool useReservedMemory = false;
+    bool reservedMemoryInitialized = false;
+    uint64_t reservedRangeBase = 0;
+
+    std::unique_ptr<HeapAllocator> heapFrontWindow;
+    std::unique_ptr<HeapAllocator> heapRegular;
+
+    std::vector<AddressRange> reservedRanges;
 };
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,12 +7,16 @@
 
 #include "shared/source/os_interface/linux/pci_path.h"
 #include "shared/test/common/helpers/ult_hw_config.h"
+#include "shared/test/common/mocks/mock_driver_model.h"
 #include "shared/test/common/mocks/mock_product_helper.h"
 #include "shared/test/common/os_interface/linux/sys_calls_linux_ult.h"
 
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
+#include "level_zero/sysman/source/shared/linux/kmd_interface/sysman_kmd_interface.h"
+#include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper_hw.h"
 #include "level_zero/sysman/test/unit_tests/sources/global_operations/linux/mock_global_operations.h"
 #include "level_zero/sysman/test/unit_tests/sources/linux/mock_sysman_fixture.h"
+#include "level_zero/sysman/test/unit_tests/sources/linux/mocks/mock_sysman_product_helper.h"
+#include "level_zero/sysman/test/unit_tests/sources/shared/linux/kmd_interface/mock_sysman_kmd_interface_i915.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -69,6 +73,10 @@ class SysmanGlobalOperationsFixture : public SysmanDeviceFixture {
 
     void SetUp() override {
         SysmanDeviceFixture::SetUp();
+
+        pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef().osTime = MockOSTime::create();
+        pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef().osTime->setDeviceTimerResolution();
+
         pEngineHandleContextOld = pSysmanDeviceImp->pEngineHandleContext;
         pDiagnosticsHandleContextOld = pSysmanDeviceImp->pDiagnosticsHandleContext;
         pFirmwareHandleContextOld = pSysmanDeviceImp->pFirmwareHandleContext;
@@ -199,6 +207,29 @@ TEST_F(SysmanGlobalOperationsFixture, GivenValidDeviceHandleWhenCallingzesGlobal
         return -1;
     });
 
+    struct MockSysmanProductHelperGlobalOperation : L0::Sysman::SysmanProductHelperHw<IGFX_UNKNOWN> {
+        MockSysmanProductHelperGlobalOperation() = default;
+        std::unique_ptr<std::map<std::string, std::map<std::string, uint64_t>>> mockMap;
+        std::map<std::string, std::map<std::string, uint64_t>> *getGuidToKeyOffsetMap() override {
+            mockMap = std::make_unique<std::map<std::string, std::map<std::string, uint64_t>>>();
+            (*mockMap)["0x41fe79a5"] = {{"PPIN", 152},
+                                        {"BoardNumber", 72}};
+            return mockMap.get();
+        }
+    };
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper = std::make_unique<MockSysmanProductHelperGlobalOperation>();
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfacePrelim *pSysmanKmdInterface = new MockSysmanKmdInterfacePrelim(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+    pFsAccess->mockReadVal = driverVersion;
+
     pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     const std::string expectedSerialNumber("0x3e8c9dfe1c2e4d5c");
@@ -273,6 +304,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
@@ -330,6 +362,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -389,6 +422,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -446,6 +480,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -455,7 +490,7 @@ TEST_F(SysmanGlobalOperationsFixture,
 }
 
 TEST_F(SysmanGlobalOperationsFixture,
-       GivenValidDeviceHandleAndOpenSysCallFailsWhenCallingzesGlobalOperationsGetPropertiesThenInvalidSerialNumberAndBoardNumberAreReturned) {
+       GivenValidDeviceHandleAndOpenGuidReadFailsWhenCallingzesGlobalOperationsGetPropertiesThenInvalidSerialNumberAndBoardNumberAreReturned) {
 
     VariableBackup<decltype(NEO::SysCalls::sysCallsReadlink)> mockReadLink(&NEO::SysCalls::sysCallsReadlink, [](const char *path, char *buf, size_t bufsize) -> int {
         std::map<std::string, std::string> fileNameLinkMap = {
@@ -472,9 +507,33 @@ TEST_F(SysmanGlobalOperationsFixture,
     });
 
     VariableBackup<decltype(NEO::SysCalls::sysCallsOpen)> mockOpen(&SysCalls::sysCallsOpen, [](const char *pathname, int flags) -> int {
+        std::vector<std::string> supportedFiles = {
+            "/sys/class/intel_pmt/telem1/offset",
+            "/sys/class/intel_pmt/telem1/telem",
+        };
+
+        auto itr = std::find(supportedFiles.begin(), supportedFiles.end(), std::string(pathname));
+        if (itr != supportedFiles.end()) {
+            return static_cast<int>(std::distance(supportedFiles.begin(), itr)) + 1;
+        }
         return 0;
     });
 
+    VariableBackup<decltype(SysCalls::sysCallsPread)> mockPread(&SysCalls::sysCallsPread, [](int fd, void *buf, size_t count, off_t offset) -> ssize_t {
+        std::vector<std::pair<std::string, std::string>> supportedFiles = {
+            {"/sys/class/intel_pmt/telem1/guid", "0x41fe79a5\n"},
+            {"/sys/class/intel_pmt/telem1/offset", "0\n"},
+            {"/sys/class/intel_pmt/telem1/telem", "dummy"},
+        };
+
+        if ((--fd >= 0) && (fd < static_cast<int>(supportedFiles.size()))) {
+            memcpy(buf, supportedFiles[fd].second.c_str(), supportedFiles[fd].second.size());
+            return count;
+        }
+        return -1;
+    });
+
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -498,6 +557,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -513,6 +573,7 @@ TEST_F(SysmanGlobalOperationsFixture,
         return -1;
     });
 
+    pLinuxSysmanImp->rootPath = NEO::getPciRootPath(pLinuxSysmanImp->getDrm()->getFileDescriptor()).value_or("");
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     ze_result_t result = zesDeviceGetProperties(device, &properties);
 
@@ -522,36 +583,92 @@ TEST_F(SysmanGlobalOperationsFixture,
 }
 
 TEST_F(SysmanGlobalOperationsFixture,
-       GivenValidDeviceHandleWhenCallingzesDeviceGetPropertiesForCheckingDriverVersionWhenAgmaFileIsAbsentThenVerifyzesDeviceGetPropertiesCallSucceeds) {
+       GivenAgamaFileIsAbsentWhenCallingZesDeviceGetPropertiesForCheckingDriverVersionThenZesDeviceGetPropertiesCallSucceedsAndUnknownDriverVersionIsReturned) {
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfacePrelim *pSysmanKmdInterface = new MockSysmanKmdInterfacePrelim(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    std::string test;
-    test = srcVersion;
+    pFsAccess->mockReadVal = "";
+    ze_result_t result = zesDeviceGetProperties(device, &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_TRUE(0 == unknown.compare(properties.driverVersion));
+}
+
+TEST_F(SysmanGlobalOperationsFixture,
+       GivenAgamaFileIsPresentWhenCallingZesDeviceGetPropertiesForCheckingDriverVersionThenVerifyzesDeviceGetPropertiesCallSucceedsAndDriverVersionIsReturned) {
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfacePrelim *pSysmanKmdInterface = new MockSysmanKmdInterfacePrelim(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+    pFsAccess->mockReadVal = driverVersion;
+    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
+    ze_result_t result = zesDeviceGetProperties(device, &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_TRUE(0 == driverVersion.compare(properties.driverVersion));
+}
+
+TEST_F(SysmanGlobalOperationsFixture,
+       GivenSrcVersionFileIsAbsentUpstreamKernelWhenCallingZesDeviceGetPropertiesForCheckingDriverVersionThenZesDeviceGetPropertiesCallSucceedsAndUnknownDriverVersionIsReturned) {
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfaceUpstream *pSysmanKmdInterface = new MockSysmanKmdInterfaceUpstream(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+
+    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
+    pFsAccess->mockReadVal = "";
+    ze_result_t result = zesDeviceGetProperties(device, &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_TRUE(0 == unknown.compare(properties.driverVersion));
+}
+
+TEST_F(SysmanGlobalOperationsFixture,
+       GivenSrcVersionFileIsPresentAndUpstreamKernelWhenCallingZesDeviceGetPropertiesForCheckingDriverVersionThenVerifyzesDeviceGetPropertiesCallSucceedsAndDriverVersionIsReturned) {
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfaceUpstream *pSysmanKmdInterface = new MockSysmanKmdInterfaceUpstream(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+
     pFsAccess->mockReadVal = srcVersion;
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(0 == test.compare(properties.driverVersion));
-}
-
-TEST_F(SysmanGlobalOperationsFixture,
-       GivenValidDeviceHandleWhenCallingzesDeviceGetPropertiesForCheckingDriverVersionWhenAgmaFileAndSrcFileIsAbsentThenVerifyzesDeviceGetPropertiesCallSucceeds) {
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    pFsAccess->mockReadError = ZE_RESULT_ERROR_NOT_AVAILABLE;
     ze_result_t result = zesDeviceGetProperties(device, &properties);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(0 == unknown.compare(properties.driverVersion));
-}
-
-TEST_F(SysmanGlobalOperationsFixture,
-       GivenValidDeviceHandleWhenCallingzesDeviceGetPropertiesForCheckingDriverVersionWhenDriverVersionFileIsNotAvaliableThenVerifyzesDeviceGetPropertiesCallSucceeds) {
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    pFsAccess->mockReadError = ZE_RESULT_ERROR_NOT_AVAILABLE;
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(0 == unknown.compare(properties.driverVersion));
+    EXPECT_TRUE(0 == srcVersion.compare(properties.driverVersion));
 }
 
 TEST_F(SysmanGlobalOperationsFixture,
        GivenValidDeviceHandleWhenCallingzesDeviceGetPropertiesForCheckingDriverVersionWhenDriverVersionFileReadFailsThenVerifyzesDeviceGetPropertiesCallSucceeds) {
+
+    MockGlobalOperationsFsAccess *pFsAccess = new MockGlobalOperationsFsAccess();
+    MockGlobalOperationsSysfsAccess *pSysfsAccess = new MockGlobalOperationsSysfsAccess();
+    MockSysmanKmdInterfaceUpstream *pSysmanKmdInterface = new MockSysmanKmdInterfaceUpstream(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pFsAccess.reset(pFsAccess);
+    pSysmanKmdInterface->pSysfsAccess.reset(pSysfsAccess);
+    pLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+    pLinuxSysmanImp->pFsAccess = pFsAccess;
+    pLinuxSysmanImp->pSysfsAccess = pSysfsAccess;
+
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
     pFsAccess->mockReadError = ZE_RESULT_ERROR_UNKNOWN;
     ze_result_t result = zesDeviceGetProperties(device, &properties);
@@ -568,36 +685,6 @@ TEST_F(SysmanGlobalOperationsFixture,
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     EXPECT_TRUE(0 == unknown.compare(properties.vendorName));
     EXPECT_TRUE(0 == unknown.compare(properties.brandName));
-}
-
-TEST_F(SysmanGlobalOperationsFixture,
-       GivenValidDeviceHandleWhenCallingzesDeviceGetPropertiesForCheckingDriverVersionWhenAccessingAgamaFileOrSrcFileGotPermissionDeniedThenVerifyzesDeviceGetPropertiesCallSucceeds) {
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    pFsAccess->mockReadError = ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(0 == unknown.compare(properties.driverVersion));
-}
-
-TEST_F(SysmanGlobalOperationsFixture, GivenValidDeviceHandleAndXeDriverUsedWhileRetrievingInformationAboutHostProcessesUsingDeviceThenSuccessIsReturned) {
-    pLinuxSysmanImp->pSysmanKmdInterface = std::make_unique<SysmanKmdInterfaceXe>(pLinuxSysmanImp->getProductFamily());
-    pProcfsAccess->ourDevicePid = pProcfsAccess->extraPid;
-    // Assume two File descriptors of gpu are obtained by process
-    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
-    pProcfsAccess->ourDeviceFd1 = pProcfsAccess->extraFd1;
-    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
-    uint32_t count = 0;
-    ASSERT_EQ(ZE_RESULT_SUCCESS, zesDeviceProcessesGetState(device, &count, nullptr));
-    EXPECT_EQ(count, 1u);
-    std::vector<zes_process_state_t> processes(count);
-    ASSERT_EQ(ZE_RESULT_SUCCESS, zesDeviceProcessesGetState(device, &count, processes.data()));
-    EXPECT_EQ(processes[0].processId, static_cast<uint32_t>(pProcfsAccess->extraPid));
-    constexpr int64_t expectedEngines = ZES_ENGINE_TYPE_FLAG_RENDER | ZES_ENGINE_TYPE_FLAG_MEDIA;
-    EXPECT_EQ(processes[0].engines, expectedEngines);
-    uint64_t expectedMemSize = (120 * MemoryConstants::megaByte) + (50 * MemoryConstants::kiloByte) + 534 + ((50 * MemoryConstants::megaByte));
-    uint64_t expectedSharedSize = (120 * MemoryConstants::megaByte) + (80 * MemoryConstants::megaByte) + (120 * MemoryConstants::kiloByte) + 689;
-    EXPECT_EQ(processes[0].memSize, expectedMemSize);
-    EXPECT_EQ(processes[0].sharedSize, expectedSharedSize);
 }
 
 TEST_F(SysmanGlobalOperationsFixture, GivenValidDeviceHandleWhileRetrievingInformationAboutHostProcessesUsingDeviceThenSuccessIsReturned) {
@@ -754,6 +841,10 @@ TEST_F(SysmanGlobalOperationsFixture, GivenGemCreateIoctlFailsWithEINVALWhenCall
 
 TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingzesDeviceResetExtThenResetExtCallReturnSuccess) {
     init(true);
+
+    std::unique_ptr<SysmanProductHelper> pSysmanProductHelper = std::make_unique<MockSysmanProductHelper>();
+    std::swap(pLinuxSysmanImp->pSysmanProductHelper, pSysmanProductHelper);
+
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.VfBarResourceAllocationWa.set(false);
     zes_reset_properties_t pProperties = {.stype = ZES_STRUCTURE_TYPE_RESET_PROPERTIES, .pNext = nullptr, .force = true, .resetType = ZES_RESET_TYPE_WARM};
@@ -770,6 +861,35 @@ TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingzesDeviceResetE
     result = zesDeviceResetExt(pSysmanDevice->toHandle(), &pProperties);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     EXPECT_EQ(pFsAccess->mockFlrValue, "1");
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingZesDeviceResetExtForColdResetThenErrorIsReturned) {
+    initGlobalOps();
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0];
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcfsAccess->isRepeated.push_back(false);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    pSysfsAccess->mockBindDeviceError = ZE_RESULT_ERROR_NOT_AVAILABLE;
+    zes_reset_properties_t pProperties = {.stype = ZES_STRUCTURE_TYPE_RESET_PROPERTIES, .pNext = nullptr, .force = true, .resetType = ZES_RESET_TYPE_COLD};
+    ze_result_t result = zesDeviceResetExt(device, &pProperties);
+    EXPECT_EQ(ZE_RESULT_ERROR_NOT_AVAILABLE, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingZesDeviceResetExtForWarmResetThenErrorIsReturned) {
+    initGlobalOps();
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0];
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    zes_reset_properties_t pProperties = {.stype = ZES_STRUCTURE_TYPE_RESET_PROPERTIES, .pNext = nullptr, .force = true, .resetType = ZES_RESET_TYPE_WARM};
+    ze_result_t result = zesDeviceResetExt(device, &pProperties);
+    EXPECT_EQ(ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE, result);
 }
 
 TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingResetExtWithInvalidTypeThenFailureIsReturned) {
@@ -798,6 +918,25 @@ TEST_F(SysmanGlobalOperationsFixture, GivenForceTrueWhenCallingResetThenSuccessI
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
 }
 
+TEST_F(SysmanGlobalOperationsFixture,
+       GivenPermissionDeniedWhenCallingGetDeviceStateThenZeResultErrorInsufficientPermissionsIsReturned) {
+
+    pSysfsAccess->isRootSet = false;
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseWhenCallingResetThenZeResultErrorHandleObjectInUseIsReturned) {
+
+    pProcfsAccess->ourDevicePid = pProcfsAccess->extraPid;
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    ze_result_t result = zesDeviceReset(device, false);
+    EXPECT_EQ(ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE, result);
+}
+
 TEST_F(SysmanGlobalOperationsIntegratedFixture,
        GivenPermissionDeniedWhenCallingGetDeviceStateThenZeResultErrorInsufficientPermissionsIsReturned) {
 
@@ -815,6 +954,57 @@ TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceInUseWhenCallingReset
     pProcfsAccess->isRepeated.push_back(true);
     ze_result_t result = zesDeviceReset(device, false);
     EXPECT_EQ(ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE, result);
+}
+
+TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceInUseAndBindingFailsDuringResetWhenCallingResetThenErrorIsReturned) {
+
+    initGlobalOps();
+
+    pProcfsAccess->ourDevicePid = pProcfsAccess->pidList[0];
+    pProcfsAccess->ourDeviceFd = pProcfsAccess->extraFd;
+
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcfsAccess->isRepeated.push_back(false);
+    pProcfsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcfsAccess->isRepeated.push_back(true);
+    pProcfsAccess->mockNoKill = true;
+    pSysfsAccess->mockBindDeviceError = ZE_RESULT_ERROR_NOT_AVAILABLE;
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_NOT_AVAILABLE, result);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDeviceInUseAndReInitFailsDuringResetWhenCallingResetThenErrorIsReturned) {
+
+    initGlobalOps();
+    MockGlobalOperationsProcfsAccess *pProcFsAccess = new MockGlobalOperationsProcfsAccess();
+
+    pProcFsAccess->ourDevicePid = pProcFsAccess->pidList[0];
+    pProcFsAccess->ourDeviceFd = pProcFsAccess->extraFd;
+    pProcFsAccess->mockListProcessCall.push_back(DEVICE_UNUSED);
+    pProcFsAccess->isRepeated.push_back(false);
+    pProcFsAccess->mockListProcessCall.push_back(DEVICE_IN_USE);
+    pProcFsAccess->isRepeated.push_back(true);
+    pProcFsAccess->mockNoKill = true;
+
+    MockSysmanKmdInterfacePrelim *pSysmanKmdInterface = new MockSysmanKmdInterfacePrelim(pLinuxSysmanImp->getSysmanProductHelper());
+    pSysmanKmdInterface->pProcfsAccess.reset(pProcFsAccess);
+
+    std::unique_ptr<MockGlobalOpsLinuxSysmanImp> pMockGlobalOpsLinuxSysmanImp = std::make_unique<MockGlobalOpsLinuxSysmanImp>(pLinuxSysmanImp->getSysmanDeviceImp());
+    pMockGlobalOpsLinuxSysmanImp->pProcfsAccess = pProcFsAccess;
+    pMockGlobalOpsLinuxSysmanImp->pSysmanKmdInterface.reset(pSysmanKmdInterface);
+
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pLinuxSysmanImp = pMockGlobalOpsLinuxSysmanImp.get();
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->pProcfsAccess = pProcFsAccess;
+    static_cast<PublicLinuxGlobalOperationsImp *>(pGlobalOperationsImp->pOsGlobalOperations)->resetTimeout = 0; // timeout immediate
+
+    pMockGlobalOpsLinuxSysmanImp->ourDevicePid = pProcFsAccess->ourDevicePid;
+    pMockGlobalOpsLinuxSysmanImp->ourDeviceFd = pProcFsAccess->extraFd;
+    pMockGlobalOpsLinuxSysmanImp->setMockInitDeviceError(ZE_RESULT_ERROR_UNKNOWN);
+
+    ze_result_t result = zesDeviceReset(device, true);
+    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, result);
 }
 
 TEST_F(SysmanGlobalOperationsIntegratedFixture, GivenDeviceNotInUseWhenCallingResetThenSuccessIsReturned) {
@@ -998,19 +1188,6 @@ TEST_F(SysmanGlobalOperationsFixture,
     EXPECT_EQ(ZE_DEVICE_TYPE_GPU, properties.core.type);
 }
 
-HWTEST2_F(SysmanGlobalOperationsFixture,
-          GivenValidDeviceHandleWhenCallingGetPropertiesAndOnDemandPageFaultSupportedThenFlagIsSetCorrectlyInCoreProperties, IsAtMostGen11) {
-    auto mockHardwareInfo = device->getHardwareInfo();
-    mockHardwareInfo.capabilityTable.supportsOnDemandPageFaults = true;
-    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->setHwInfoAndInitHelpers(&mockHardwareInfo);
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(properties.core.flags & ZE_DEVICE_PROPERTY_FLAG_ONDEMANDPAGING);
-    EXPECT_TRUE(properties.core.flags & ZE_DEVICE_PROPERTY_FLAG_INTEGRATED);
-}
-
 TEST_F(SysmanGlobalOperationsFixture,
        GivenValidDeviceHandleWhenCallingGetPropertiesAndOnDemandPageFaultNotSupportedThenFlagIsNotSetInCoreProperties) {
     auto mockHardwareInfo = device->getHardwareInfo();
@@ -1035,6 +1212,91 @@ HWTEST2_F(SysmanGlobalOperationsFixture,
     EXPECT_FALSE(properties.core.flags & ZE_DEVICE_PROPERTY_FLAG_INTEGRATED);
 }
 
+TEST_F(SysmanGlobalOperationsFixture, GivenValidDeviceHandleWhenCallingGetPropertiesThenCorrectCorePropertiesAreReturned) {
+    auto pHwInfo = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getMutableHardwareInfo();
+    pHwInfo->platform.usDeviceID = 0x1234;
+    const std::string deviceName = "IntelTestDevice";
+    pHwInfo->capabilityTable.deviceName = &deviceName[0];
+
+    zes_device_properties_t properties = {};
+    ze_result_t result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(properties.core.type, ZE_DEVICE_TYPE_GPU);
+    EXPECT_EQ(properties.core.vendorId, static_cast<uint32_t>(0x8086));
+    EXPECT_EQ(properties.core.deviceId, static_cast<uint32_t>(pHwInfo->platform.usDeviceID));
+    EXPECT_EQ(properties.core.coreClockRate, static_cast<uint32_t>(pHwInfo->capabilityTable.maxRenderFrequency));
+    EXPECT_EQ(properties.core.maxHardwareContexts, static_cast<uint32_t>(1024 * 64));
+    EXPECT_EQ(properties.core.maxCommandQueuePriority, 0u);
+    EXPECT_EQ(properties.core.numThreadsPerEU, static_cast<uint32_t>(pHwInfo->gtSystemInfo.ThreadCount / pHwInfo->gtSystemInfo.EUCount));
+    EXPECT_EQ(properties.core.numEUsPerSubslice, static_cast<uint32_t>(pHwInfo->gtSystemInfo.MaxEuPerSubSlice));
+    EXPECT_EQ(properties.core.numSlices, static_cast<uint32_t>(pHwInfo->gtSystemInfo.SliceCount));
+    EXPECT_EQ(properties.core.timestampValidBits, static_cast<uint32_t>(pHwInfo->capabilityTable.timestampValidBits));
+    EXPECT_EQ(properties.core.kernelTimestampValidBits, static_cast<uint32_t>(pHwInfo->capabilityTable.kernelTimestampValidBits));
+    EXPECT_TRUE(0 == deviceName.compare(properties.core.name));
+
+    // Check if default device name is proper when HwInfo deviceName is null
+    std::stringstream expectedDeviceName;
+    expectedDeviceName << "Intel(R) Graphics";
+    expectedDeviceName << " [0x" << std::hex << std::setw(4) << std::setfill('0') << pSysmanDevice->getHardwareInfo().platform.usDeviceID << "]";
+
+    pHwInfo->capabilityTable.deviceName = "";
+    result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_TRUE(0 == expectedDeviceName.str().compare(properties.core.name));
+}
+
+TEST_F(SysmanGlobalOperationsFixture, WhenGettingDevicePropertiesThenSubslicesPerSliceIsBasedOnSubslicesSupported) {
+    auto pHwInfo = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getMutableHardwareInfo();
+    pHwInfo->gtSystemInfo.MaxSubSlicesSupported = 48;
+    pHwInfo->gtSystemInfo.MaxSlicesSupported = 3;
+    pHwInfo->gtSystemInfo.SubSliceCount = 8;
+    pHwInfo->gtSystemInfo.SliceCount = 1;
+
+    zes_device_properties_t properties = {};
+    ze_result_t result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(8u, properties.core.numSubslicesPerSlice);
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenValidDeviceHandleWhenCallingGetPropertiesThenCorrectTimerResolutionInCorePropertiesAreReturned) {
+    pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironmentRef().osTime.reset(new NEO::MockOSTimeWithConstTimestamp());
+    double mockedTimerResolution = pLinuxSysmanImp->getParentSysmanDeviceImp()->getRootDeviceEnvironment().osTime->getDynamicDeviceTimerResolution();
+    zes_device_properties_t properties = {};
+    ze_result_t result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(properties.core.timerResolution, static_cast<uint64_t>(mockedTimerResolution));
+
+    properties = {};
+    ze_device_properties_t coreProperties = {};
+    coreProperties.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES_1_2;
+    properties.core = coreProperties;
+    result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(properties.core.timerResolution, static_cast<uint64_t>(1000000000.0 / mockedTimerResolution));
+
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.UseCyclesPerSecondTimer.set(1);
+    properties = {};
+    result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(properties.core.timerResolution, static_cast<uint64_t>(1000000000.0 / mockedTimerResolution));
+}
+
+TEST_F(SysmanGlobalOperationsFixture, GivenDebugApiUsedSetWhenGettingDevicePropertiesThenSubslicesPerSliceIsBasedOnMaxSubslicesSupported) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.DebugApiUsed.set(1);
+    auto pHwInfo = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getMutableHardwareInfo();
+    pHwInfo->gtSystemInfo.MaxSubSlicesSupported = 48;
+    pHwInfo->gtSystemInfo.MaxSlicesSupported = 3;
+    pHwInfo->gtSystemInfo.SubSliceCount = 8;
+    pHwInfo->gtSystemInfo.SliceCount = 1;
+
+    zes_device_properties_t properties = {};
+    ze_result_t result = zesDeviceGetProperties(pSysmanDevice->toHandle(), &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(16u, properties.core.numSubslicesPerSlice);
+}
+
 using SysmanDevicePropertiesExtensionTest = SysmanGlobalOperationsFixture;
 
 TEST_F(SysmanDevicePropertiesExtensionTest,
@@ -1046,21 +1308,6 @@ TEST_F(SysmanDevicePropertiesExtensionTest,
     ze_result_t result = zesDeviceGetProperties(device, &properties);
     EXPECT_EQ(ZE_RESULT_SUCCESS, result);
     EXPECT_EQ(ZES_DEVICE_TYPE_GPU, extProperties.type);
-}
-
-HWTEST2_F(SysmanDevicePropertiesExtensionTest,
-          GivenValidDeviceHandleWhenCallingGetPropertiesForExtensionAndOnDemandPageFaultSupportedThenFlagIsSetCorrectly, IsAtMostGen11) {
-    auto mockHardwareInfo = device->getHardwareInfo();
-    mockHardwareInfo.capabilityTable.supportsOnDemandPageFaults = true;
-    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->setHwInfoAndInitHelpers(&mockHardwareInfo);
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    zes_device_ext_properties_t extProperties = {ZES_STRUCTURE_TYPE_DEVICE_EXT_PROPERTIES};
-    properties.pNext = &extProperties;
-
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(extProperties.flags & ZES_DEVICE_PROPERTY_FLAG_ONDEMANDPAGING);
-    EXPECT_TRUE(extProperties.flags & ZES_DEVICE_PROPERTY_FLAG_INTEGRATED);
 }
 
 TEST_F(SysmanDevicePropertiesExtensionTest,
@@ -1078,20 +1325,6 @@ TEST_F(SysmanDevicePropertiesExtensionTest,
 }
 
 HWTEST2_F(SysmanDevicePropertiesExtensionTest,
-          GivenValidDeviceHandleWhenCallingGetPropertiesForExtensionAndIsIntegratedDeviceThenFlagIsSet, IsAtMostGen11) {
-    auto mockHardwareInfo = device->getHardwareInfo();
-    mockHardwareInfo.capabilityTable.isIntegratedDevice = true;
-    device->getExecutionEnvironment()->rootDeviceEnvironments[device->getRootDeviceIndex()]->setHwInfoAndInitHelpers(&mockHardwareInfo);
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    zes_device_ext_properties_t extProperties = {ZES_STRUCTURE_TYPE_DEVICE_EXT_PROPERTIES};
-    properties.pNext = &extProperties;
-
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(extProperties.flags & ZES_DEVICE_PROPERTY_FLAG_INTEGRATED);
-}
-
-HWTEST2_F(SysmanDevicePropertiesExtensionTest,
           GivenValidDeviceHandleWhenCallingGetPropertiesForExtensionAndIsNotIntegratedDeviceThenFlagIsNotSet, IsXeHpgCore) {
     auto mockHardwareInfo = device->getHardwareInfo();
     mockHardwareInfo.capabilityTable.isIntegratedDevice = false;
@@ -1105,17 +1338,6 @@ HWTEST2_F(SysmanDevicePropertiesExtensionTest,
     EXPECT_FALSE(extProperties.flags & ZES_DEVICE_PROPERTY_FLAG_INTEGRATED);
 }
 
-HWTEST2_F(SysmanDevicePropertiesExtensionTest,
-          GivenValidDeviceHandleWhenCallingGetPropertiesForExtensionAndIsNotSubDeviceThenFlagIsNotSet, IsAtMostGen11) {
-    zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
-    zes_device_ext_properties_t extProperties = {ZES_STRUCTURE_TYPE_DEVICE_EXT_PROPERTIES};
-    properties.pNext = &extProperties;
-
-    ze_result_t result = zesDeviceGetProperties(device, &properties);
-    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
-    EXPECT_TRUE(extProperties.flags & ZES_DEVICE_PROPERTY_FLAG_INTEGRATED);
-}
-
 TEST_F(SysmanDevicePropertiesExtensionTest,
        GivenValidDeviceHandleWhenCallingGetPropertiesWithIncorrectStypeThenExtensionPropertiesNotSet) {
     zes_device_properties_t properties = {ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES};
@@ -1127,7 +1349,16 @@ TEST_F(SysmanDevicePropertiesExtensionTest,
     EXPECT_EQ(0u, extProperties.flags);
 }
 
-using SysmanDevicePropertiesExtensionTestMultiDevice = SysmanMultiDeviceFixture;
+class SysmanDevicePropertiesExtensionTestMultiDevice : public SysmanMultiDeviceFixture {
+  protected:
+    void SetUp() override {
+        SysmanMultiDeviceFixture::SetUp();
+        for (auto i = 0u; i < execEnv->rootDeviceEnvironments.size(); i++) {
+            execEnv->rootDeviceEnvironments[i]->osTime = MockOSTime::create();
+            execEnv->rootDeviceEnvironments[i]->osTime->setDeviceTimerResolution();
+        }
+    }
+};
 
 HWTEST2_F(SysmanDevicePropertiesExtensionTestMultiDevice,
           GivenValidDeviceHandleWhenCallingGetPropertiesForExtensionThenSubDeviceFlagSetCorrectly, IsXeHpcCore) {
@@ -1168,6 +1399,13 @@ class SysmanGlobalOperationsUuidFixture : public SysmanDeviceFixture {
         SysmanDeviceFixture::TearDown();
     }
 
+    void setPciBusInfo(NEO::ExecutionEnvironment *executionEnvironment, const NEO::PhysicalDevicePciBusInfo &pciBusInfo, const uint32_t rootDeviceIndex) {
+        auto driverModel = std::make_unique<NEO::MockDriverModel>();
+        driverModel->pciSpeedInfo = {1, 1, 1};
+        driverModel->pciBusInfo = pciBusInfo;
+        executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->osInterface->setDriverModel(std::move(driverModel));
+    }
+
     void initGlobalOps() {
         zes_device_state_t deviceState;
         EXPECT_EQ(ZE_RESULT_SUCCESS, zesDeviceGetState(device, &deviceState));
@@ -1199,6 +1437,140 @@ TEST_F(SysmanGlobalOperationsUuidFixture, GivenValidDeviceFDWhenRetrievingUuidTh
     EXPECT_EQ(true, result);
 
     std::swap(rootDeviceEnvironment.productHelper, mockProductHelper);
+}
+
+using SysmanSubDevicePropertiesExperimentalTestMultiDevice = SysmanMultiDeviceFixture;
+HWTEST2_F(SysmanSubDevicePropertiesExperimentalTestMultiDevice,
+          GivenValidDeviceHandleWhenCallingGetSubDevicePropertiesThenApiSucceeds, IsXeHpcCore) {
+    uint32_t count = 0;
+    ze_result_t result = zesDeviceGetSubDevicePropertiesExp(pSysmanDevice, &count, nullptr);
+    EXPECT_TRUE(count > 0);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    std::vector<zes_subdevice_exp_properties_t> subDeviceProps(count);
+    result = zesDeviceGetSubDevicePropertiesExp(pSysmanDevice, &count, subDeviceProps.data());
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+}
+
+HWTEST2_F(SysmanSubDevicePropertiesExperimentalTestMultiDevice,
+          GivenValidDeviceHandleWhenCallingGetSubDevicePropertiesTwiceThenApiResultsMatch, IsXeHpcCore) {
+    uint32_t count = 0;
+    ze_result_t result = zesDeviceGetSubDevicePropertiesExp(pSysmanDevice, &count, nullptr);
+    EXPECT_EQ(true, (count > 0));
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    std::vector<zes_subdevice_exp_properties_t> subDeviceProps(count);
+    result = zesDeviceGetSubDevicePropertiesExp(pSysmanDevice, &count, subDeviceProps.data());
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    std::vector<zes_subdevice_exp_properties_t> subDeviceProps2(count);
+    result = zesDeviceGetSubDevicePropertiesExp(pSysmanDevice, &count, subDeviceProps2.data());
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    for (uint32_t i = 0; i < count; i++) {
+        EXPECT_EQ(subDeviceProps[i].subdeviceId, subDeviceProps2[i].subdeviceId);
+        EXPECT_EQ(0, memcmp(subDeviceProps[i].uuid.id, subDeviceProps2[i].uuid.id, ZES_MAX_UUID_SIZE));
+    }
+}
+
+class SysmanDeviceGetByUuidExperimentalTestMultiDevice : public SysmanMultiDeviceFixture {
+  protected:
+    void SetUp() override {
+        SysmanMultiDeviceFixture::SetUp();
+        for (auto i = 0u; i < execEnv->rootDeviceEnvironments.size(); i++) {
+            execEnv->rootDeviceEnvironments[i]->osTime = MockOSTime::create();
+            execEnv->rootDeviceEnvironments[i]->osTime->setDeviceTimerResolution();
+        }
+    }
+};
+
+HWTEST2_F(SysmanDeviceGetByUuidExperimentalTestMultiDevice,
+          GivenValidDriverHandleWhenCallingGetDeviceByUuidWithInvalidUuidThenErrorResultIsReturned, IsXeHpcCore) {
+    zes_uuid_t uuid = {};
+    zes_device_handle_t phDevice;
+    ze_bool_t onSubdevice;
+    uint32_t subdeviceId;
+
+    ze_result_t result = zesDriverGetDeviceByUuidExp(driverHandle.get(), uuid, &phDevice, &onSubdevice, &subdeviceId);
+    EXPECT_EQ(ZE_RESULT_ERROR_INVALID_ARGUMENT, result);
+}
+
+HWTEST2_F(SysmanDeviceGetByUuidExperimentalTestMultiDevice,
+          GivenValidDriverHandleWhenCallingGetDeviceByUuidWithValidUuidThenCorrectDeviceIsReturned, IsXeHpcCore) {
+
+    zes_device_properties_t properties = {};
+    ze_result_t result = zesDeviceGetProperties(pSysmanDevice, &properties);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+
+    zes_uuid_t uuid = {};
+    std::copy_n(std::begin(properties.core.uuid.id), ZE_MAX_DEVICE_UUID_SIZE, std::begin(uuid.id));
+    zes_device_handle_t phDevice;
+    ze_bool_t onSubdevice;
+    uint32_t subdeviceId;
+
+    result = zesDriverGetDeviceByUuidExp(driverHandle.get(), uuid, &phDevice, &onSubdevice, &subdeviceId);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(phDevice, pSysmanDevice);
+}
+
+TEST_F(SysmanGlobalOperationsUuidFixture, GivenValidDeviceHandleWhenCallingGenerateUuidFromPciBusInfoThenValidUuidIsReturned) {
+    initGlobalOps();
+
+    auto pHwInfo = pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironment().getMutableHardwareInfo();
+    pHwInfo->platform.usDeviceID = 0x1234;
+    pHwInfo->platform.usRevId = 0x1;
+
+    std::array<uint8_t, NEO::ProductHelper::uuidSize> uuid;
+    NEO::PhysicalDevicePciBusInfo pciBusInfo = {};
+    pciBusInfo.pciDomain = 0x5678;
+    pciBusInfo.pciBus = 0x9;
+    pciBusInfo.pciDevice = 0xA;
+    pciBusInfo.pciFunction = 0xB;
+
+    bool result = pGlobalOperationsImp->pOsGlobalOperations->generateUuidFromPciBusInfo(pciBusInfo, uuid);
+    EXPECT_EQ(true, result);
+    uint8_t *pUuid = (uint8_t *)uuid.data();
+    EXPECT_EQ(*((uint16_t *)pUuid), (uint16_t)0x8086);
+    EXPECT_EQ(*((uint16_t *)(pUuid + 2)), (uint16_t)pHwInfo->platform.usDeviceID);
+    EXPECT_EQ(*((uint16_t *)(pUuid + 4)), (uint16_t)pHwInfo->platform.usRevId);
+    EXPECT_EQ(*((uint16_t *)(pUuid + 6)), (uint16_t)pciBusInfo.pciDomain);
+    EXPECT_EQ((*(pUuid + 8)), (uint8_t)pciBusInfo.pciBus);
+    EXPECT_EQ((*(pUuid + 9)), (uint8_t)pciBusInfo.pciDevice);
+    EXPECT_EQ((*(pUuid + 10)), (uint8_t)pciBusInfo.pciFunction);
+}
+
+TEST_F(SysmanGlobalOperationsUuidFixture, GivenValidDeviceHandleWithInvalidPciDomainWhenCallingGenerateUuidFromPciBusInfoThenFalseIsReturned) {
+    initGlobalOps();
+
+    std::array<uint8_t, NEO::ProductHelper::uuidSize> uuid;
+    NEO::PhysicalDevicePciBusInfo pciBusInfo = {};
+    pciBusInfo.pciDomain = std::numeric_limits<uint32_t>::max();
+
+    bool result = pGlobalOperationsImp->pOsGlobalOperations->generateUuidFromPciBusInfo(pciBusInfo, uuid);
+    EXPECT_EQ(false, result);
+}
+
+TEST_F(SysmanGlobalOperationsUuidFixture, GivenNullOsInterfaceObjectWhenRetrievingUuidThenFalseIsReturned) {
+    initGlobalOps();
+
+    auto &rootDeviceEnvironment = (pLinuxSysmanImp->getSysmanDeviceImp()->getRootDeviceEnvironmentRef());
+    auto prevOsInterface = std::move(rootDeviceEnvironment.osInterface);
+    rootDeviceEnvironment.osInterface = nullptr;
+
+    std::array<uint8_t, NEO::ProductHelper::uuidSize> uuid;
+    bool result = pGlobalOperationsImp->pOsGlobalOperations->getUuid(uuid);
+    EXPECT_EQ(false, result);
+    rootDeviceEnvironment.osInterface = std::move(prevOsInterface);
+}
+
+TEST_F(SysmanGlobalOperationsUuidFixture, GivenInvalidPciBusInfoWhenRetrievingUuidThenFalseIsReturned) {
+    initGlobalOps();
+    auto prevFlag = debugManager.flags.EnableChipsetUniqueUUID.get();
+    debugManager.flags.EnableChipsetUniqueUUID.set(0);
+
+    PhysicalDevicePciBusInfo pciBusInfo = {};
+    pciBusInfo.pciDomain = std::numeric_limits<uint32_t>::max();
+    setPciBusInfo(execEnv, pciBusInfo, 0);
+    std::array<uint8_t, NEO::ProductHelper::uuidSize> uuid;
+    bool result = pGlobalOperationsImp->pOsGlobalOperations->getUuid(uuid);
+    EXPECT_EQ(false, result);
+    debugManager.flags.EnableChipsetUniqueUUID.set(prevFlag);
 }
 
 } // namespace ult

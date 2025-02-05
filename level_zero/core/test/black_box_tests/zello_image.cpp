@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -98,6 +98,7 @@ void testAppendImageFunction(ze_context_handle_t &context,
                                   gpuDepth,
                                   0,
                                   0};
+
     ze_image_handle_t dstImg;
     ze_image_region_t dstRegion = {outOffsetX, outOffsetY, outOffsetZ, hostWidth, hostHeight, hostDepth};
 
@@ -219,6 +220,10 @@ int main(int argc, char *argv[]) {
     ze_command_queue_handle_t cmdQueue;
     uint32_t cmdQueueOrdinal;
     LevelZeroBlackBoxTests::initialize(driver, context, device, cmdQueue, cmdQueueOrdinal);
+
+    if (!LevelZeroBlackBoxTests::checkImageSupport(device, do1D, do2D, do3D, false)) {
+        return 0;
+    }
 
     bool success1D = false;
     bool success2D = false;

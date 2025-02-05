@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,7 +13,11 @@
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/test/common/helpers/default_hw_info.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/helpers/variable_backup.h"
+#include "shared/test/common/mocks/mock_memory_operations_handler.h"
+
+#include "gtest/gtest.h"
 
 namespace NEO {
 class CommandStreamReceiver;
@@ -29,11 +33,14 @@ extern CommandStreamReceiver *createCommandStream(ExecutionEnvironment &executio
 struct MockSubDevice : public SubDevice {
     using Device::allEngines;
     using Device::createEngines;
-    using Device::engineInstancedType;
-    using SubDevice::engineInstanced;
+    using Device::maxAllocationsSavedForReuseSize;
     using SubDevice::getDeviceBitfield;
     using SubDevice::getGlobalMemorySize;
     using SubDevice::SubDevice;
+
+    ~MockSubDevice() override {
+        EXPECT_EQ(nullptr, this->getDebugSurface());
+    }
 
     std::unique_ptr<CommandStreamReceiver> createCommandStreamReceiver() const override {
         return std::unique_ptr<CommandStreamReceiver>(createCommandStreamReceiverFunc(*executionEnvironment, getRootDeviceIndex(), getDeviceBitfield()));
@@ -41,31 +48,35 @@ struct MockSubDevice : public SubDevice {
     static decltype(&createCommandStream) createCommandStreamReceiverFunc;
 
     bool failOnCreateEngine = false;
-    bool createEngine(uint32_t deviceCsrIndex, EngineTypeUsage engineTypeUsage) override;
+    bool createEngine(EngineTypeUsage engineTypeUsage) override;
 };
 
 class MockDevice : public RootDevice {
   public:
     using Device::addEngineToEngineGroup;
     using Device::allEngines;
+    using Device::allocateDebugSurface;
+    using Device::bufferPoolCount;
     using Device::commandStreamReceivers;
     using Device::createDeviceInternals;
     using Device::createEngine;
     using Device::createSubDevices;
-    using Device::defaultBcsEngineIndex;
     using Device::deviceBitfield;
     using Device::deviceInfo;
-    using Device::engineInstanced;
-    using Device::engineInstancedType;
     using Device::executionEnvironment;
     using Device::generateUuidFromPciBusInfo;
     using Device::getGlobalMemorySize;
     using Device::initializeCaps;
-    using Device::regularContextPerBcsEngineAssignmentHelper;
-    using Device::regularContextPerCcsEngineAssignmentHelper;
+    using Device::initUsmReuseMaxSize;
+    using Device::maxAllocationsSavedForReuseSize;
+    using Device::maxBufferPoolCount;
+    using Device::microsecondResolution;
+    using Device::preemptionMode;
     using Device::regularEngineGroups;
     using Device::rootCsrCreated;
+    using Device::rtDispatchGlobalsInfos;
     using Device::rtMemoryBackedBuffer;
+    using Device::secondaryCsrs;
     using Device::secondaryEngines;
     using Device::uuid;
     using RootDevice::createEngines;
@@ -120,6 +131,14 @@ class MockDevice : public RootDevice {
     static T *createWithExecutionEnvironment(const HardwareInfo *pHwInfo, ExecutionEnvironment *executionEnvironment, uint32_t rootDeviceIndex) {
         pHwInfo = pHwInfo ? pHwInfo : defaultHwInfo.get();
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->setHwInfoAndInitHelpers(pHwInfo);
+        UnitTestSetter::setRcsExposure(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+        UnitTestSetter::setCcsExposure(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+
+        if (!executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface) {
+            executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = std::make_unique<MockMemoryOperations>();
+        }
+
+        executionEnvironment->calculateMaxOsContextCount();
         T *device = new T(executionEnvironment, rootDeviceIndex);
         return createDeviceInternals(device);
     }
@@ -136,10 +155,6 @@ class MockDevice : public RootDevice {
         return Device::create<MockSubDevice>(executionEnvironment, subDeviceIndex, *this);
     }
 
-    SubDevice *createEngineInstancedSubDevice(uint32_t subDeviceIndex, aub_stream::EngineType engineType) override {
-        return Device::create<MockSubDevice>(executionEnvironment, subDeviceIndex, *this, engineType);
-    }
-
     std::unique_ptr<CommandStreamReceiver> createCommandStreamReceiver() const override {
         return std::unique_ptr<CommandStreamReceiver>(createCommandStreamReceiverFunc(*executionEnvironment, getRootDeviceIndex(), getDeviceBitfield()));
     }
@@ -147,6 +162,9 @@ class MockDevice : public RootDevice {
     bool verifyAdapterLuid() override;
 
     void finalizeRayTracing();
+
+    ReleaseHelper *getReleaseHelper() const override;
+    AILConfiguration *getAilConfigurationHelper() const override;
 
     void setRTDispatchGlobalsForceAllocation() {
         rtDispatchGlobalsForceAllocation = true;
@@ -156,6 +174,16 @@ class MockDevice : public RootDevice {
         stopDirectSubmissionCalled = true;
         Device::stopDirectSubmissionAndWaitForCompletion();
     }
+
+    uint64_t getGlobalMemorySize(uint32_t deviceBitfield) const override {
+        if (callBaseGetGlobalMemorySize) {
+            return Device::getGlobalMemorySize(deviceBitfield);
+        }
+        return getGlobalMemorySizeReturn;
+    }
+
+    EngineControl *getSecondaryEngineCsr(EngineTypeUsage engineTypeUsage, bool allocateInterrupt) override;
+
     static ExecutionEnvironment *prepareExecutionEnvironment(const HardwareInfo *pHwInfo);
     static decltype(&createCommandStream) createCommandStreamReceiverFunc;
 
@@ -165,6 +193,11 @@ class MockDevice : public RootDevice {
     size_t maxParameterSizeFromIGC = 0u;
     bool rtDispatchGlobalsForceAllocation = true;
     bool stopDirectSubmissionCalled = false;
+    ReleaseHelper *mockReleaseHelper = nullptr;
+    AILConfiguration *mockAilConfigurationHelper = nullptr;
+    uint64_t getGlobalMemorySizeReturn = 0u;
+    bool callBaseGetGlobalMemorySize = true;
+    bool disableSecondaryEngines = false;
 };
 
 template <>

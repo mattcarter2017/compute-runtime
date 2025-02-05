@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,21 +8,23 @@
 #include "level_zero/tools/source/metrics/metric_ip_sampling_source.h"
 
 #include "shared/source/debug_settings/debug_settings_manager.h"
+#include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/string.h"
 
 #include "level_zero/core/source/device/device.h"
 #include "level_zero/core/source/device/device_imp.h"
-#include "level_zero/include/zet_intel_gpu_metric.h"
+#include "level_zero/core/source/gfx_core_helpers/l0_gfx_core_helper.h"
 #include "level_zero/tools/source/metrics/metric.h"
 #include "level_zero/tools/source/metrics/metric_ip_sampling_streamer.h"
 #include "level_zero/tools/source/metrics/os_interface_metric.h"
+#include "level_zero/zet_intel_gpu_metric.h"
+#include "level_zero/zet_intel_gpu_metric_export.h"
 #include <level_zero/zet_api.h>
 
 #include <cstring>
 
 namespace L0 {
-constexpr uint32_t ipSamplinMetricCount = 10u;
 constexpr uint32_t ipSamplinDomainId = 100u;
 
 std::unique_ptr<IpSamplingMetricSourceImp> IpSamplingMetricSourceImp::create(const MetricDeviceContext &metricDeviceContext) {
@@ -55,8 +57,8 @@ bool IpSamplingMetricSourceImp::isAvailable() {
 
 void IpSamplingMetricSourceImp::cacheMetricGroup() {
 
+    const auto deviceImp = static_cast<DeviceImp *>(&metricDeviceContext.getDevice());
     if (metricDeviceContext.isImplicitScalingCapable()) {
-        const auto deviceImp = static_cast<DeviceImp *>(&metricDeviceContext.getDevice());
         std::vector<IpSamplingMetricGroupImp *> subDeviceMetricGroup = {};
         subDeviceMetricGroup.reserve(deviceImp->subDevices.size());
 
@@ -78,7 +80,9 @@ void IpSamplingMetricSourceImp::cacheMetricGroup() {
     }
 
     std::vector<IpSamplingMetricImp> metrics = {};
-    metrics.reserve(ipSamplinMetricCount);
+    auto &l0GfxCoreHelper = deviceImp->getNEODevice()->getRootDeviceEnvironment().getHelper<L0GfxCoreHelper>();
+    metrics.reserve(l0GfxCoreHelper.getIpSamplingMetricCount());
+    metricSourceCount = l0GfxCoreHelper.getIpSamplingMetricCount();
 
     zet_metric_properties_t metricProperties = {};
 
@@ -93,28 +97,18 @@ void IpSamplingMetricSourceImp::cacheMetricGroup() {
     strcpy_s(metricProperties.description, ZET_MAX_METRIC_DESCRIPTION, "IP address");
     metricProperties.metricType = ZET_METRIC_TYPE_IP;
     strcpy_s(metricProperties.resultUnits, ZET_MAX_METRIC_RESULT_UNITS, "Address");
-    metrics.push_back(IpSamplingMetricImp(metricProperties));
+    metrics.push_back(IpSamplingMetricImp(*this, metricProperties));
 
-    std::vector<std::pair<const char *, const char *>> metricPropertiesList = {
-        {"Active", "Active cycles"},
-        {"ControlStall", "Stall on control"},
-        {"PipeStall", "Stall on pipe"},
-        {"SendStall", "Stall on send"},
-        {"DistStall", "Stall on distance"},
-        {"SbidStall", "Stall on scoreboard"},
-        {"SyncStall", "Stall on sync"},
-        {"InstrFetchStall", "Stall on instruction fetch"},
-        {"OtherStall", "Stall on other condition"},
-    };
+    std::vector<std::pair<const char *, const char *>> stallSamplingReportList = l0GfxCoreHelper.getStallSamplingReportMetrics();
 
     // Preparing properties for others because of common values
     metricProperties.metricType = ZET_METRIC_TYPE_EVENT;
     strcpy_s(metricProperties.resultUnits, ZET_MAX_METRIC_RESULT_UNITS, "Events");
 
-    for (auto &property : metricPropertiesList) {
+    for (auto &property : stallSamplingReportList) {
         strcpy_s(metricProperties.name, ZET_MAX_METRIC_NAME, property.first);
         strcpy_s(metricProperties.description, ZET_MAX_METRIC_DESCRIPTION, property.second);
-        metrics.push_back(IpSamplingMetricImp(metricProperties));
+        metrics.push_back(IpSamplingMetricImp(*this, metricProperties));
     }
 
     cachedMetricGroup = IpSamplingMetricGroupImp::create(*this, metrics);
@@ -179,16 +173,14 @@ ze_result_t IpSamplingMetricGroupBase::getExportData(const uint8_t *pRawData, si
     }
 
     if (*pExportDataSize < expectedExportDataSize) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
-                              "Error:Incorrect Size Passed at %s():%d returning 0x%x\n",
-                              __FUNCTION__, __LINE__, ZE_RESULT_ERROR_INVALID_SIZE);
+        METRICS_LOG_ERR("Incorrect Size Passed. Returning 0x%x", ZE_RESULT_ERROR_INVALID_SIZE);
         return ZE_RESULT_ERROR_INVALID_SIZE;
     }
 
     zet_intel_metric_df_gpu_export_data_format_t *exportData = reinterpret_cast<zet_intel_metric_df_gpu_export_data_format_t *>(pExportData);
     exportData->header.type = ZET_INTEL_METRIC_DF_SOURCE_TYPE_IPSAMPLING;
-    exportData->header.version.major = ZET_INTEL_GPU_METRIC_VERSION_MAJOR;
-    exportData->header.version.minor = ZET_INTEL_GPU_METRIC_VERSION_MINOR;
+    exportData->header.version.major = ZET_INTEL_GPU_METRIC_EXPORT_VERSION_MAJOR;
+    exportData->header.version.minor = ZET_INTEL_GPU_METRIC_EXPORT_VERSION_MINOR;
     exportData->header.rawDataOffset = sizeof(zet_intel_metric_df_gpu_export_data_format_t);
     exportData->header.rawDataSize = rawDataSize;
 
@@ -196,6 +188,50 @@ ze_result_t IpSamplingMetricGroupBase::getExportData(const uint8_t *pRawData, si
     memcpy_s(reinterpret_cast<void *>(pExportData + exportData->header.rawDataOffset), rawDataSize, pRawData, rawDataSize);
 
     return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t IpSamplingMetricSourceImp::getConcurrentMetricGroups(std::vector<zet_metric_group_handle_t> &hMetricGroups,
+                                                                 uint32_t *pConcurrentGroupCount,
+                                                                 uint32_t *pCountPerConcurrentGroup) {
+
+    if (*pConcurrentGroupCount == 0) {
+        *pConcurrentGroupCount = static_cast<uint32_t>(hMetricGroups.size());
+        return ZE_RESULT_SUCCESS;
+    }
+
+    *pConcurrentGroupCount = std::min(*pConcurrentGroupCount, static_cast<uint32_t>(hMetricGroups.size()));
+    // Each metric group is in unique container
+    for (uint32_t index = 0; index < *pConcurrentGroupCount; index++) {
+        pCountPerConcurrentGroup[index] = 1;
+    }
+    return ZE_RESULT_SUCCESS;
+}
+
+ze_result_t IpSamplingMetricSourceImp::handleMetricGroupExtendedProperties(zet_metric_group_handle_t hMetricGroup, void *pNext) {
+    ze_result_t retVal = ZE_RESULT_ERROR_INVALID_ARGUMENT;
+    while (pNext) {
+        auto extendedProperties = reinterpret_cast<zet_base_properties_t *>(pNext);
+
+        if (extendedProperties->stype == ZET_STRUCTURE_TYPE_METRIC_GLOBAL_TIMESTAMPS_RESOLUTION_EXP) {
+
+            zet_metric_global_timestamps_resolution_exp_t *metricsTimestampProperties =
+                reinterpret_cast<zet_metric_global_timestamps_resolution_exp_t *>(extendedProperties);
+
+            getTimerResolution(metricsTimestampProperties->timerResolution);
+            getTimestampValidBits(metricsTimestampProperties->timestampValidBits);
+            retVal = ZE_RESULT_SUCCESS;
+        }
+
+        if (extendedProperties->stype == ZET_STRUCTURE_TYPE_METRIC_GROUP_TYPE_EXP) {
+            zet_metric_group_type_exp_t *groupType = reinterpret_cast<zet_metric_group_type_exp_t *>(extendedProperties);
+            groupType->type = ZET_METRIC_GROUP_TYPE_EXP_FLAG_OTHER;
+            retVal = ZE_RESULT_SUCCESS;
+        }
+
+        pNext = extendedProperties->pNext;
+    }
+
+    return retVal;
 }
 
 IpSamplingMetricGroupImp::IpSamplingMetricGroupImp(IpSamplingMetricSourceImp &metricSource,
@@ -211,7 +247,7 @@ IpSamplingMetricGroupImp::IpSamplingMetricGroupImp(IpSamplingMetricSourceImp &me
     strcpy_s(properties.description, ZET_MAX_METRIC_GROUP_DESCRIPTION, "EU stall sampling");
     properties.samplingType = ZET_METRIC_GROUP_SAMPLING_TYPE_FLAG_TIME_BASED;
     properties.domain = ipSamplinDomainId;
-    properties.metricCount = ipSamplinMetricCount;
+    properties.metricCount = this->getMetricSource().metricSourceCount;
 }
 
 ze_result_t IpSamplingMetricGroupImp::getProperties(zet_metric_group_properties_t *pProperties) {
@@ -220,7 +256,7 @@ ze_result_t IpSamplingMetricGroupImp::getProperties(zet_metric_group_properties_
     pProperties->pNext = pNext;
 
     if (pNext) {
-        return getMetricGroupExtendedProperties(metricSource, pNext);
+        return metricSource.handleMetricGroupExtendedProperties(toHandle(), pNext);
     }
 
     return ZE_RESULT_SUCCESS;
@@ -258,9 +294,8 @@ ze_result_t IpSamplingMetricGroupImp::calculateMetricValues(const zet_metric_gro
     const bool calculateCountOnly = *pMetricValueCount == 0;
 
     if (isMultiDeviceCaptureData(rawDataSize, pRawData)) {
-        NEO::printDebugString(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "%s",
-                              "INFO: The call is not supported for multiple devices\n"
-                              "INFO: Please use zetMetricGroupCalculateMultipleMetricValuesExp instead\n");
+        METRICS_LOG_INFO("%s", "The call is not supported for multiple devices");
+        METRICS_LOG_INFO("%s", "Please use zetMetricGroupCalculateMultipleMetricValuesExp instead");
         return ZE_RESULT_ERROR_INVALID_ARGUMENT;
     }
 
@@ -419,7 +454,7 @@ ze_result_t IpSamplingMetricGroupImp::getCalculatedMetricValues(const zet_metric
                                                                 uint32_t &metricValueCount,
                                                                 zet_typed_value_t *pCalculatedData) {
     bool dataOverflow = false;
-    StallSumIpDataMap_t stallSumIpDataMap;
+    std::map<uint64_t, void *> stallReportDataMap;
 
     // MAX_METRIC_VALUES is not supported yet.
     if (type != ZET_METRIC_GROUP_CALCULATION_TYPE_METRIC_VALUES) {
@@ -436,127 +471,27 @@ ze_result_t IpSamplingMetricGroupImp::getCalculatedMetricValues(const zet_metric
 
     const uint32_t rawReportCount = static_cast<uint32_t>(rawDataSize) / rawReportSize;
 
+    DeviceImp *deviceImp = static_cast<DeviceImp *>(&this->getMetricSource().getMetricDeviceContext().getDevice());
+    auto &l0GfxCoreHelper = deviceImp->getNEODevice()->getRootDeviceEnvironment().getHelper<L0GfxCoreHelper>();
+
     for (const uint8_t *pRawIpData = pRawData; pRawIpData < pRawData + (rawReportCount * rawReportSize); pRawIpData += rawReportSize) {
-        dataOverflow |= stallIpDataMapUpdate(stallSumIpDataMap, pRawIpData);
+        dataOverflow |= l0GfxCoreHelper.stallIpDataMapUpdate(stallReportDataMap, pRawIpData);
     }
 
-    metricValueCount = std::min<uint32_t>(metricValueCount, static_cast<uint32_t>(stallSumIpDataMap.size()) * properties.metricCount);
+    metricValueCount = std::min<uint32_t>(metricValueCount, static_cast<uint32_t>(stallReportDataMap.size()) * properties.metricCount);
     std::vector<zet_typed_value_t> ipDataValues;
     uint32_t i = 0;
-    for (auto it = stallSumIpDataMap.begin(); it != stallSumIpDataMap.end(); ++it) {
-        stallSumIpDataToTypedValues(it->first, it->second, ipDataValues);
+    for (auto it = stallReportDataMap.begin(); it != stallReportDataMap.end(); ++it) {
+        l0GfxCoreHelper.stallSumIpDataToTypedValues(it->first, it->second, ipDataValues);
         for (auto jt = ipDataValues.begin(); (jt != ipDataValues.end()) && (i < metricValueCount); jt++, i++) {
             *(pCalculatedData + i) = *jt;
         }
         ipDataValues.clear();
     }
+    l0GfxCoreHelper.stallIpDataMapDelete(stallReportDataMap);
+    stallReportDataMap.clear();
 
     return dataOverflow ? ZE_RESULT_WARNING_DROPPED_DATA : ZE_RESULT_SUCCESS;
-}
-
-/*
- * stall sample data item format:
- *
- * Bits		Field
- * 0  to 28	IP (addr)
- * 29 to 36	active count
- * 37 to 44	other count
- * 45 to 52	control count
- * 53 to 60	pipestall count
- * 61 to 68	send count
- * 69 to 76	dist_acc count
- * 77 to 84	sbid count
- * 85 to 92	sync count
- * 93 to 100	inst_fetch count
- *
- * bytes 49 and 50, subSlice
- * bytes 51 and 52, flags
- *
- * total size 64 bytes
- */
-bool IpSamplingMetricGroupImp::stallIpDataMapUpdate(StallSumIpDataMap_t &stallSumIpDataMap, const uint8_t *pRawIpData) {
-
-    const uint8_t *tempAddr = pRawIpData;
-    uint64_t ip = 0ULL;
-    memcpy_s(reinterpret_cast<uint8_t *>(&ip), sizeof(ip), tempAddr, sizeof(ip));
-    ip &= 0x1fffffff;
-    StallSumIpData_t &stallSumData = stallSumIpDataMap[ip];
-    tempAddr += 3;
-
-    auto getCount = [&tempAddr]() {
-        uint16_t tempCount = 0;
-        memcpy_s(reinterpret_cast<uint8_t *>(&tempCount), sizeof(tempCount), tempAddr, sizeof(tempCount));
-        tempCount = (tempCount >> 5) & 0xff;
-        tempAddr += 1;
-        return static_cast<uint8_t>(tempCount);
-    };
-
-    stallSumData.activeCount += getCount();
-    stallSumData.otherCount += getCount();
-    stallSumData.controlCount += getCount();
-    stallSumData.pipeStallCount += getCount();
-    stallSumData.sendCount += getCount();
-    stallSumData.distAccCount += getCount();
-    stallSumData.sbidCount += getCount();
-    stallSumData.syncCount += getCount();
-    stallSumData.instFetchCount += getCount();
-
-    struct StallCntrInfo {
-        uint16_t subslice;
-        uint16_t flags;
-    } stallCntrInfo = {};
-
-    tempAddr = pRawIpData + 48;
-    memcpy_s(reinterpret_cast<uint8_t *>(&stallCntrInfo), sizeof(stallCntrInfo), tempAddr, sizeof(stallCntrInfo));
-
-    constexpr int overflowDropFlag = (1 << 8);
-    return stallCntrInfo.flags & overflowDropFlag;
-}
-
-// The order of push_back calls must match the order of metricPropertiesList.
-void IpSamplingMetricGroupImp::stallSumIpDataToTypedValues(uint64_t ip,
-                                                           StallSumIpData_t &sumIpData,
-                                                           std::vector<zet_typed_value_t> &ipDataValues) {
-    zet_typed_value_t tmpValueData;
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = ip;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.activeCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.controlCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.pipeStallCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.sendCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.distAccCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.sbidCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.syncCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.instFetchCount;
-    ipDataValues.push_back(tmpValueData);
-
-    tmpValueData.type = ZET_VALUE_TYPE_UINT64;
-    tmpValueData.value.ui64 = sumIpData.otherCount;
-    ipDataValues.push_back(tmpValueData);
 }
 
 zet_metric_group_handle_t IpSamplingMetricGroupImp::getMetricGroupForSubDevice(const uint32_t subDeviceIndex) {
@@ -654,7 +589,7 @@ std::unique_ptr<MultiDeviceIpSamplingMetricGroupImp> MultiDeviceIpSamplingMetric
     return std::unique_ptr<MultiDeviceIpSamplingMetricGroupImp>(new (std::nothrow) MultiDeviceIpSamplingMetricGroupImp(metricSource, subDeviceMetricGroup));
 }
 
-IpSamplingMetricImp::IpSamplingMetricImp(zet_metric_properties_t &properties) : properties(properties) {
+IpSamplingMetricImp::IpSamplingMetricImp(MetricSource &metricSource, zet_metric_properties_t &properties) : MetricImp(metricSource), properties(properties) {
 }
 
 ze_result_t IpSamplingMetricImp::getProperties(zet_metric_properties_t *pProperties) {

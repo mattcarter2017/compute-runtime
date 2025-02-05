@@ -9,6 +9,7 @@
 #include "shared/offline_compiler/source/ocloc_api.h"
 #include "shared/offline_compiler/source/ocloc_arg_helper.h"
 #include "shared/offline_compiler/source/ocloc_concat.h"
+#include "shared/offline_compiler/source/ocloc_interface.h"
 #include "shared/offline_compiler/source/queries.h"
 #include "shared/offline_compiler/source/utilities/get_git_version_info.h"
 #include "shared/source/device_binary_format/ar/ar_decoder.h"
@@ -17,11 +18,14 @@
 #include "shared/source/device_binary_format/elf/ocl_elf.h"
 #include "shared/source/helpers/file_io.h"
 #include "shared/source/helpers/product_config_helper.h"
+#include "shared/source/helpers/string.h"
 #include "shared/test/common/helpers/variable_backup.h"
+#include "shared/test/common/mocks/mock_os_library.h"
 
 #include "environment.h"
 #include "gtest/gtest.h"
 #include "hw_cmds_default.h"
+#include "platforms.h"
 
 #include <algorithm>
 #include <array>
@@ -191,7 +195,7 @@ TEST(OclocApiTests, GivenNoQueryWhenQueryingThenErrorIsReturned) {
     std::string output = testing::internal::GetCapturedStdout();
 
     EXPECT_EQ(retVal, OCLOC_INVALID_COMMAND_LINE);
-    EXPECT_STREQ("Error: Invalid command line. Expected ocloc query <argument>. See ocloc query --help\n", output.c_str());
+    EXPECT_STREQ("Error: Invalid command line. Expected ocloc query <argument>. See ocloc query --help\nCommand was: ocloc query\n", output.c_str());
 }
 
 TEST(OclocApiTests, GivenInvalidQueryWhenQueryingThenErrorIsReturned) {
@@ -208,7 +212,7 @@ TEST(OclocApiTests, GivenInvalidQueryWhenQueryingThenErrorIsReturned) {
     std::string output = testing::internal::GetCapturedStdout();
 
     EXPECT_EQ(retVal, OCLOC_INVALID_COMMAND_LINE);
-    EXPECT_STREQ("Error: Invalid command line.\nUnknown argument unknown_query\n", output.c_str());
+    EXPECT_STREQ("Error: Invalid command line.\nUnknown argument unknown_query\nCommand was: ocloc query unknown_query\n", output.c_str());
 }
 
 TEST(OclocApiTests, givenNoAcronymWhenIdsCommandIsInvokeThenErrorIsReported) {
@@ -224,7 +228,7 @@ TEST(OclocApiTests, givenNoAcronymWhenIdsCommandIsInvokeThenErrorIsReported) {
     std::string output = testing::internal::GetCapturedStdout();
 
     EXPECT_EQ(retVal, OCLOC_INVALID_COMMAND_LINE);
-    EXPECT_STREQ("Error: Invalid command line. Expected ocloc ids <acronym>.\n", output.c_str());
+    EXPECT_STREQ("Error: Invalid command line. Expected ocloc ids <acronym>.\nCommand was: ocloc ids\n", output.c_str());
 }
 
 TEST(OclocApiTests, givenUnknownAcronymWhenIdsCommandIsInvokeThenErrorIsReported) {
@@ -241,7 +245,7 @@ TEST(OclocApiTests, givenUnknownAcronymWhenIdsCommandIsInvokeThenErrorIsReported
     std::string output = testing::internal::GetCapturedStdout();
 
     EXPECT_EQ(retVal, OCLOC_INVALID_COMMAND_LINE);
-    EXPECT_STREQ("Error: Invalid command line. Unknown acronym unk.\n", output.c_str());
+    EXPECT_STREQ("Error: Invalid command line. Unknown acronym unk.\nCommand was: ocloc ids unk\n", output.c_str());
 }
 
 TEST(OclocApiTests, WhenGoodFamilyNameIsProvidedThenSuccessIsReturned) {
@@ -353,123 +357,6 @@ TEST(OclocApiTests, givenInputOptionsCalledOptionsWhenCmdlineIsPrintedThenQuotes
 
     size_t quotesCount = std::count(output.begin(), output.end(), '\"');
     EXPECT_EQ(quotesCount, 4u);
-}
-
-TEST(OclocApiTests, givenInvalidInputOptionsAndInternalOptionsFilesWhenCmdlineIsPrintedThenTheyArePrinted) {
-    ASSERT_TRUE(fileExists(clFiles + "shouldfail.cl"));
-    ASSERT_TRUE(fileExists(clFiles + "shouldfail_options.txt"));
-    ASSERT_TRUE(fileExists(clFiles + "shouldfail_internal_options.txt"));
-
-    std::string clFileName(clFiles + "shouldfail.cl");
-    const char *argv[] = {
-        "ocloc",
-        "-q",
-        "-file",
-        clFileName.c_str(),
-        "-device",
-        gEnvironment->devicePrefix.c_str()};
-    unsigned int argc = sizeof(argv) / sizeof(const char *);
-
-    testing::internal::CaptureStdout();
-    int retVal = oclocInvoke(argc, argv,
-                             0, nullptr, nullptr, nullptr,
-                             0, nullptr, nullptr, nullptr,
-                             nullptr, nullptr, nullptr, nullptr);
-    std::string output = testing::internal::GetCapturedStdout();
-    EXPECT_NE(retVal, OCLOC_SUCCESS);
-
-    EXPECT_TRUE(output.find("Compiling options read from file were:\n"
-                            "-shouldfailOptions") != std::string::npos);
-
-    EXPECT_TRUE(output.find("Internal options read from file were:\n"
-                            "-shouldfailInternalOptions") != std::string::npos);
-}
-
-TEST(OclocApiTests, GivenInvalidOptionsAndInternalOptionsCommandArgumentsWhenCmdlineIsPrintedThenTheyAreNotPrinted) {
-    std::string clFileName(clFiles + "shouldfail.cl");
-
-    ASSERT_TRUE(fileExists(clFileName));
-
-    const char *argv[] = {
-        "ocloc",
-        "-q",
-        "-options",
-        "-invalid_option",
-        "-internal_options",
-        "-invalid_internal_option",
-        "-file",
-        clFileName.c_str(),
-        "-device",
-        gEnvironment->devicePrefix.c_str()};
-    unsigned int argc = sizeof(argv) / sizeof(const char *);
-
-    testing::internal::CaptureStdout();
-    int retVal = oclocInvoke(argc, argv,
-                             0, nullptr, nullptr, nullptr,
-                             0, nullptr, nullptr, nullptr,
-                             nullptr, nullptr, nullptr, nullptr);
-    std::string output = testing::internal::GetCapturedStdout();
-    EXPECT_NE(OCLOC_SUCCESS, retVal);
-
-    EXPECT_FALSE(output.find("Compiling options read from file were:\n"
-                             "-shouldfailOptions") != std::string::npos);
-
-    EXPECT_FALSE(output.find("Internal options read from file were:\n"
-                             "-shouldfailInternalOptions") != std::string::npos);
-}
-
-TEST(OclocApiTests, givenInvalidOclocOptionsFileWhenCmdlineIsPrintedThenTheyArePrinted) {
-    ASSERT_TRUE(fileExists(clFiles + "valid_kernel.cl"));
-    ASSERT_TRUE(fileExists(clFiles + "valid_kernel_ocloc_options.txt"));
-    std::string clFileName(clFiles + "valid_kernel.cl");
-
-    const char *argv[] = {
-        "ocloc",
-        "-q",
-        "-file",
-        clFileName.c_str(),
-        "-device",
-        gEnvironment->devicePrefix.c_str()};
-    unsigned int argc = sizeof(argv) / sizeof(const char *);
-
-    testing::internal::CaptureStdout();
-    int retVal = oclocInvoke(argc, argv,
-                             0, nullptr, nullptr, nullptr,
-                             0, nullptr, nullptr, nullptr,
-                             nullptr, nullptr, nullptr, nullptr);
-    std::string output = testing::internal::GetCapturedStdout();
-    EXPECT_NE(retVal, OCLOC_SUCCESS);
-
-    EXPECT_TRUE(output.find("Failed with ocloc options from file:\n"
-                            "-invalid_ocloc_option") != std::string::npos);
-    EXPECT_FALSE(output.find("Building with ocloc options:") != std::string::npos);
-}
-
-TEST(OclocApiTests, givenInvalidOclocOptionsFileWhenCmdlineIsPrintedThenTheyAreNotPrinted) {
-    ASSERT_TRUE(fileExists(clFiles + "valid_kernel.cl"));
-    ASSERT_TRUE(fileExists(clFiles + "valid_kernel_ocloc_options.txt"));
-    std::string clFileName(clFiles + "valid_kernel.cl");
-
-    const char *argv[] = {
-        "ocloc",
-        "-qq",
-        "-file",
-        clFileName.c_str(),
-        "-device",
-        gEnvironment->devicePrefix.c_str()};
-    unsigned int argc = sizeof(argv) / sizeof(const char *);
-
-    testing::internal::CaptureStdout();
-    int retVal = oclocInvoke(argc, argv,
-                             0, nullptr, nullptr, nullptr,
-                             0, nullptr, nullptr, nullptr,
-                             nullptr, nullptr, nullptr, nullptr);
-    std::string output = testing::internal::GetCapturedStdout();
-    EXPECT_NE(retVal, OCLOC_SUCCESS);
-
-    EXPECT_FALSE(output.find("Failed with ocloc options from file:\n"
-                             "-invalid_ocloc_option") != std::string::npos);
-    EXPECT_FALSE(output.find("Building with ocloc options:") != std::string::npos);
 }
 
 TEST(OclocApiTests, GivenIncludeHeadersWhenCompilingThenPassesToFclHeadersPackedAsElf) {
@@ -624,6 +511,61 @@ TEST(OclocApiTests, GivenMissingFileNameWhenDecodingThenErrorIsReturned) {
     EXPECT_EQ(-1, retVal);
 }
 
+TEST(OclocApiTests, GivenOnlySpirVWithMultipleDevicesWhenCompilingThenFirstDeviceIsSelected) {
+    std::string clFileName(clFiles + "copybuffer.cl");
+    AOT::FAMILY productFamily = AOT::UNKNOWN_FAMILY;
+    std::string familyAcronym("");
+    std::string firstDeviceAcronym("");
+
+    std::unique_ptr<OclocArgHelper> argHelper = std::make_unique<OclocArgHelper>();
+    auto supportedDeviceConfigs = argHelper->productConfigHelper->getDeviceAotInfo();
+    if (supportedDeviceConfigs.empty()) {
+        GTEST_SKIP();
+    }
+
+    for (const auto &deviceConfig : supportedDeviceConfigs) {
+        if (deviceConfig.hwInfo->platform.eProductFamily == NEO::DEFAULT_PLATFORM::hwInfo.platform.eProductFamily) {
+            productFamily = deviceConfig.family;
+            familyAcronym = ProductConfigHelper::getAcronymFromAFamily(deviceConfig.family).str();
+            break;
+        }
+    }
+
+    if (familyAcronym.empty()) {
+        GTEST_SKIP();
+    }
+
+    const char *argv[] = {
+        "ocloc",
+        "-file",
+        clFileName.c_str(),
+        "-device",
+        familyAcronym.c_str(),
+        "-spv_only"};
+    unsigned int argc = sizeof(argv) / sizeof(const char *);
+
+    for (const auto &deviceConfig : supportedDeviceConfigs) {
+        if (deviceConfig.family == productFamily) {
+            if (!deviceConfig.deviceAcronyms.empty()) {
+                firstDeviceAcronym = deviceConfig.deviceAcronyms.front().str();
+            } else if (!deviceConfig.rtlIdAcronyms.empty()) {
+                firstDeviceAcronym = deviceConfig.rtlIdAcronyms.front().str();
+            }
+            break;
+        }
+    }
+
+    testing::internal::CaptureStdout();
+    int retVal = oclocInvoke(argc, argv,
+                             0, nullptr, nullptr, nullptr,
+                             0, nullptr, nullptr, nullptr,
+                             nullptr, nullptr, nullptr, nullptr);
+    std::string output = testing::internal::GetCapturedStdout();
+
+    EXPECT_EQ(retVal, OCLOC_SUCCESS);
+    EXPECT_EQ(std::string::npos, output.find("Command was: ocloc -device " + firstDeviceAcronym + " -spv_only"));
+}
+
 TEST(OclocApiTests, GivenHelpParameterWhenCompilingThenHelpMsgIsPrintedAndSuccessIsReturned) {
     const char *argv[] = {
         "ocloc",
@@ -732,7 +674,7 @@ TEST(OclocApiTests, GivenNonexistentFileWhenValidateIsInvokedThenErrorIsPrinted)
     const auto output = testing::internal::GetCapturedStdout();
     EXPECT_EQ(-1, retVal);
 
-    const std::string expectedErrorMessage{"Error : Input file missing : some_special_nonexistent_file.gen\n"};
+    const std::string expectedErrorMessage{"Error : Input file missing : some_special_nonexistent_file.gen\nCommand was: ocloc validate -file some_special_nonexistent_file.gen\n"};
     EXPECT_EQ(expectedErrorMessage, output);
 }
 
@@ -806,7 +748,7 @@ TEST(OclocApiTests, GivenInvalidParameterWhenLinkingThenErrorIsReturned) {
     EXPECT_EQ(OCLOC_INVALID_COMMAND_LINE, retVal);
 
     const std::string expectedInitError{"Invalid option (arg 2): --dummy_param\n"};
-    const std::string expectedExecuteError{"Error: Linker cannot be executed due to unsuccessful initialization!\n"};
+    const std::string expectedExecuteError{"Error: Linker cannot be executed due to unsuccessful initialization!\nCommand was: ocloc link --dummy_param\n"};
     const std::string expectedErrorMessage = expectedInitError + expectedExecuteError;
     EXPECT_EQ(expectedErrorMessage, output);
 }
@@ -824,7 +766,7 @@ TEST(OclocApiTests, GivenInvalidCommandLineWhenConcatenatingThenErrorIsReturned)
     std::string output = testing::internal::GetCapturedStdout();
     EXPECT_EQ(OCLOC_INVALID_COMMAND_LINE, retVal);
     const std::string emptyCommandLineError = "No files to concatenate were provided.\n";
-    const std::string expectedErrorMessage = emptyCommandLineError + NEO::OclocConcat::helpMessage.str();
+    const std::string expectedErrorMessage = emptyCommandLineError + NEO::OclocConcat::helpMessage.str() + "Command was: ocloc concat\n";
     EXPECT_EQ(expectedErrorMessage, output);
 }
 
@@ -907,4 +849,253 @@ TEST(OclocApiTests, GivenValidCommandLineAndFatBinariesWhenConcatenatingThenNewF
     EXPECT_TRUE(hasFatBinary1);
     EXPECT_TRUE(hasFatBinary2);
     oclocFreeOutput(&numOutputs, &outputData, &outputLen, &outputName);
+}
+
+TEST(OclocApiTests, GivenVerboseModeWhenCompilingThenPrintCommandLine) {
+    std::string clFileName(clFiles + "copybuffer.cl");
+    const char *argv[] = {
+        "ocloc",
+        "-file",
+        clFileName.c_str(),
+        "-device",
+        gEnvironment->devicePrefix.c_str(),
+        "-v"};
+    unsigned int argc = sizeof(argv) / sizeof(const char *);
+
+    testing::internal::CaptureStdout();
+    int retVal = oclocInvoke(argc, argv,
+                             0, nullptr, nullptr, nullptr,
+                             0, nullptr, nullptr, nullptr,
+                             nullptr, nullptr, nullptr, nullptr);
+    std::string output = testing::internal::GetCapturedStdout();
+
+    EXPECT_EQ(retVal, OCLOC_SUCCESS);
+    EXPECT_NE(std::string::npos, output.find("Command was: ocloc -file "s + clFileName.c_str() + " -device "s + argv[4] + " -v")) << output;
+    EXPECT_NE(std::string::npos, output.find("Build succeeded.\n"));
+}
+
+TEST(InvokeFormerOclocTest, givenEmptyOrInvalidFormerOclocNameWhenInvokeFormerOclocThenNulloptIsReturned) {
+    const char *argv[] = {
+        "ocloc",
+        "-file",
+        "kernel.cl",
+        "-device",
+        "invalid_device"};
+    unsigned int argc = sizeof(argv) / sizeof(const char *);
+
+    auto retVal = Ocloc::Commands::invokeFormerOcloc("", argc, argv,
+                                                     0, nullptr, nullptr, nullptr,
+                                                     0, nullptr, nullptr, nullptr,
+                                                     nullptr, nullptr, nullptr, nullptr);
+
+    EXPECT_FALSE(retVal.has_value());
+
+    retVal = Ocloc::Commands::invokeFormerOcloc("invalidName", argc, argv,
+                                                0, nullptr, nullptr, nullptr,
+                                                0, nullptr, nullptr, nullptr,
+                                                nullptr, nullptr, nullptr, nullptr);
+
+    EXPECT_FALSE(retVal.has_value());
+}
+
+namespace Ocloc {
+extern std::string oclocFormerLibName;
+}
+
+struct OclocFallbackTests : ::testing::Test {
+
+    int callOclocForInvalidDevice() {
+        const char *argv[] = {
+            "ocloc",
+            "-file",
+            "kernel.cl",
+            "-device",
+            "invalid_device"};
+        unsigned int argc = sizeof(argv) / sizeof(const char *);
+        if (passOutputs) {
+            auto retVal = oclocInvoke(argc, argv,
+                                      0, nullptr, nullptr, nullptr,
+                                      0, nullptr, nullptr, nullptr,
+                                      &numOutputs, &dataOutputs, &lenOutputs, &nameOutputs);
+            return retVal;
+        } else {
+            testing::internal::CaptureStdout();
+            testing::internal::CaptureStderr();
+
+            auto retVal = oclocInvoke(argc, argv,
+                                      0, nullptr, nullptr, nullptr,
+                                      0, nullptr, nullptr, nullptr,
+                                      nullptr, nullptr, nullptr, nullptr);
+            capturedStdout = testing::internal::GetCapturedStdout();
+            capturedStderr = testing::internal::GetCapturedStderr();
+            return retVal;
+        }
+    }
+
+    void TearDown() override {
+        Ocloc::oclocFormerLibName.clear();
+        Ocloc::oclocFormerLibName.shrink_to_fit();
+        if (passOutputs) {
+            oclocFreeOutput(&numOutputs, &dataOutputs, &lenOutputs, &nameOutputs);
+        }
+    }
+    bool passOutputs = false;
+    uint32_t numOutputs{};
+    uint8_t **dataOutputs{};
+    uint64_t *lenOutputs{};
+    char **nameOutputs{};
+    std::string capturedStdout;
+    std::string capturedStderr;
+    VariableBackup<std::string> oclocFormerNameBackup{&Ocloc::oclocFormerLibName};
+};
+
+TEST_F(OclocFallbackTests, GivenNoFormerOclocNameWhenInvalidDeviceErrorIsReturnedThenDontFallback) {
+
+    Ocloc::oclocFormerLibName = "";
+
+    auto retVal = callOclocForInvalidDevice();
+
+    EXPECT_EQ(ocloc_error_t::OCLOC_INVALID_DEVICE, retVal);
+    EXPECT_NE(std::string::npos, capturedStdout.find("Could not determine device target: invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Error: Cannot get HW Info for device invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Command was: ocloc -file kernel.cl -device invalid_device\n"));
+
+    EXPECT_EQ(std::string::npos, capturedStdout.find("Invalid device error, trying to fallback to former ocloc"));
+    EXPECT_EQ(std::string::npos, capturedStdout.find("Couldn't load former ocloc"));
+    EXPECT_TRUE(capturedStderr.empty());
+}
+
+TEST_F(OclocFallbackTests, GivenInvalidFormerOclocNameWhenInvalidDeviceErrorIsReturnedThenFallbackButWithoutLoadingLib) {
+
+    Ocloc::oclocFormerLibName = "invalidName";
+
+    auto retVal = callOclocForInvalidDevice();
+
+    EXPECT_EQ(ocloc_error_t::OCLOC_INVALID_DEVICE, retVal);
+    EXPECT_NE(std::string::npos, capturedStdout.find("Could not determine device target: invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Error: Cannot get HW Info for device invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Command was: ocloc -file kernel.cl -device invalid_device\n"));
+
+    EXPECT_NE(std::string::npos, capturedStdout.find("Couldn't load former ocloc invalidName"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Invalid device error, trying to fallback to former ocloc invalidName"));
+    EXPECT_TRUE(capturedStderr.empty());
+}
+
+int mockOclocInvokeResult = ocloc_error_t::OCLOC_SUCCESS;
+
+int mockOclocInvoke(unsigned int numArgs, const char *argv[],
+                    const uint32_t numSources, const uint8_t **dataSources, const uint64_t *lenSources, const char **nameSources,
+                    const uint32_t numInputHeaders, const uint8_t **dataInputHeaders, const uint64_t *lenInputHeaders, const char **nameInputHeaders,
+                    uint32_t *numOutputs, uint8_t ***dataOutputs, uint64_t **lenOutputs, char ***nameOutputs) {
+
+    if (numOutputs && dataOutputs && lenOutputs && nameOutputs) {
+        numOutputs[0] = 2;
+        dataOutputs[0] = new uint8_t *[2];
+        dataOutputs[0][0] = new uint8_t[1];
+        dataOutputs[0][0][0] = 0xa;
+        dataOutputs[0][1] = new uint8_t[2];
+        dataOutputs[0][1][0] = 0x1;
+        dataOutputs[0][1][1] = 0x4;
+        lenOutputs[0] = new uint64_t[2];
+        lenOutputs[0][0] = 1;
+        lenOutputs[0][1] = 2;
+        nameOutputs[0] = new char *[2];
+        constexpr char outputName0[] = "out0";
+        constexpr char outputName1[] = "out1";
+        nameOutputs[0][0] = new char[sizeof(outputName0)];
+        nameOutputs[0][1] = new char[sizeof(outputName1)];
+        memcpy_s(nameOutputs[0][0], sizeof(outputName0), outputName0, sizeof(outputName0));
+        memcpy_s(nameOutputs[0][1], sizeof(outputName1), outputName1, sizeof(outputName1));
+    }
+
+    return mockOclocInvokeResult;
+}
+
+TEST_F(OclocFallbackTests, GivenValidFormerOclocNameWhenFormerOclocReturnsSuccessThenSuccessIsPropagatedAndCommandLineIsNotPrinted) {
+
+    Ocloc::oclocFormerLibName = "oclocFormer";
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
+    MockOsLibrary::loadLibraryNewObject = new MockOsLibraryCustom(nullptr, true);
+    auto osLibrary = static_cast<MockOsLibraryCustom *>(MockOsLibrary::loadLibraryNewObject);
+
+    osLibrary->procMap["oclocInvoke"] = reinterpret_cast<void *>(mockOclocInvoke);
+
+    VariableBackup<int> retCodeBackup{&mockOclocInvokeResult, ocloc_error_t::OCLOC_SUCCESS};
+    auto retVal = callOclocForInvalidDevice();
+
+    EXPECT_EQ(ocloc_error_t::OCLOC_SUCCESS, retVal);
+    EXPECT_NE(std::string::npos, capturedStdout.find("Could not determine device target: invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Error: Cannot get HW Info for device invalid_device.\n"));
+    EXPECT_NE(std::string::npos, capturedStdout.find("Invalid device error, trying to fallback to former ocloc oclocFormer\n"));
+    EXPECT_EQ(std::string::npos, capturedStdout.find("Command was: ocloc -file kernel.cl -device invalid_device\n"));
+    EXPECT_TRUE(capturedStderr.empty());
+}
+
+TEST_F(OclocFallbackTests, GivenValidFormerOclocNameWhenFormerOclocReturnsErrorThenErrorIsPropagated) {
+
+    Ocloc::oclocFormerLibName = "oclocFormer";
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
+    for (auto &error : {
+             ocloc_error_t::OCLOC_OUT_OF_HOST_MEMORY,
+             ocloc_error_t::OCLOC_BUILD_PROGRAM_FAILURE,
+             ocloc_error_t::OCLOC_INVALID_DEVICE,
+             ocloc_error_t::OCLOC_INVALID_PROGRAM,
+             ocloc_error_t::OCLOC_INVALID_COMMAND_LINE,
+             ocloc_error_t::OCLOC_INVALID_FILE,
+             ocloc_error_t::OCLOC_COMPILATION_CRASH}) {
+
+        MockOsLibrary::loadLibraryNewObject = new MockOsLibraryCustom(nullptr, true);
+        auto osLibrary = static_cast<MockOsLibraryCustom *>(MockOsLibrary::loadLibraryNewObject);
+
+        osLibrary->procMap["oclocInvoke"] = reinterpret_cast<void *>(mockOclocInvoke);
+
+        VariableBackup<int> retCodeBackup{&mockOclocInvokeResult, error};
+
+        auto retVal = callOclocForInvalidDevice();
+
+        EXPECT_EQ(error, retVal);
+        EXPECT_NE(std::string::npos, capturedStdout.find("Could not determine device target: invalid_device.\n"));
+        EXPECT_NE(std::string::npos, capturedStdout.find("Error: Cannot get HW Info for device invalid_device.\n"));
+        EXPECT_NE(std::string::npos, capturedStdout.find("Invalid device error, trying to fallback to former ocloc oclocFormer\n"));
+        EXPECT_NE(std::string::npos, capturedStdout.find("Command was: ocloc -file kernel.cl -device invalid_device\n"));
+        EXPECT_TRUE(capturedStderr.empty());
+    }
+}
+
+TEST_F(OclocFallbackTests, GivenValidFormerOclocNameWhenFormerOclocReturnsOutputsThenOutputIsPropagated) {
+    for (auto &expectedRetVal : {ocloc_error_t::OCLOC_SUCCESS,
+                                 ocloc_error_t::OCLOC_OUT_OF_HOST_MEMORY,
+                                 ocloc_error_t::OCLOC_BUILD_PROGRAM_FAILURE,
+                                 ocloc_error_t::OCLOC_INVALID_DEVICE,
+                                 ocloc_error_t::OCLOC_INVALID_PROGRAM,
+                                 ocloc_error_t::OCLOC_INVALID_COMMAND_LINE,
+                                 ocloc_error_t::OCLOC_INVALID_FILE,
+                                 ocloc_error_t::OCLOC_COMPILATION_CRASH}) {
+
+        passOutputs = true;
+        Ocloc::oclocFormerLibName = "oclocFormer";
+        VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockOsLibraryCustom::load};
+        MockOsLibrary::loadLibraryNewObject = new MockOsLibraryCustom(nullptr, true);
+        auto osLibrary = static_cast<MockOsLibraryCustom *>(MockOsLibrary::loadLibraryNewObject);
+
+        osLibrary->procMap["oclocInvoke"] = reinterpret_cast<void *>(mockOclocInvoke);
+
+        VariableBackup<int> retCodeBackup{&mockOclocInvokeResult, expectedRetVal};
+        auto retVal = callOclocForInvalidDevice();
+        EXPECT_EQ(expectedRetVal, retVal);
+        EXPECT_TRUE(capturedStdout.empty());
+        EXPECT_TRUE(capturedStderr.empty());
+        EXPECT_EQ(2u, numOutputs);
+        EXPECT_STREQ("out0", nameOutputs[0]);
+        EXPECT_STREQ("out1", nameOutputs[1]);
+        EXPECT_EQ(1u, lenOutputs[0]);
+        EXPECT_EQ(2u, lenOutputs[1]);
+
+        EXPECT_EQ(0xa, dataOutputs[0][0]);
+        EXPECT_EQ(0x1, dataOutputs[1][0]);
+        EXPECT_EQ(0x4, dataOutputs[1][1]);
+
+        oclocFreeOutput(&numOutputs, &dataOutputs, &lenOutputs, &nameOutputs);
+    }
+    passOutputs = false;
 }

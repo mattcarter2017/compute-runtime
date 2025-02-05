@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -52,10 +52,24 @@ bool initDrmOsInterface(std::unique_ptr<HwDeviceId> &&hwDeviceId, uint32_t rootD
         return false;
     }
 
-    const bool isCsrHwWithAub = debugManager.flags.SetCommandStreamReceiver.get() == CommandStreamReceiverType::CSR_HW_WITH_AUB;
+    const bool isCsrHwWithAub = obtainCsrTypeFromIntegerValue(debugManager.flags.SetCommandStreamReceiver.get(), CommandStreamReceiverType::hardware) == CommandStreamReceiverType::hardwareWithAub;
     rootDeviceEnv->memoryOperationsInterface = DrmMemoryOperationsHandler::create(*drm, rootDeviceIndex, isCsrHwWithAub);
 
     return true;
+}
+
+bool OSInterface::isSizeWithinThresholdForStaging(size_t size, bool isIGPU) const {
+    if (isIGPU) {
+        return size < 512 * MemoryConstants::megaByte;
+    }
+    return true;
+}
+
+uint32_t OSInterface::getAggregatedProcessCount() const {
+    if (driverModel && driverModel->getDriverModelType() == DriverModelType::drm) {
+        return driverModel->as<Drm>()->getAggregatedProcessCount();
+    }
+    return 0;
 }
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -52,9 +52,9 @@ TestedDrmMemoryManager::TestedDrmMemoryManager(bool enableLocalMemory,
 
 BufferObject *TestedDrmMemoryManager::findAndReferenceSharedBufferObject(int boHandle, uint32_t rootDeviceIndex) {
     if (failOnfindAndReferenceSharedBufferObject) {
-        DrmMockCustom drmMock(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
-        auto patIndex = drmMock.getPatIndex(nullptr, AllocationType::buffer, CacheRegion::defaultRegion, CachePolicy::writeBack, false, false);
-        return new (std::nothrow) BufferObject(rootDeviceIndex, &drmMock, patIndex, boHandle, 4096u, 2u);
+        auto drmMock = DrmMockCustom::create(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+        auto patIndex = drmMock->getPatIndex(nullptr, AllocationType::buffer, CacheRegion::defaultRegion, CachePolicy::writeBack, false, false);
+        return new (std::nothrow) BufferObject(rootDeviceIndex, drmMock.release(), patIndex, boHandle, 4096u, 2u);
     }
     return MemoryManagerCreate<DrmMemoryManager>::findAndReferenceSharedBufferObject(boHandle, rootDeviceIndex);
 }
@@ -69,7 +69,7 @@ void TestedDrmMemoryManager::injectPinBB(BufferObject *newPinBB, uint32_t rootDe
 DrmGemCloseWorker *TestedDrmMemoryManager::getgemCloseWorker() { return this->gemCloseWorker.get(); }
 void TestedDrmMemoryManager::forceLimitedRangeAllocator(uint64_t range) {
     for (auto &gfxPartition : gfxPartitions) {
-        gfxPartition->init(range, getSizeToReserve(), 0, 1, false, 0u);
+        gfxPartition->init(range, getSizeToReserve(), 0, 1, false, 0u, range + 1);
     }
 }
 void TestedDrmMemoryManager::overrideGfxPartition(GfxPartition *newGfxPartition) { gfxPartitions[0].reset(newGfxPartition); }

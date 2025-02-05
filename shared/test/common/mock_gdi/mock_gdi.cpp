@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -156,6 +156,21 @@ inline void *getStaticStorage(uint32_t slot) {
     return ptrOffset(baseAddress, slot * singleStorageSize);
 }
 
+static D3DKMT_CREATEALLOCATIONFLAGS createAllocationFlags{};
+static bool captureCreateAllocationFlags = false;
+static uint32_t createAllocation2NumCalled = 0;
+
+void setCapturingCreateAllocationFlags() {
+    captureCreateAllocationFlags = true;
+    createAllocation2NumCalled = 0;
+}
+
+void getCapturedCreateAllocationFlags(D3DKMT_CREATEALLOCATIONFLAGS &capturedCreateAllocationFlags, uint32_t &numCalled) {
+    capturedCreateAllocationFlags = createAllocationFlags;
+    numCalled = createAllocation2NumCalled;
+    captureCreateAllocationFlags = false;
+}
+
 NTSTATUS __stdcall mockD3DKMTCreateAllocation2(IN OUT D3DKMT_CREATEALLOCATION *allocation) {
     D3DDDI_ALLOCATIONINFO2 *allocationInfo;
     int numOfAllocations;
@@ -164,11 +179,19 @@ NTSTATUS __stdcall mockD3DKMTCreateAllocation2(IN OUT D3DKMT_CREATEALLOCATION *a
     if (allocation == nullptr || allocation->hDevice != DEVICE_HANDLE) {
         return STATUS_INVALID_PARAMETER;
     }
+
     pallocation = *allocation;
     allocationInfo = allocation->pAllocationInfo2;
     if (allocationInfo == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+
+    if (captureCreateAllocationFlags) {
+        createAllocationFlags = pallocation.Flags;
+        createAllocation2NumCalled++;
+        return STATUS_SUCCESS;
+    }
+
     numOfAllocations = allocation->NumAllocations;
     createResource = allocation->Flags.CreateResource;
     globalShare = allocation->Flags.CreateShared;
@@ -430,25 +453,29 @@ NTSTATUS __stdcall mockD3DKMTMakeResident(IN OUT D3DDDI_MAKERESIDENT *makeReside
 
 static UINT totalPrivateSize = 0u;
 static UINT gmmSize = 0u;
-static void *gmmPtr = nullptr;
+static void **gmmPtrArray = nullptr;
 static UINT numberOfAllocsToReturn = 0u;
 
-NTSTATUS __stdcall mockD3DKMTOpenResource(IN OUT D3DKMT_OPENRESOURCE *openResurce) {
-    openResurce->hResource = RESOURCE_HANDLE;
-    openResurce->pOpenAllocationInfo[0].hAllocation = ALLOCATION_HANDLE;
-    openResurce->pOpenAllocationInfo[0].pPrivateDriverData = gmmPtr;
+NTSTATUS __stdcall mockD3DKMTOpenResource(IN OUT D3DKMT_OPENRESOURCE *openResource) {
+    openResource->hResource = RESOURCE_HANDLE;
+    for (UINT i = 0; i < openResource->NumAllocations; i++) {
+        openResource->pOpenAllocationInfo[i].hAllocation = ALLOCATION_HANDLE;
+        openResource->pOpenAllocationInfo[i].pPrivateDriverData = gmmPtrArray[i];
+    }
     return STATUS_SUCCESS;
 }
 
-NTSTATUS __stdcall mockD3DKMTOpenResourceFromNtHandle(IN OUT D3DKMT_OPENRESOURCEFROMNTHANDLE *openResurce) {
-    openResurce->hResource = NT_RESOURCE_HANDLE;
-    openResurce->pOpenAllocationInfo2[0].hAllocation = NT_ALLOCATION_HANDLE;
-    openResurce->pOpenAllocationInfo2[0].pPrivateDriverData = gmmPtr;
+NTSTATUS __stdcall mockD3DKMTOpenResourceFromNtHandle(IN OUT D3DKMT_OPENRESOURCEFROMNTHANDLE *openResource) {
+    openResource->hResource = NT_RESOURCE_HANDLE;
+    for (UINT i = 0; i < openResource->NumAllocations; i++) {
+        openResource->pOpenAllocationInfo2[i].hAllocation = NT_ALLOCATION_HANDLE;
+        openResource->pOpenAllocationInfo2[i].pPrivateDriverData = gmmPtrArray[i];
+    }
     return STATUS_SUCCESS;
 }
 
 NTSTATUS __stdcall mockD3DKMTQueryResourceInfo(IN OUT D3DKMT_QUERYRESOURCEINFO *queryResourceInfo) {
-    if (queryResourceInfo->hDevice != DEVICE_HANDLE || queryResourceInfo->hGlobalShare == INVALID_HANDLE) {
+    if (queryResourceInfo->hDevice != DEVICE_HANDLE || queryResourceInfo->hGlobalShare == INVALID_HANDLE || queryResourceInfo->hGlobalShare == NT_ALLOCATION_HANDLE) {
         return STATUS_INVALID_PARAMETER;
     }
     queryResourceInfo->TotalPrivateDriverDataSize = totalPrivateSize;
@@ -637,6 +664,14 @@ NTSTATUS __stdcall mockD3DKMTSignalSynchronizationObjectFromGpu(IN CONST D3DKMT_
     return STATUS_SUCCESS;
 }
 
+NTSTATUS __stdcall mockD3DKMTOpenSyncObjectFromNtHandle2(IN OUT D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 *) {
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS __stdcall mockD3DKMTOpenSyncObjectNtHandleFromName(IN OUT D3DKMT_OPENSYNCOBJECTNTHANDLEFROMNAME *) {
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS __stdcall mockD3DKMTFreeGpuVirtualAddress(IN CONST D3DKMT_FREEGPUVIRTUALADDRESS *) {
     return STATUS_SUCCESS;
 }
@@ -649,7 +684,10 @@ NTSTATUS __stdcall mockD3DKMTSubmitCommand(IN CONST D3DKMT_SUBMITCOMMAND *) {
     return STATUS_SUCCESS;
 }
 
-NTSTATUS __stdcall mockD3DKMTEvict(IN OUT D3DKMT_EVICT *) {
+NTSTATUS __stdcall mockD3DKMTEvict(IN OUT D3DKMT_EVICT *evict) {
+    if (evict->NumAllocations == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -674,9 +712,9 @@ NTSTATUS __stdcall mockD3DKMTUnregisterTrimNotification(IN D3DKMT_UNREGISTERTRIM
     return STATUS_SUCCESS;
 }
 
-NTSTATUS setMockSizes(void *inGmmPtr, UINT inNumAllocsToReturn, UINT inGmmSize, UINT inTotalPrivateSize) {
+NTSTATUS setMockSizes(void **inGmmPtrArray, UINT inNumAllocsToReturn, UINT inGmmSize, UINT inTotalPrivateSize) {
     gmmSize = inGmmSize;
-    gmmPtr = inGmmPtr;
+    gmmPtrArray = inGmmPtrArray;
     totalPrivateSize = inTotalPrivateSize;
     numberOfAllocsToReturn = inNumAllocsToReturn;
     return STATUS_SUCCESS;

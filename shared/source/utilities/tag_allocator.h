@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -104,10 +104,11 @@ class TagNode : public TagNodeBase, public IDNode<TagNode<TagType>> {
                   "This structure is consumed by GPU and has to follow specific restrictions for padding and size");
 
   public:
+    using ValueT = typename TagType::ValueT;
     TagType *tagForCpuAccess;
 
     void initialize() override {
-        tagForCpuAccess->initialize();
+        tagForCpuAccess->initialize(static_cast<TagAllocator<TagType> *>(allocator)->getInitialValue());
         packetsUsed = 1;
         setProfilingCapable(true);
     }
@@ -144,6 +145,8 @@ class TagAllocatorBase {
 
     virtual TagNodeBase *getTag() = 0;
 
+    const std::vector<std::unique_ptr<MultiGraphicsAllocation>> &getGfxAllocations() const { return gfxAllocations; }
+
   protected:
     TagAllocatorBase() = delete;
 
@@ -175,14 +178,15 @@ template <typename TagType>
 class TagAllocator : public TagAllocatorBase {
   public:
     using NodeType = TagNode<TagType>;
+    using ValueT = typename TagType::ValueT;
 
     TagAllocator(const RootDeviceIndicesContainer &rootDeviceIndices, MemoryManager *memMngr, size_t tagCount,
-                 size_t tagAlignment, size_t tagSize, bool doNotReleaseNodes,
-                 DeviceBitfield deviceBitfield);
+                 size_t tagAlignment, size_t tagSize, ValueT initialValue, bool doNotReleaseNodes, bool initializeTags, DeviceBitfield deviceBitfield);
 
     TagNodeBase *getTag() override;
 
     void returnTag(TagNodeBase *node) override;
+    ValueT getInitialValue() const { return initialValue; }
 
   protected:
     TagAllocator() = delete;
@@ -200,6 +204,9 @@ class TagAllocator : public TagAllocatorBase {
     IDList<NodeType> deferredTags;
 
     std::vector<std::unique_ptr<NodeType[]>> tagPoolMemory;
+
+    const ValueT initialValue;
+    bool initializeTags = true;
 };
 } // namespace NEO
 

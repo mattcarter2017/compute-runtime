@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,7 +37,7 @@ class MockFabricDeviceInterface {
 
 using FabricVertexFixture = Test<MultiDeviceFixture>;
 
-TEST_F(FabricVertexFixture, WhenDevicesAreCreatedThenVerifyFabricVerticesAreCreated) {
+TEST_F(FabricVertexFixture, whenDevicesAreCreatedThenVerifyFabricVerticesAreCreated) {
 
     uint32_t count = 0;
     EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeFabricVertexGetExp(driverHandle->toHandle(), &count, nullptr));
@@ -156,16 +156,12 @@ TEST_F(FabricVertexFixture, givenFabricVerticesAreCreatedWhenzeFabricVertexGetPr
     }
 }
 
-TEST(FabricEngineInstanceTest, GivenEngineInstancedDeviceWhenFabricVerticesAreCreatedThenSkipCreationForEngineInstanced) {
+TEST(FabricEngineInstanceTest, givenSubDeviceWhenFabricVerticesAreCreatedThenSkipCreationForSubDevice) {
 
     auto hwInfo = *NEO::defaultHwInfo.get();
     auto executionEnvironment = NEO::MockDevice::prepareExecutionEnvironment(&hwInfo, 0u);
     std::vector<std::unique_ptr<NEO::Device>> devices(1);
     devices[0].reset(static_cast<NEO::Device *>(NEO::MockDevice::createWithExecutionEnvironment<NEO::MockDevice>(&hwInfo, executionEnvironment, 0u)));
-
-    auto mockDevice = static_cast<NEO::MockDevice *>(devices[0].get());
-    NEO::SubDevice *subDevice = static_cast<NEO::SubDevice *>(mockDevice->createEngineInstancedSubDevice(0, defaultHwInfo->capabilityTable.defaultEngineType));
-    mockDevice->subdevices.push_back(subDevice);
 
     std::unique_ptr<Mock<L0::DriverHandleImp>> driverHandle;
     driverHandle = std::make_unique<Mock<L0::DriverHandleImp>>();
@@ -186,7 +182,7 @@ TEST(FabricEngineInstanceTest, GivenEngineInstancedDeviceWhenFabricVerticesAreCr
     EXPECT_EQ(count, 0u);
 }
 
-TEST_F(FabricVertexFixture, GivenDevicesAreCreatedWhenZeDeviceGetFabricVertexExpIsCalledThenExpectValidVertices) {
+TEST_F(FabricVertexFixture, givenDevicesAreCreatedWhenZeDeviceGetFabricVertexExpIsCalledThenExpectValidVertices) {
 
     for (auto l0Device : driverHandle->devices) {
         ze_fabric_vertex_handle_t hVertex = nullptr;
@@ -201,7 +197,7 @@ TEST_F(FabricVertexFixture, GivenDevicesAreCreatedWhenZeDeviceGetFabricVertexExp
     }
 }
 
-TEST_F(FabricVertexFixture, GivenDevicesAreCreatedWhenFabricVertexIsNotSetToDeviceThenZeDeviceGetFabricVertexExpReturnsError) {
+TEST_F(FabricVertexFixture, givenDevicesAreCreatedWhenFabricVertexIsNotSetToDeviceThenZeDeviceGetFabricVertexExpReturnsError) {
     auto l0Device = driverHandle->devices[0];
 
     ze_fabric_vertex_handle_t hVertex = nullptr;
@@ -216,67 +212,20 @@ TEST_F(FabricVertexFixture, GivenDevicesAreCreatedWhenFabricVertexIsNotSetToDevi
     EXPECT_EQ(hVertex, nullptr);
 }
 
-class FabricVertexFlatDeviceTestFixture : public MultiDeviceFixtureHierarchy,
-                                          public ::testing::Test {
-    void SetUp() override {
-        NEO::debugManager.flags.ZE_AFFINITY_MASK.set("0,1.1,2");
-        MultiDeviceFixtureHierarchy::setUp();
-    }
-
-    void TearDown() override {
-        MultiDeviceFixtureHierarchy::tearDown();
-    }
+TEST(FabricVertexTestFixture, givenCompositeHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned) {
     DebugManagerStateRestore restorer;
-};
+    NEO::debugManager.flags.ZE_AFFINITY_MASK.set("0,1.1,2");
+    MultiDeviceFixtureCompositeHierarchy multiDeviceFixture{};
+    multiDeviceFixture.setUp();
 
-TEST_F(FabricVertexFlatDeviceTestFixture, GivenFlatHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned) {
     uint32_t count = 0;
     std::vector<ze_fabric_vertex_handle_t> phVertices;
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
-    // only 2 vertexes for mask "0,1.1,2":
-    // 0 and 2
-    // 1.1 is ignored in FlatHierarchy
-    uint32_t expectedVertexes = 2u;
-    EXPECT_EQ(count, expectedVertexes);
-
-    // Requesting for a reduced count
-    phVertices.resize(count);
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
-
-    ze_device_handle_t hDevice{};
-    // Device 0 associated with value 0 in mask
-    EXPECT_EQ(L0::zeFabricVertexGetDeviceExp(phVertices[0], &hDevice), ZE_RESULT_SUCCESS);
-    DeviceImp *deviceImp = static_cast<DeviceImp *>(hDevice);
-    EXPECT_FALSE(deviceImp->isSubdevice);
-
-    // Device 1 associated with value 2 in mask
-    EXPECT_EQ(L0::zeFabricVertexGetDeviceExp(phVertices[1], &hDevice), ZE_RESULT_SUCCESS);
-    deviceImp = static_cast<DeviceImp *>(hDevice);
-    EXPECT_FALSE(deviceImp->isSubdevice);
-}
-
-class FabricVertexTestFixture : public MultiDeviceFixture,
-                                public ::testing::Test {
-    void SetUp() override {
-        NEO::debugManager.flags.ZE_AFFINITY_MASK.set("0,1.1,2");
-        MultiDeviceFixture::setUp();
-    }
-
-    void TearDown() override {
-        MultiDeviceFixture::tearDown();
-    }
-    DebugManagerStateRestore restorer;
-};
-
-TEST_F(FabricVertexTestFixture, GivenCompositeHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned) {
-    uint32_t count = 0;
-    std::vector<ze_fabric_vertex_handle_t> phVertices;
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
     uint32_t expectedVertexes = 3u;
     EXPECT_EQ(count, expectedVertexes);
 
     phVertices.resize(count);
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
 
     // Device 0 associated with value 0 in mask
     ze_device_handle_t hDevice{};
@@ -286,7 +235,7 @@ TEST_F(FabricVertexTestFixture, GivenCompositeHierarchyWhenFabricVerticesGetExpI
 
     uint32_t countSubDevices = 0;
     EXPECT_EQ(L0::zeFabricVertexGetSubVerticesExp(phVertices[0], &countSubDevices, nullptr), ZE_RESULT_SUCCESS);
-    EXPECT_EQ(countSubDevices, numSubDevices);
+    EXPECT_EQ(countSubDevices, multiDeviceFixture.numSubDevices);
 
     std::vector<ze_fabric_vertex_handle_t> phSubvertices(countSubDevices);
     EXPECT_EQ(L0::zeFabricVertexGetSubVerticesExp(phVertices[0], &countSubDevices, phSubvertices.data()), ZE_RESULT_SUCCESS);
@@ -315,24 +264,65 @@ TEST_F(FabricVertexTestFixture, GivenCompositeHierarchyWhenFabricVerticesGetExpI
     phSubvertices.clear();
     countSubDevices = 0;
     EXPECT_EQ(L0::zeFabricVertexGetSubVerticesExp(phVertices[2], &countSubDevices, nullptr), ZE_RESULT_SUCCESS);
-    EXPECT_EQ(countSubDevices, numSubDevices);
+    EXPECT_EQ(countSubDevices, multiDeviceFixture.numSubDevices);
+
+    multiDeviceFixture.tearDown();
 }
 
-TEST_F(FabricVertexTestFixture, GivenFlatHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned) {
+TEST(FabricVertexTestFixture, givenFlatHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.ZE_AFFINITY_MASK.set("0,1.1,2");
+    MultiDeviceFixtureFlatHierarchy multiDeviceFixture{};
+    multiDeviceFixture.setUp();
+
     uint32_t count = 0;
     std::vector<ze_fabric_vertex_handle_t> phVertices;
-    this->driverHandle->deviceHierarchyMode = L0::L0DeviceHierarchyMode::L0_DEVICE_HIERARCHY_FLAT;
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
-    uint32_t expectedVertexes = 5u;
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
+    // only 2 vertexes for mask "0,1.1,2":
+    // 0 and 2
+    // 1.1 is ignored in FlatHierarchy
+    uint32_t expectedVertexes = 2u;
+    EXPECT_EQ(count, expectedVertexes);
+
+    // Requesting for a reduced count
+    phVertices.resize(count);
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
+
+    ze_device_handle_t hDevice{};
+    // Device 0 associated with value 0 in mask
+    EXPECT_EQ(L0::zeFabricVertexGetDeviceExp(phVertices[0], &hDevice), ZE_RESULT_SUCCESS);
+    DeviceImp *deviceImp = static_cast<DeviceImp *>(hDevice);
+    EXPECT_FALSE(deviceImp->isSubdevice);
+
+    // Device 1 associated with value 2 in mask
+    EXPECT_EQ(L0::zeFabricVertexGetDeviceExp(phVertices[1], &hDevice), ZE_RESULT_SUCCESS);
+    deviceImp = static_cast<DeviceImp *>(hDevice);
+    EXPECT_FALSE(deviceImp->isSubdevice);
+
+    multiDeviceFixture.tearDown();
+}
+
+TEST(FabricVertexTestFixture, givenCombinedHierarchyWhenFabricVerticesGetExpIsCalledCorrectVerticesAreReturned2) {
+    DebugManagerStateRestore restorer;
+    NEO::debugManager.flags.ZE_AFFINITY_MASK.set("0,1.1,2");
+    MultiDeviceFixtureCombinedHierarchy multiDeviceFixture{};
+    multiDeviceFixture.setUp();
+
+    uint32_t count = 0;
+    std::vector<ze_fabric_vertex_handle_t> phVertices;
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, nullptr), ZE_RESULT_SUCCESS);
+    uint32_t expectedVertexes = 2u;
     EXPECT_EQ(count, expectedVertexes);
 
     phVertices.resize(count);
-    EXPECT_EQ(driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
+    EXPECT_EQ(multiDeviceFixture.driverHandle->fabricVertexGetExp(&count, phVertices.data()), ZE_RESULT_SUCCESS);
+
+    multiDeviceFixture.tearDown();
 }
 
 using FabricEdgeFixture = Test<MultiDeviceFixture>;
 
-TEST_F(FabricEdgeFixture, GivenFabricVerticesAreCreatedWhenZeFabricEdgeGetExpIsCalledThenReturnSuccess) {
+TEST_F(FabricEdgeFixture, givenFabricVerticesAreCreatedWhenZeFabricEdgeGetExpIsCalledThenReturnSuccess) {
 
     // initialize
     uint32_t count = 0;
@@ -368,7 +358,60 @@ TEST_F(FabricEdgeFixture, GivenFabricVerticesAreCreatedWhenZeFabricEdgeGetExpIsC
                                                         edgeHandles.data()));
 }
 
-TEST_F(FabricEdgeFixture, GivenFabricEdgesAreCreatedWhenZeFabricEdgeGetVerticesExpIsCalledThenReturnCorrectVertices) {
+TEST_F(FabricEdgeFixture, givenFabricVerticesAreCreatedForIndirectEdgesWhenZeFabricEdgeGetExpIsCalledThenReturnSuccess) {
+    // initialize
+    uint32_t count = 0;
+    std::vector<ze_fabric_vertex_handle_t> phVertices;
+    ze_result_t res = driverHandle->fabricVertexGetExp(&count, nullptr);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, res);
+    phVertices.resize(count);
+    res = driverHandle->fabricVertexGetExp(&count, phVertices.data());
+    EXPECT_EQ(ZE_RESULT_SUCCESS, res);
+
+    // Delete existing fabric edges
+    for (auto edge : driverHandle->fabricEdges) {
+        delete edge;
+    }
+    driverHandle->fabricEdges.clear();
+
+    for (auto edge : driverHandle->fabricIndirectEdges) {
+        delete edge;
+    }
+    driverHandle->fabricIndirectEdges.clear();
+
+    ze_fabric_edge_exp_properties_t dummyProperties = {};
+    driverHandle->fabricEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[0], driverHandle->fabricVertices[1], dummyProperties));
+    driverHandle->fabricIndirectEdges.push_back(FabricEdge::create(driverHandle->fabricVertices[1], driverHandle->fabricVertices[0], dummyProperties));
+
+    std::vector<ze_fabric_edge_handle_t> edgeHandles(10);
+    count = 0;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeFabricEdgeGetExp(driverHandle->fabricVertices[0]->toHandle(),
+                                                        driverHandle->fabricVertices[1]->toHandle(),
+                                                        &count,
+                                                        edgeHandles.data()));
+    EXPECT_EQ(count, 4u);
+    count = 3;
+    EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeFabricEdgeGetExp(driverHandle->fabricVertices[1]->toHandle(),
+                                                        driverHandle->fabricVertices[0]->toHandle(),
+                                                        &count,
+                                                        edgeHandles.data()));
+
+    for (auto edge : driverHandle->fabricEdges) {
+        delete edge;
+    }
+    driverHandle->fabricEdges.clear();
+
+    for (auto edge : driverHandle->fabricIndirectEdges) {
+        delete edge;
+    }
+    driverHandle->fabricIndirectEdges.clear();
+}
+
+TEST_F(FabricEdgeFixture, givenFabricEdgesAreCreatedWhenZeFabricEdgeGetVerticesExpIsCalledThenReturnCorrectVertices) {
     // initialize
     uint32_t count = 0;
     std::vector<ze_fabric_vertex_handle_t> phVertices;
@@ -400,7 +443,7 @@ TEST_F(FabricEdgeFixture, GivenFabricEdgesAreCreatedWhenZeFabricEdgeGetVerticesE
     EXPECT_EQ(hVertexB, driverHandle->fabricVertices[1]);
 }
 
-TEST_F(FabricEdgeFixture, GivenFabricEdgesAreCreatedWhenZeFabricEdgeGetPropertiesExpIsCalledThenReturnCorrectProperties) {
+TEST_F(FabricEdgeFixture, givenFabricEdgesAreCreatedWhenZeFabricEdgeGetPropertiesExpIsCalledThenReturnCorrectProperties) {
     // initialize
     uint32_t count = 0;
     std::vector<ze_fabric_vertex_handle_t> phVertices;
@@ -433,7 +476,7 @@ TEST_F(FabricEdgeFixture, GivenFabricEdgesAreCreatedWhenZeFabricEdgeGetPropertie
     EXPECT_EQ(getProperties.latency, 20u);
 }
 
-TEST_F(FabricEdgeFixture, GivenMdfiLinksAreAvailableWhenEdgesAreCreatedThenVerifyThatBiDirectionalEdgesAreNotCreated) {
+TEST_F(FabricEdgeFixture, givenMdfiLinksAreAvailableWhenEdgesAreCreatedThenVerifyThatBiDirectionalEdgesAreNotCreated) {
     // initialize
     uint32_t count = 0;
     std::vector<ze_fabric_vertex_handle_t> phVertices;

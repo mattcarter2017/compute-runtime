@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -20,8 +20,8 @@ void createCmdQueueAndCmdList(ze_device_handle_t &device,
                               ze_command_queue_handle_t &cmdqueue,
                               ze_command_list_handle_t &cmdList) {
     // Create commandQueue and cmdList
-    cmdqueue = LevelZeroBlackBoxTests::createCommandQueue(context, device, nullptr, ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS, ZE_COMMAND_QUEUE_PRIORITY_NORMAL);
-    SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, device, cmdList));
+    cmdqueue = LevelZeroBlackBoxTests::createCommandQueue(context, device, nullptr, ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS, ZE_COMMAND_QUEUE_PRIORITY_NORMAL, false);
+    SUCCESS_OR_TERMINATE(LevelZeroBlackBoxTests::createCommandList(context, device, cmdList, false));
 }
 
 void createCmdQueueAndCmdListWithOrdinal(ze_device_handle_t &device,
@@ -61,15 +61,15 @@ bool testEventsDeviceSignalDeviceWait(ze_context_handle_t &context, ze_device_ha
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> deviceEvents(numEvents), hostEvents(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPoolDevice,
-                                                     (ze_event_pool_flag_t)0,
+                                                     0, false, nullptr, nullptr,
                                                      numEvents, deviceEvents.data(),
                                                      ZE_EVENT_SCOPE_FLAG_SUBDEVICE,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPoolHost,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE, false, nullptr, nullptr,
                                                      numEvents, hostEvents.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     // Initialize memory
     uint8_t dstValue = 0;
@@ -152,10 +152,10 @@ bool testEventsDeviceSignalHostWait(ze_context_handle_t &context, ze_device_hand
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> events(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE, false, nullptr, nullptr,
                                                      numEvents, events.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     SUCCESS_OR_TERMINATE(zeCommandListAppendMemoryCopy(cmdList, dstBuffer, srcBuffer, allocSize, events[0], 0, nullptr));
 
@@ -211,10 +211,10 @@ bool testEventsDeviceSignalHostWaitWithNonZeroOrdinal(ze_context_handle_t &conte
     uint32_t numEvents = 2;
     std::vector<ze_event_handle_t> events(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE, false, nullptr, nullptr,
                                                      numEvents, events.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
     bool outputValidationSuccessful = true;
 
@@ -268,38 +268,29 @@ bool testEventsHostSignalHostWait(ze_context_handle_t &context, ze_device_handle
 
     // Create Event Pool and kernel launch event
     ze_event_pool_handle_t eventPool;
-    uint32_t numEvents = 2;
+    uint32_t numEvents = 3;
     std::vector<ze_event_handle_t> events(numEvents);
     LevelZeroBlackBoxTests::createEventPoolAndEvents(context, device, eventPool,
-                                                     (ze_event_pool_flag_t)(ZE_EVENT_POOL_FLAG_HOST_VISIBLE),
+                                                     ZE_EVENT_POOL_FLAG_HOST_VISIBLE | ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP,
+                                                     false, nullptr, nullptr,
                                                      numEvents, events.data(),
                                                      ZE_EVENT_SCOPE_FLAG_HOST,
-                                                     (ze_event_scope_flag_t)0);
+                                                     0);
 
-    SUCCESS_OR_TERMINATE(zeCommandListAppendWaitOnEvents(cmdList, 1, &events[0]));
-    SUCCESS_OR_TERMINATE(zeCommandListAppendMemoryCopy(cmdList, dstBuffer, srcBuffer, allocSize, events[1], 0, nullptr));
+    SUCCESS_OR_TERMINATE(zeCommandListAppendWaitOnEvents(cmdList, 2, &events[1]));
+    SUCCESS_OR_TERMINATE(zeCommandListAppendMemoryCopy(cmdList, dstBuffer, srcBuffer, allocSize, events[0], 0, nullptr));
     SUCCESS_OR_TERMINATE(zeCommandListClose(cmdList));
     SUCCESS_OR_TERMINATE(zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr));
 
-    SUCCESS_OR_TERMINATE(zeEventHostSignal(events[0]));
+    SUCCESS_OR_TERMINATE(zeEventHostSignal(events[1]));
+    SUCCESS_OR_TERMINATE(zeEventHostSignal(events[2]));
 
-    SUCCESS_OR_TERMINATE(zeEventHostSynchronize(events[1], std::numeric_limits<uint64_t>::max()));
     SUCCESS_OR_TERMINATE(zeEventHostSynchronize(events[0], std::numeric_limits<uint64_t>::max()));
+    SUCCESS_OR_TERMINATE(zeEventHostSynchronize(events[1], std::numeric_limits<uint64_t>::max()));
+    SUCCESS_OR_TERMINATE(zeEventHostSynchronize(events[2], std::numeric_limits<uint64_t>::max()));
 
     // Validate
-    bool outputValidationSuccessful = true;
-    if (memcmp(dstBuffer, srcBuffer, allocSize)) {
-        outputValidationSuccessful = false;
-        uint8_t *srcCharBuffer = static_cast<uint8_t *>(srcBuffer);
-        uint8_t *dstCharBuffer = static_cast<uint8_t *>(dstBuffer);
-        for (size_t i = 0; i < allocSize; i++) {
-            if (srcCharBuffer[i] != dstCharBuffer[i]) {
-                std::cout << "srcBuffer[" << i << "] = " << static_cast<unsigned int>(srcCharBuffer[i]) << " not equal to "
-                          << "dstBuffer[" << i << "] = " << static_cast<unsigned int>(dstCharBuffer[i]) << "\n";
-                break;
-            }
-        }
-    }
+    bool outputValidationSuccessful = LevelZeroBlackBoxTests::validate(srcBuffer, dstBuffer, allocSize);
 
     // Cleanup
     for (auto event : events) {

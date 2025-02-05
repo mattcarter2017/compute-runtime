@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,7 @@
 #include "shared/source/memory_manager/internal_allocation_storage.h"
 #include "shared/source/utilities/perf_counter.h"
 #include "shared/source/utilities/range.h"
+#include "shared/source/utilities/staging_buffer_manager.h"
 #include "shared/source/utilities/tag_allocator.h"
 
 #include "opencl/extensions/public/cl_ext_private.h"
@@ -163,12 +164,14 @@ cl_int Event::getEventProfilingInfo(cl_profiling_info paramName,
     // if paramValue is NULL, it is ignored
     switch (paramName) {
     case CL_PROFILING_COMMAND_QUEUED:
+        calcProfilingData();
         timestamp = getProfilingInfoData(queueTimeStamp);
         src = &timestamp;
         srcSize = sizeof(cl_ulong);
         break;
 
     case CL_PROFILING_COMMAND_SUBMIT:
+        calcProfilingData();
         timestamp = getProfilingInfoData(submitTimeStamp);
         src = &timestamp;
         srcSize = sizeof(cl_ulong);
@@ -282,12 +285,15 @@ void Event::setupRelativeProfilingInfo(ProfilingInfo &profilingInfo) {
         auto timeDiff = profilingInfo.cpuTimeInNs - submitTimeStamp.cpuTimeInNs;
         auto gpuTicksDiff = static_cast<uint64_t>(timeDiff / resolution);
         profilingInfo.gpuTimeInNs = submitTimeStamp.gpuTimeInNs + timeDiff;
-        profilingInfo.gpuTimeStamp = submitTimeStamp.gpuTimeStamp + gpuTicksDiff;
-    } else {
+        profilingInfo.gpuTimeStamp = submitTimeStamp.gpuTimeStamp + std::max<uint64_t>(gpuTicksDiff, 1ul);
+    } else if (profilingInfo.cpuTimeInNs < submitTimeStamp.cpuTimeInNs) {
         auto timeDiff = submitTimeStamp.cpuTimeInNs - profilingInfo.cpuTimeInNs;
         auto gpuTicksDiff = static_cast<uint64_t>(timeDiff / resolution);
         profilingInfo.gpuTimeInNs = submitTimeStamp.gpuTimeInNs - timeDiff;
-        profilingInfo.gpuTimeStamp = submitTimeStamp.gpuTimeStamp - gpuTicksDiff;
+        profilingInfo.gpuTimeStamp = submitTimeStamp.gpuTimeStamp - std::max<uint64_t>(gpuTicksDiff, 1ul);
+    } else {
+        profilingInfo.gpuTimeInNs = submitTimeStamp.gpuTimeInNs;
+        profilingInfo.gpuTimeStamp = submitTimeStamp.gpuTimeStamp;
     }
 }
 
@@ -365,15 +371,59 @@ bool Event::calcProfilingData() {
     return dataCalculated;
 }
 
+void Event::updateTimestamp(ProfilingInfo &timestamp, uint64_t newGpuTimestamp) const {
+    auto &device = this->cmdQueue->getDevice();
+    auto &gfxCoreHelper = device.getGfxCoreHelper();
+    auto resolution = device.getDeviceInfo().profilingTimerResolution;
+    timestamp.gpuTimeStamp = newGpuTimestamp;
+    timestamp.gpuTimeInNs = gfxCoreHelper.getGpuTimeStampInNS(timestamp.gpuTimeStamp, resolution);
+    timestamp.cpuTimeInNs = timestamp.gpuTimeInNs;
+}
+
+/**
+ * @brief Timestamp returned from GPU is initially 32 bits. This method performs XOR with
+ * other timestamp that tracks overflows, so passed timestamp will have correct overflow bits
+ *
+ * @param[out] timestamp Overflow bits will be added to this timestamp
+ * @param[in] timestampWithOverflow Timestamp that tracks overflows in remaining 32 most significant bits
+ *
+ */
+void Event::addOverflowToTimestamp(uint64_t &timestamp, uint64_t timestampWithOverflow) const {
+    auto &device = this->cmdQueue->getDevice();
+    auto &gfxCoreHelper = device.getGfxCoreHelper();
+    timestamp |= timestampWithOverflow & (maxNBitValue(64) - maxNBitValue(gfxCoreHelper.getGlobalTimeStampBits()));
+}
+
 void Event::calculateProfilingDataInternal(uint64_t contextStartTS, uint64_t contextEndTS, uint64_t *contextCompleteTS, uint64_t globalStartTS) {
     auto &device = this->cmdQueue->getDevice();
     auto &gfxCoreHelper = device.getGfxCoreHelper();
     auto resolution = device.getDeviceInfo().profilingTimerResolution;
 
-    startTimeStamp.gpuTimeStamp = globalStartTS;
-    while (startTimeStamp.gpuTimeStamp < submitTimeStamp.gpuTimeStamp) {
-        startTimeStamp.gpuTimeStamp += static_cast<uint64_t>(1ULL << gfxCoreHelper.getGlobalTimeStampBits());
+    // Calculate startTimestamp only if it was not already set on CPU
+    if (startTimeStamp.cpuTimeInNs == 0) {
+        startTimeStamp.gpuTimeStamp = globalStartTS;
+        addOverflowToTimestamp(startTimeStamp.gpuTimeStamp, submitTimeStamp.gpuTimeStamp);
+        if (startTimeStamp.gpuTimeStamp < submitTimeStamp.gpuTimeStamp) {
+            auto diff = submitTimeStamp.gpuTimeStamp - startTimeStamp.gpuTimeStamp;
+            auto diffInNS = gfxCoreHelper.getGpuTimeStampInNS(diff, resolution);
+            auto osTime = device.getOSTime();
+            if (diffInNS < osTime->getTimestampRefreshTimeout()) {
+                auto alignedSubmitTimestamp = startTimeStamp.gpuTimeStamp - 1;
+                auto alignedQueueTimestamp = startTimeStamp.gpuTimeStamp - 2;
+                if (startTimeStamp.gpuTimeStamp <= 2) {
+                    alignedSubmitTimestamp = 0;
+                    alignedQueueTimestamp = 0;
+                }
+                updateTimestamp(submitTimeStamp, alignedSubmitTimestamp);
+                updateTimestamp(queueTimeStamp, alignedQueueTimestamp);
+                osTime->setRefreshTimestampsFlag();
+            } else {
+                startTimeStamp.gpuTimeStamp += static_cast<uint64_t>(1ULL << gfxCoreHelper.getGlobalTimeStampBits());
+            }
+        }
     }
+
+    UNRECOVERABLE_IF(startTimeStamp.gpuTimeStamp < submitTimeStamp.gpuTimeStamp);
     auto gpuTicksDiff = startTimeStamp.gpuTimeStamp - submitTimeStamp.gpuTimeStamp;
     auto timeDiff = static_cast<uint64_t>(gpuTicksDiff * resolution);
     startTimeStamp.cpuTimeInNs = submitTimeStamp.cpuTimeInNs + timeDiff;
@@ -504,6 +554,9 @@ void Event::updateExecutionStatus() {
         auto *allocationStorage = cmdQueue->getGpgpuCommandStreamReceiver().getInternalAllocationStorage();
         allocationStorage->cleanAllocationList(this->taskCount, TEMPORARY_ALLOCATION);
         allocationStorage->cleanAllocationList(this->taskCount, DEFERRED_DEALLOCATION);
+        if (cmdQueue->getContext().getStagingBufferManager()) {
+            cmdQueue->getContext().getStagingBufferManager()->resetDetectedPtrs();
+        }
         return;
     }
 
@@ -614,8 +667,8 @@ void Event::submitCommand(bool abortTasks) {
             this->setSubmitTimeStamp();
             if (profilingCpuPath) {
                 setStartTimeStamp();
-            } else {
             }
+
             if (perfCountersEnabled && perfCounterNode) {
                 this->cmdQueue->getGpgpuCommandStreamReceiver().makeResident(*perfCounterNode->getBaseGraphicsAllocation());
             }
@@ -662,7 +715,10 @@ cl_int Event::waitForEvents(cl_uint numEvents,
         Event *event = castToObjectOrAbort<Event>(*it);
         if (event->cmdQueue) {
             if (event->taskLevel != CompletionStamp::notReady) {
-                event->cmdQueue->flush();
+                auto ret = event->cmdQueue->flush();
+                if (ret != CL_SUCCESS) {
+                    return ret;
+                }
             }
         }
     }
@@ -771,12 +827,31 @@ bool Event::isWaitForTimestampsEnabled() const {
 bool Event::areTimestampsCompleted() {
     if (this->timestampPacketContainer.get()) {
         if (this->isWaitForTimestampsEnabled()) {
+            bool printWaitForCompletion = debugManager.flags.LogWaitingForCompletion.get();
+
             for (const auto &timestamp : this->timestampPacketContainer->peekNodes()) {
                 for (uint32_t i = 0; i < timestamp->getPacketsUsed(); i++) {
+                    if (printWaitForCompletion) {
+                        printf("\nChecking TS 0x%" PRIx64, timestamp->getGpuAddress() + (i * timestamp->getSinglePacketSize()));
+                    }
                     this->cmdQueue->getGpgpuCommandStreamReceiver().downloadAllocation(*timestamp->getBaseGraphicsAllocation()->getGraphicsAllocation(this->cmdQueue->getGpgpuCommandStreamReceiver().getRootDeviceIndex()));
                     if (timestamp->getContextEndValue(i) == 1) {
+                        if (printWaitForCompletion) {
+                            printf("\nTS not ready");
+                        }
                         return false;
                     }
+                }
+            }
+            if (printWaitForCompletion) {
+                printf("\nTS ready");
+            }
+            this->cmdQueue->getGpgpuCommandStreamReceiver().downloadAllocations(true);
+            const auto &bcsStates = this->cmdQueue->peekActiveBcsStates();
+            for (auto currentBcsIndex = 0u; currentBcsIndex < bcsStates.size(); currentBcsIndex++) {
+                const auto &state = bcsStates[currentBcsIndex];
+                if (state.isValid()) {
+                    this->cmdQueue->getBcsCommandStreamReceiver(state.engineType)->downloadAllocations(true);
                 }
             }
             return true;
@@ -969,6 +1044,22 @@ bool Event::checkUserEventDependencies(cl_uint numEventsInWaitList, const cl_eve
 
 TaskCountType Event::peekTaskLevel() const {
     return taskLevel;
+}
+
+void Event::copyTimestamps(Event &srcEvent) {
+    if (timestampPacketContainer) {
+        this->addTimestampPacketNodes(*srcEvent.getTimestampPacketNodes());
+    } else {
+        if (this->timeStampNode != nullptr) {
+            this->timeStampNode->returnTag();
+        }
+        this->timeStampNode = srcEvent.timeStampNode;
+        srcEvent.timeStampNode = nullptr;
+    }
+    this->queueTimeStamp = srcEvent.queueTimeStamp;
+    this->submitTimeStamp = srcEvent.submitTimeStamp;
+    this->startTimeStamp = srcEvent.startTimeStamp;
+    this->endTimeStamp = srcEvent.endTimeStamp;
 }
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,7 @@
 #include "igfxfmid.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -50,6 +51,7 @@ class MemoryInfo;
 class OsContext;
 class OsContextLinux;
 class Gmm;
+class GraphicsAllocation;
 struct CacheInfo;
 struct EngineInfo;
 struct HardwareInfo;
@@ -81,7 +83,6 @@ class Drm : public DriverModel {
         return 0;
     }
     PhysicalDevicePciSpeedInfo getPciSpeedInfo() const override;
-    int getExecSoftPin(int &execSoftPin);
     int enableTurboBoost();
     int getEuTotal(int &euTotal);
     int getSubsliceTotal(int &subsliceTotal);
@@ -92,7 +93,7 @@ class Drm : public DriverModel {
     int getTimestampFrequency(int &frequency);
     int getOaTimestampFrequency(int &frequency);
 
-    MOCKABLE_VIRTUAL int queryGttSize(uint64_t &gttSizeOutput);
+    MOCKABLE_VIRTUAL int queryGttSize(uint64_t &gttSizeOutput, bool alignUpToFullRange);
     bool isPreemptionSupported() const { return preemptionSupported; }
 
     MOCKABLE_VIRTUAL void checkPreemptionSupport();
@@ -105,7 +106,7 @@ class Drm : public DriverModel {
     int queryVmId(uint32_t drmContextId, uint32_t &vmId);
     void setLowPriorityContextParam(uint32_t drmContextId);
 
-    MOCKABLE_VIRTUAL unsigned int bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType, bool engineInstancedDevice);
+    MOCKABLE_VIRTUAL unsigned int bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType);
 
     MOCKABLE_VIRTUAL int getErrno();
     bool setQueueSliceCount(uint64_t sliceCount);
@@ -126,10 +127,11 @@ class Drm : public DriverModel {
     void setupSystemInfo(HardwareInfo *hwInfo, SystemInfo *sysInfo);
     void setupCacheInfo(const HardwareInfo &hwInfo);
     MOCKABLE_VIRTUAL void getPrelimVersion(std::string &prelimVersion);
-    MOCKABLE_VIRTUAL void getPrelimEuDebug(int &prelimEuDebug);
+    MOCKABLE_VIRTUAL int getEuDebugSysFsEnable();
 
     PhysicalDevicePciBusInfo getPciBusInfo() const override;
     bool isGpuHangDetected(OsContext &osContext) override;
+    MOCKABLE_VIRTUAL bool checkResetStatus(OsContext &osContext);
 
     bool areNonPersistentContextsSupported() const { return nonPersistentContextsSupported; }
     void checkNonPersistentContextsSupport();
@@ -149,6 +151,8 @@ class Drm : public DriverModel {
 
     void setDirectSubmissionActive(bool value) { this->directSubmissionActive = value; }
     bool isDirectSubmissionActive() const { return this->directSubmissionActive; }
+    MOCKABLE_VIRTUAL void setSharedSystemAllocEnable(bool value) { this->sharedSystemAllocEnable = value; }
+    MOCKABLE_VIRTUAL bool isSharedSystemAllocEnabled() const { return this->sharedSystemAllocEnable; }
 
     MOCKABLE_VIRTUAL bool isSetPairAvailable();
     MOCKABLE_VIRTUAL bool getSetPairAvailable() { return setPairAvailable; }
@@ -165,7 +169,14 @@ class Drm : public DriverModel {
     MOCKABLE_VIRTUAL void queryPageFaultSupport();
     bool hasPageFaultSupport() const;
     bool hasKmdMigrationSupport() const;
+    bool checkToDisableScratchPage() { return disableScratch; }
+    unsigned int getGpuFaultCheckThreshold() const { return gpuFaultCheckThreshold; }
+    void configureScratchPagePolicy();
+    void configureGpuFaultCheckThreshold();
 
+    bool checkGpuPageFaultRequired() {
+        return (checkToDisableScratchPage() && getGpuFaultCheckThreshold() != 0);
+    }
     MOCKABLE_VIRTUAL bool resourceRegistrationEnabled();
     MOCKABLE_VIRTUAL uint32_t registerResource(DrmResourceClass classType, const void *data, size_t size);
     MOCKABLE_VIRTUAL void unregisterResource(uint32_t handle);
@@ -179,8 +190,8 @@ class Drm : public DriverModel {
         return systemInfo.get();
     }
 
-    CacheInfo *getCacheInfo() const {
-        return cacheInfo.get();
+    CacheInfo *getL3CacheInfo() const {
+        return l3CacheInfo.get();
     }
 
     MemoryInfo *getMemoryInfo() const {
@@ -203,9 +214,8 @@ class Drm : public DriverModel {
 
     static Drm *create(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceId, RootDeviceEnvironment &rootDeviceEnvironment);
     static void overrideBindSupport(bool &useVmBind);
-    std::string getPciPath() {
-        return hwDeviceId->getPciPath();
-    }
+    std::string getPciPath() { return hwDeviceId->getPciPath(); }
+    std::string getDeviceNode() { return hwDeviceId->getDeviceNode(); }
 
     void waitForBind(uint32_t vmHandleId);
     uint64_t getNextFenceVal(uint32_t vmHandleId) { return fenceVal[vmHandleId] + 1; }
@@ -219,9 +229,11 @@ class Drm : public DriverModel {
         u32,
         u64
     };
-    MOCKABLE_VIRTUAL int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags);
+    MOCKABLE_VIRTUAL int waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, ValueWidth dataWidth, int64_t timeout, uint16_t flags, bool userInterrupt,
+                                       uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait);
 
-    void waitOnUserFences(const OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, uint32_t postSyncOffset);
+    int waitOnUserFences(OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, int64_t timeout, uint32_t postSyncOffset, bool userInterrupt,
+                         uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait);
 
     void setNewResourceBoundToVM(BufferObject *bo, uint32_t vmHandleId);
 
@@ -256,9 +268,13 @@ class Drm : public DriverModel {
     template <typename DataType>
     std::vector<DataType> query(uint32_t queryId, uint32_t queryItemFlags);
     static std::string getDrmVersion(int fileDescriptor);
+    MOCKABLE_VIRTUAL uint32_t getAggregatedProcessCount() const;
 
   protected:
     Drm(std::unique_ptr<HwDeviceIdDrm> &&hwDeviceIdIn, RootDeviceEnvironment &rootDeviceEnvironment);
+
+    int waitOnUserFencesImpl(const OsContextLinux &osContext, uint64_t address, uint64_t value, uint32_t numActiveTiles, int64_t timeout, uint32_t postSyncOffset, bool userInterrupt,
+                             uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait);
 
     int getQueueSliceCount(GemContextParamSseu *sseu);
     std::string generateUUID();
@@ -267,7 +283,7 @@ class Drm : public DriverModel {
     void setupIoctlHelper(const PRODUCT_FAMILY productFamily);
     void queryAndSetVmBindPatIndexProgrammingSupport();
     bool queryDeviceIdAndRevision();
-    bool queryI915DeviceIdAndRevision();
+    static uint64_t alignUpGttSize(uint64_t inputGttSize);
 
 #pragma pack(1)
     struct PCIConfig {
@@ -317,7 +333,7 @@ class Drm : public DriverModel {
     std::unique_ptr<HwDeviceIdDrm> hwDeviceId;
     std::unique_ptr<IoctlHelper> ioctlHelper;
     std::unique_ptr<SystemInfo> systemInfo;
-    std::unique_ptr<CacheInfo> cacheInfo;
+    std::unique_ptr<CacheInfo> l3CacheInfo;
     std::unique_ptr<EngineInfo> engineInfo;
     std::unique_ptr<MemoryInfo> memoryInfo;
 
@@ -334,6 +350,7 @@ class Drm : public DriverModel {
     bool requirePerContextVM = false;
     bool bindAvailable = false;
     bool directSubmissionActive = false;
+    bool sharedSystemAllocEnable = false;
     bool setPairAvailable = false;
     bool chunkingAvailable = false;
     uint32_t chunkingMode = 0;
@@ -342,6 +359,15 @@ class Drm : public DriverModel {
     bool pageFaultSupported = false;
     bool completionFenceSupported = false;
     bool vmBindPatIndexProgrammingSupported = false;
+    bool disableScratch = false;
+    uint32_t gpuFaultCheckThreshold = 10u;
+
+    std::atomic<uint32_t> gpuFaultCheckCounter{0u};
+
+    bool memoryInfoQueried = false;
+    bool engineInfoQueried = false;
+    bool systemInfoQueried = false;
+    bool topologyQueried = false;
 
   private:
     int getParamIoctl(DrmParam param, int *dstValue);

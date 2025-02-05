@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,7 +10,7 @@
 #include "shared/source/helpers/constants.h"
 #include "shared/source/os_interface/linux/cache_info.h"
 #include "shared/source/os_interface/linux/drm_wrappers.h"
-#include "shared/source/os_interface/linux/i915_upstream.h"
+#include "shared/source/os_interface/linux/i915.h"
 #include "shared/source/os_interface/linux/ioctl_helper.h"
 
 namespace NEO {
@@ -33,7 +33,7 @@ bool IoctlHelperUpstream::isVmBindAvailable() {
     return false;
 }
 
-int IoctlHelperUpstream::createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, std::optional<uint32_t> memPolicyMode, std::optional<std::vector<unsigned long>> memPolicyNodemask) {
+int IoctlHelperUpstream::createGemExt(const MemRegionsVec &memClassInstances, size_t allocSize, uint32_t &handle, uint64_t patIndex, std::optional<uint32_t> vmId, int32_t pairHandle, bool isChunked, uint32_t numOfChunks, std::optional<uint32_t> memPolicyMode, std::optional<std::vector<unsigned long>> memPolicyNodemask, std::optional<bool> isCoherent) {
     bool isPatIndexValid = (patIndex != CommonConstants::unsupportedPatIndex) && (patIndex <= std::numeric_limits<uint32_t>::max());
     bool useSetPat = this->isSetPatSupported && isPatIndexValid;
 
@@ -115,7 +115,7 @@ void IoctlHelperUpstream::detectExtSetPatSupport() {
                      this->isSetPatSupported ? "enabled" : "disabled");
 }
 
-CacheRegion IoctlHelperUpstream::closAlloc() {
+CacheRegion IoctlHelperUpstream::closAlloc(CacheLevel cacheLevel) {
     return CacheRegion::none;
 }
 
@@ -127,8 +127,8 @@ CacheRegion IoctlHelperUpstream::closFree(CacheRegion closIndex) {
     return CacheRegion::none;
 }
 
-int IoctlHelperUpstream::waitUserFence(uint32_t ctxId, uint64_t address,
-                                       uint64_t value, uint32_t dataWidth, int64_t timeout, uint16_t flags) {
+int IoctlHelperUpstream::waitUserFence(uint32_t ctxId, uint64_t address, uint64_t value, uint32_t dataWidth, int64_t timeout, uint16_t flags,
+                                       bool userInterrupt, uint32_t externalInterruptId, GraphicsAllocation *allocForInterruptWait) {
     return 0;
 }
 
@@ -164,11 +164,11 @@ uint32_t IoctlHelperUpstream::getDirectSubmissionFlag() {
     return 0u;
 }
 
-std::unique_ptr<uint8_t[]> IoctlHelperUpstream::prepareVmBindExt(const StackVec<uint32_t, 2> &bindExtHandles) {
+std::unique_ptr<uint8_t[]> IoctlHelperUpstream::prepareVmBindExt(const StackVec<uint32_t, 2> &bindExtHandles, uint64_t cookie) {
     return {};
 }
 
-uint64_t IoctlHelperUpstream::getFlagsForVmBind(bool bindCapture, bool bindImmediate, bool bindMakeResident) {
+uint64_t IoctlHelperUpstream::getFlagsForVmBind(bool bindCapture, bool bindImmediate, bool bindMakeResident, bool bindLockedMemory, bool readOnlyResource) {
     return 0u;
 }
 
@@ -191,18 +191,24 @@ bool IoctlHelperUpstream::completionFenceExtensionSupported(const bool isVmBindA
     return false;
 }
 
-std::optional<DrmParam> IoctlHelperUpstream::getHasPageFaultParamId() {
-    return std::nullopt;
+bool IoctlHelperUpstream::isPageFaultSupported() {
+    return false;
 };
 
-bool IoctlHelperUpstream::getEuStallProperties(std::array<uint64_t, 12u> &properties, uint64_t dssBufferSize,
-                                               uint64_t samplingRate, uint64_t pollPeriod, uint64_t engineInstance,
-                                               uint64_t notifyNReports) {
+bool IoctlHelperUpstream::isEuStallSupported() {
     return false;
 }
 
 uint32_t IoctlHelperUpstream::getEuStallFdParameter() {
     return 0u;
+}
+
+bool IoctlHelperUpstream::perfOpenEuStallStream(uint32_t euStallFdParameter, uint32_t &samplingPeriodNs, uint64_t engineInstance, uint64_t notifyNReports, uint64_t gpuTimeStampfrequency, int32_t *stream) {
+    return false;
+}
+
+bool IoctlHelperUpstream::perfDisableEuStallStream(int32_t *stream) {
+    return false;
 }
 
 std::unique_ptr<uint8_t[]> IoctlHelperUpstream::createVmControlExtRegion(const std::optional<MemoryClassInstance> &regionInstanceClass) {
@@ -225,15 +231,9 @@ void IoctlHelperUpstream::fillVmBindExtSetPat(VmBindExtSetPatT &vmBindExtSetPat,
 
 void IoctlHelperUpstream::fillVmBindExtUserFence(VmBindExtUserFenceT &vmBindExtUserFence, uint64_t fenceAddress, uint64_t fenceValue, uint64_t nextExtension) {}
 
-std::optional<uint64_t> IoctlHelperUpstream::getCopyClassSaturatePCIECapability() {
-    return std::nullopt;
-}
+void IoctlHelperUpstream::setVmBindUserFence(VmBindParams &vmBind, VmBindExtUserFenceT vmBindUserFence){};
 
-std::optional<uint64_t> IoctlHelperUpstream::getCopyClassSaturateLinkCapability() {
-    return std::nullopt;
-}
-
-uint32_t IoctlHelperUpstream::getVmAdviseAtomicAttribute() {
+std::optional<uint32_t> IoctlHelperUpstream::getVmAdviseAtomicAttribute() {
     return 0;
 }
 
@@ -243,6 +243,10 @@ int IoctlHelperUpstream::vmBind(const VmBindParams &vmBindParams) {
 
 int IoctlHelperUpstream::vmUnbind(const VmBindParams &vmBindParams) {
     return 0;
+}
+
+int IoctlHelperUpstream::getResetStats(ResetStats &resetStats, uint32_t *status, ResetStatsFault *resetStatsFault) {
+    return ioctl(DrmIoctl::getResetStats, &resetStats);
 }
 
 UuidRegisterResult IoctlHelperUpstream::registerUuid(const std::string &uuid, uint32_t uuidClass, uint64_t ptr, uint64_t size) {
@@ -304,6 +308,10 @@ bool IoctlHelperUpstream::getFabricLatency(uint32_t fabricId, uint32_t &latency,
 }
 
 bool IoctlHelperUpstream::isWaitBeforeBindRequired(bool bind) const {
-    return false;
+    bool userFenceOnUnbind = false;
+    if (debugManager.flags.EnableUserFenceUponUnbind.get() != -1) {
+        userFenceOnUnbind = !!debugManager.flags.EnableUserFenceUponUnbind.get();
+    }
+    return userFenceOnUnbind;
 }
 } // namespace NEO

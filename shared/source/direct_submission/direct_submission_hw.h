@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -30,8 +30,10 @@ struct RingSemaphoreData {
     uint8_t reservedCacheline2[48];
     uint64_t miFlushSpace;
     uint8_t reservedCacheline3[56];
+    uint32_t pagingFenceCounter;
+    uint8_t reservedCacheline4[60];
 };
-static_assert((64u * 4) == sizeof(RingSemaphoreData), "Invalid size for RingSemaphoreData");
+static_assert((64u * 5) == sizeof(RingSemaphoreData), "Invalid size for RingSemaphoreData");
 #pragma pack()
 
 using DirectSubmissionAllocations = StackVec<GraphicsAllocation *, 8>;
@@ -65,9 +67,10 @@ struct DirectSubmissionInputParams : NonCopyableClass {
     OsContext &osContext;
     const RootDeviceEnvironment &rootDeviceEnvironment;
     MemoryManager *memoryManager = nullptr;
-    const GraphicsAllocation *globalFenceAllocation = nullptr;
+    GraphicsAllocation *globalFenceAllocation = nullptr;
     GraphicsAllocation *workPartitionAllocation = nullptr;
     GraphicsAllocation *completionFenceAllocation = nullptr;
+    TaskCountType initialCompletionFenceValue = 0;
     const uint32_t rootDeviceIndex;
 };
 
@@ -78,7 +81,7 @@ class DirectSubmissionHw {
 
     virtual ~DirectSubmissionHw();
 
-    bool initialize(bool submitOnInit, bool useNotify);
+    bool initialize(bool submitOnInit);
 
     MOCKABLE_VIRTUAL bool stopRingBuffer(bool blocking);
 
@@ -94,6 +97,13 @@ class DirectSubmissionHw {
     }
 
     virtual void flushMonitorFence(){};
+
+    QueueThrottle getLastSubmittedThrottle() {
+        return this->lastSubmittedThrottle;
+    }
+
+    virtual void unblockPagingFenceSemaphore(uint64_t pagingFenceValue){};
+    uint32_t getRelaxedOrderingQueueSize() const { return currentRelaxedOrderingQueueSize; }
 
   protected:
     static constexpr size_t prefetchSize = 8 * MemoryConstants::cacheLineSize;
@@ -119,13 +129,16 @@ class DirectSubmissionHw {
     virtual bool dispatchMonitorFenceRequired(bool requireMonitorFence);
     virtual void getTagAddressValue(TagData &tagData) = 0;
     void unblockGpu();
-    bool submitCommandBufferToGpu(bool needStart, uint64_t gpuAddress, size_t size);
+    bool submitCommandBufferToGpu(bool needStart, uint64_t gpuAddress, size_t size, bool needWait);
     bool copyCommandBufferIntoRing(BatchBuffer &batchBuffer);
 
     void cpuCachelineFlush(void *ptr, size_t size);
 
     void dispatchSemaphoreSection(uint32_t value);
     size_t getSizeSemaphoreSection(bool relaxedOrderingSchedulerRequired);
+
+    void dispatchSemaphoreForPagingFence(uint64_t value);
+    size_t getSizeSemaphoreForPagingFence();
 
     MOCKABLE_VIRTUAL void dispatchRelaxedOrderingSchedulerSection(uint32_t value);
 
@@ -180,6 +193,7 @@ class DirectSubmissionHw {
 
     void updateRelaxedOrderingQueueSize(uint32_t newSize);
 
+    virtual void makeGlobalFenceAlwaysResident(){};
     struct RingBufferUse {
         RingBufferUse() = default;
         RingBufferUse(FlushStamp completionFence, GraphicsAllocation *ringBuffer) : completionFence(completionFence), ringBuffer(ringBuffer){};
@@ -202,6 +216,7 @@ class DirectSubmissionHw {
     uint64_t semaphoreGpuVa = 0u;
     uint64_t gpuVaForMiFlush = 0u;
     uint64_t gpuVaForAdditionalSynchronizationWA = 0u;
+    uint64_t gpuVaForPagingFenceSemaphore = 0u;
     uint64_t relaxedOrderingQueueSizeLimitValueVa = 0;
 
     OsContext &osContext;
@@ -210,7 +225,7 @@ class DirectSubmissionHw {
     MemoryOperationsHandler *memoryOperationHandler = nullptr;
     const HardwareInfo *hwInfo = nullptr;
     const RootDeviceEnvironment &rootDeviceEnvironment;
-    const GraphicsAllocation *globalFenceAllocation = nullptr;
+    GraphicsAllocation *globalFenceAllocation = nullptr;
     GraphicsAllocation *completionFenceAllocation = nullptr;
     GraphicsAllocation *semaphores = nullptr;
     GraphicsAllocation *workPartitionAllocation = nullptr;
@@ -238,7 +253,6 @@ class DirectSubmissionHw {
     bool disableMonitorFence = false;
     bool partitionedMode = false;
     bool partitionConfigSet = true;
-    bool useNotifyForPostSync = false;
     bool miMemFenceRequired = false;
     bool systemMemoryFenceAddressSet = false;
     bool completionFenceSupported = false;

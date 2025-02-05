@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -49,7 +49,6 @@ struct StateBaseAddressHelperArgs {
     bool setGeneralStateBaseAddress = false;
     bool useGlobalHeapsBaseAddress = false;
     bool isMultiOsContextCapable = false;
-    bool useGlobalAtomics = false;
     bool areMultipleSubDevicesInContext = false;
     bool overrideSurfaceStateBaseAddress = false;
     bool isDebuggerActive = false;
@@ -79,5 +78,6 @@ struct StateBaseAddressHelper {
     static uint32_t getMaxBindlessSurfaceStates();
 
     static void programHeaplessStateBaseAddress(STATE_BASE_ADDRESS &sba);
+    static size_t getSbaCmdSize();
 };
 } // namespace NEO

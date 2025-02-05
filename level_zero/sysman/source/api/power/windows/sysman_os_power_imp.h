@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 namespace L0 {
 namespace Sysman {
 class KmdSysManager;
+class WddmSysmanImp;
 class WddmPowerImp : public OsPower, NEO::NonCopyableOrMovableClass {
   public:
     ze_result_t getProperties(zes_power_properties_t *pProperties) override;
@@ -26,12 +27,18 @@ class WddmPowerImp : public OsPower, NEO::NonCopyableOrMovableClass {
     ze_result_t getPropertiesExt(zes_power_ext_properties_t *pExtPoperties) override;
 
     bool isPowerModuleSupported() override;
-    WddmPowerImp(OsSysman *pOsSysman, ze_bool_t onSubdevice, uint32_t subdeviceId);
+    void isPowerHandleEnergyCounterOnly();
+    void initPowerLimits();
+    WddmPowerImp(OsSysman *pOsSysman, ze_bool_t onSubdevice, uint32_t subdeviceId, zes_power_domain_t powerDomain);
     WddmPowerImp() = default;
     ~WddmPowerImp() override = default;
 
   protected:
     KmdSysManager *pKmdSysManager = nullptr;
+    WddmSysmanImp *pWddmSysmanImp = nullptr;
+    uint32_t powerLimitCount = 0;
+    zes_power_domain_t powerDomain = ZES_POWER_DOMAIN_CARD;
+    bool supportsEnergyCounterOnly = false;
 };
 
 } // namespace Sysman

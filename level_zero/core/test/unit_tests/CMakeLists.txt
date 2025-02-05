@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020-2024 Intel Corporation
+# Copyright (C) 2020-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -28,6 +28,8 @@ target_sources(${TARGET_NAME} PRIVATE
                ${CMAKE_CURRENT_SOURCE_DIR}/mock.h
                ${CMAKE_CURRENT_SOURCE_DIR}/white_box.h
                ${NEO_SHARED_TEST_DIRECTORY}/common/common_main.cpp
+               ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/mock_sip_listener.cpp
+               ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/virtual_file_system_listener.cpp
                ${NEO_SHARED_TEST_DIRECTORY}/common/tests_configuration.h
                ${NEO_SOURCE_DIR}/level_zero/core/test/common/test_modules/gen_kernel.cmake
                ${NEO_SOURCE_DIR}/level_zero/core/test/common/ult_specific_config_l0.cpp
@@ -46,6 +48,7 @@ target_sources(${TARGET_NAME} PRIVATE
 
 set_property(TARGET ${TARGET_NAME} APPEND_STRING PROPERTY COMPILE_FLAGS ${ASAN_FLAGS})
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER ${TARGET_NAME_L0})
+set_property(TARGET ${TARGET_NAME} PROPERTY ENABLE_EXPORTS TRUE)
 
 add_subdirectoriesL0(${CMAKE_CURRENT_SOURCE_DIR} "*")
 
@@ -57,6 +60,7 @@ target_include_directories(${TARGET_NAME}
                            ${NEO_SHARED_TEST_DIRECTORY}/common/test_macros/header${BRANCH_DIR_SUFFIX}
                            ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/includes${BRANCH_DIR_SUFFIX}
                            ${NEO_SHARED_TEST_DIRECTORY}/common/test_configuration/unit_tests
+                           ${NEO_SOURCE_DIR}/level_zero/include
 )
 
 if(WIN32)
@@ -71,6 +75,7 @@ target_link_libraries(${TARGET_NAME}
 )
 
 target_sources(${TARGET_NAME} PRIVATE
+               $<TARGET_OBJECTS:mock_aubstream>
                $<TARGET_OBJECTS:mock_gmm>
                $<TARGET_OBJECTS:${TARGET_NAME_L0}_fixtures>
                $<TARGET_OBJECTS:${TARGET_NAME_L0}_mocks>

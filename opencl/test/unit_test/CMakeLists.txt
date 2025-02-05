@@ -55,10 +55,10 @@ set(NEO_IGDRCL_TESTS__TARGET_OBJECTS
     $<TARGET_OBJECTS:neo_libult_cs>
     $<TARGET_OBJECTS:neo_libult>
     $<TARGET_OBJECTS:igdrcl_libult_env>
+    $<TARGET_OBJECTS:mock_aubstream>
     $<TARGET_OBJECTS:mock_gmm>
     $<TARGET_OBJECTS:${SHARINGS_ENABLE_LIB_NAME}>
     $<TARGET_OBJECTS:${BUILTINS_SOURCES_LIB_NAME}>
-    $<TARGET_OBJECTS:${BUILTINS_VME_LIB_NAME}>
     $<TARGET_OBJECTS:${BUILTINS_BINARIES_STATELESS_LIB_NAME}>
     $<TARGET_OBJECTS:${BUILTINS_BINARIES_STATELESS_HEAPLESS_LIB_NAME}>
     $<TARGET_OBJECTS:${BUILTINS_BINARIES_BINDFUL_LIB_NAME}>
@@ -118,6 +118,7 @@ set_property(TARGET igdrcl_tests APPEND_STRING PROPERTY COMPILE_FLAGS ${ASAN_FLA
 if(UNIX)
   set_property(TARGET igdrcl_tests APPEND_STRING PROPERTY COMPILE_FLAGS " -g")
 endif()
+set_property(TARGET igdrcl_tests PROPERTY ENABLE_EXPORTS TRUE)
 
 set_target_properties(unit_tests PROPERTIES FOLDER ${OPENCL_TEST_PROJECTS_FOLDER})
 set_target_properties(prepare_test_kernels_for_ocl PROPERTIES FOLDER ${OPENCL_TEST_PROJECTS_FOLDER})
@@ -128,12 +129,13 @@ target_include_directories(igdrcl_tests BEFORE PRIVATE
                            ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/includes${BRANCH_DIR_SUFFIX}
 )
 
-function(neo_gen_kernels platform_it_lower revision_id forcePatchtokenFormat)
+function(neo_gen_kernels platform_it_lower device revision_id forcePatchtokenFormat)
   set(outputdir "${TargetDir}/${platform_it_lower}/${revision_id}/test_files/${NEO_ARCH}/")
 
   if(forcePatchtokenFormat)
     set(formatArgument "--format" "patchtokens")
   endif()
+  set(addrmode "bindful")
 
   set(kernels_to_compile)
   foreach(filepath ${ARGN})
@@ -142,7 +144,8 @@ function(neo_gen_kernels platform_it_lower revision_id forcePatchtokenFormat)
     get_filename_component(workdir ${filepath} DIRECTORY)
     get_filename_component(absolute_filepath ${filepath} ABSOLUTE)
 
-    set(outputpath_base "${outputdir}${basename}_${platform_it_lower}")
+    set(outputname_base "${basename}_${platform_it_lower}")
+    set(outputpath_base "${outputdir}${outputname_base}")
     if(NOT NEO_DISABLE_BUILTINS_COMPILATION)
       set(output_files
           ${outputpath_base}.spv
@@ -151,10 +154,14 @@ function(neo_gen_kernels platform_it_lower revision_id forcePatchtokenFormat)
 
       add_custom_command(
                          OUTPUT ${output_files}
-                         COMMAND ${ocloc_cmd_prefix} -q -file ${absolute_filepath} -device ${platform_it_lower} -${NEO_BITS} -revision_id ${revision_id} -out_dir ${outputdir} ${formatArgument}
+                         COMMAND ${ocloc_cmd_prefix} -q -file ${absolute_filepath} -device ${device} -${NEO_BITS} -stateful_address_mode ${addrmode} -revision_id ${revision_id} -out_dir ${outputdir} ${formatArgument} -output_no_suffix -output ${outputname_base}
                          WORKING_DIRECTORY ${workdir}
-                         DEPENDS ${filepath} ocloc
+                         DEPENDS ${filepath} ocloc ${PREVIOUS_KERNELS}
       )
+
+      if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+        set(PREVIOUS_KERNELS ${output_files})
+      endif()
 
       list(APPEND kernels_to_compile ${output_files})
     else()
@@ -174,7 +181,7 @@ function(neo_gen_kernels platform_it_lower revision_id forcePatchtokenFormat)
   set(kernels_to_compile_${platform_it_lower}_${revision_id} ${kernels_to_compile_${platform_it_lower}_${revision_id}} PARENT_SCOPE)
 endfunction()
 
-function(neo_gen_kernels_with_options platform_it_lower revision_id filepath)
+function(neo_gen_kernels_with_options platform_it_lower device revision_id filepath)
   set(kernels_to_compile)
   foreach(filearg ${filepath})
     get_filename_component(filename ${filearg} NAME)
@@ -184,11 +191,13 @@ function(neo_gen_kernels_with_options platform_it_lower revision_id filepath)
 
     set(outputdir "${TargetDir}/${platform_it_lower}/${revision_id}/test_files/${NEO_ARCH}/")
     set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/${base_workdir}/")
+    set(addrmode "bindful")
 
     foreach(arg ${ARGN})
       string(REPLACE " " "_" argwospaces ${arg})
       set(base_filename ${basename}_${argwospaces})
-      set(outputpath_base "${outputdir}/${base_filename}_${platform_it_lower}")
+      set(outputname_base "${base_filename}_${platform_it_lower}")
+      set(outputpath_base "${outputdir}/${outputname_base}")
       if(NOT NEO_DISABLE_BUILTINS_COMPILATION)
         set(output_files
             ${outputpath_base}.spv
@@ -197,10 +206,14 @@ function(neo_gen_kernels_with_options platform_it_lower revision_id filepath)
 
         add_custom_command(
                            OUTPUT ${output_files}
-                           COMMAND ${ocloc_cmd_prefix} -file ${absolute_filepath} -device ${platform_it_lower} -${NEO_BITS} -out_dir ${outputdir} -revision_id ${revision_id} -options ${arg} -output ${base_filename}
+                           COMMAND ${ocloc_cmd_prefix} -file ${absolute_filepath} -device ${device} -${NEO_BITS} -stateful_address_mode ${addrmode} -out_dir ${outputdir} -output_no_suffix -output ${outputname_base} -revision_id ${revision_id} -options ${arg}
                            WORKING_DIRECTORY ${workdir}
-                           DEPENDS ${filearg} ocloc
+                           DEPENDS ${filearg} ocloc ${PREVIOUS_KERNELS}
         )
+
+        if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+          set(PREVIOUS_KERNELS ${output_files})
+        endif()
         list(APPEND kernels_to_compile ${output_files})
       else()
         foreach(extension "spv" "bin")
@@ -220,56 +233,6 @@ function(neo_gen_kernels_with_options platform_it_lower revision_id filepath)
   set(kernels_to_compile_${platform_it_lower}_${revision_id} ${kernels_to_compile_${platform_it_lower}_${revision_id}} PARENT_SCOPE)
 endfunction()
 
-function(neo_gen_kernels_with_internal_options platform_it_lower revision_id filepath output_name_prefix)
-  set(kernels_to_compile)
-
-  set(filearg ${filepath})
-  get_filename_component(filename ${filearg} NAME)
-  get_filename_component(basename ${filearg} NAME_WE)
-  get_filename_component(base_workdir ${filearg} DIRECTORY)
-  get_filename_component(absolute_filepath ${filearg} ABSOLUTE)
-
-  set(outputdir "${TargetDir}/${platform_it_lower}/${revision_id}/test_files/${NEO_ARCH}/")
-  set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/${base_workdir}/")
-
-  if(NOT "${output_name_prefix}" STREQUAL "")
-    set(basename ${output_name_prefix}_${basename})
-  endif()
-
-  set(outputpath_base "${outputdir}/${basename}_${platform_it_lower}")
-  if(NOT NEO_DISABLE_BUILTINS_COMPILATION)
-    set(output_files
-        ${outputpath_base}.spv
-        ${outputpath_base}.bin
-    )
-
-    if(NOT "${output_name_prefix}" STREQUAL "")
-      set(output_name -output ${basename})
-    endif()
-
-    add_custom_command(
-                       OUTPUT ${output_files}
-                       COMMAND ${ocloc_cmd_prefix} -file ${absolute_filepath} -device ${platform_it_lower} -revision_id ${revision_id} -${NEO_BITS} -out_dir ${outputdir} ${output_name} -internal_options ${ARGN}
-                       WORKING_DIRECTORY ${workdir}
-                       DEPENDS ${filearg} ocloc
-    )
-    list(APPEND kernels_to_compile_${platform_it_lower}_${revision_id} ${output_files})
-  else()
-    foreach(extension "spv" "bin")
-      set(_file_prebuilt "${NEO_KERNELS_BIN_DIR}/${platform_it_lower}/${revision_id}/test_files/${NEO_ARCH}/${basename}_${platform_it_lower}.${extension}")
-      add_custom_command(
-                         OUTPUT ${outputpath_base}.${extension}
-                         COMMAND ${CMAKE_COMMAND} -E make_directory ${outputdir}
-                         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_file_prebuilt} ${outputdir}
-      )
-
-      list(APPEND kernels_to_compile_${platform_it_lower}_${revision_id} ${outputpath_base}.${extension})
-    endforeach()
-  endif()
-
-  set(kernels_to_compile_${platform_it_lower}_${revision_id} ${kernels_to_compile_${platform_it_lower}_${revision_id}} PARENT_SCOPE)
-endfunction()
-
 set(TEST_KERNEL test_files/CopyBuffer_simd16.cl)
 
 set(TEST_KERNEL_options
@@ -279,146 +242,65 @@ set(TEST_KERNEL_options
     "-x spir -spir-std=1.2"
 )
 
-set(TEST_KERNEL_2_0_options
-    "-cl-std=CL2.0"
-)
-
-set(TEST_KERNEL_2_0
-    test_files/simple_nonuniform.cl
-)
-
-set(TEST_KERNEL_STATELESS_internal_options
-    "-cl-intel-greater-than-4GB-buffer-required"
-)
-
-set(TEST_KERNEL_STATELESS_internal_options_gen9lp
-    "-cl-intel-greater-than-4GB-buffer-required -m32"
-)
-
-set(TEST_KERNEL_STATELESS
-    test_files/stateless_kernel.cl
-)
-
-set(TEST_KERNEL_VME
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_files/vme_kernels.cl
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_files/media_kernels_backend.cl
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_files/media_kernels_frontend.cl
-)
-
-set(TEST_KERNEL_BINDLESS_internal_options
-    "-cl-intel-use-bindless-mode -cl-intel-use-bindless-advanced-mode"
-)
-
-set(TEST_KERNEL_BINDLESS
-    test_files/stateful_copy_buffer.cl
-)
-
-set(TEST_KERNEL_BINDLESS_IMAGES
-    test_files/copy_buffer_to_image.cl
-)
-
-set(TEST_KERNEL_PRINTF
-    test_files/printf.cl
-)
-
-set(TEST_KERNEL_PRINTF_internal_options_gen9lp
-    "-m32"
-)
-
 file(GLOB_RECURSE TEST_KERNELS test_files/*.cl)
-list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/shouldfail.cl")
-list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/valid_kernel.cl")
-list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/simple_nonuniform.cl")
-list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/stateless_kernel.cl")
-list(REMOVE_ITEM TEST_KERNELS ${TEST_KERNEL_VME})
-list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/${TEST_KERNEL_PRINTF}")
 
 macro(macro_for_each_platform)
-  set(PLATFORM_2_0_LOWER ${DEFAULT_SUPPORTED_2_0_${CORE_TYPE}_${PLATFORM_IT}_PLATFORM})
-  set(PLATFORM_VME_LOWER ${DEFAULT_SUPPORTED_VME_${CORE_TYPE}_${PLATFORM_IT}_PLATFORM})
-
   set(PLATFORM_TEST_KERNELS ${TEST_KERNELS})
   set(IMAGE_SUPPORT FALSE)
   CORE_CONTAINS_PLATFORM("SUPPORTED_IMAGES" ${CORE_TYPE} ${PLATFORM_IT} IMAGE_SUPPORT)
-  if(NOT ${IMAGE_SUPPORT})
-    list(REMOVE_ITEM PLATFORM_TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/copy_buffer_to_image.cl")
-  endif()
 
   foreach(KERNEL_TO_REMOVE ${${CORE_TYPE}_TEST_KERNELS_BLOCKLIST})
     set(KERNEL_TO_REMOVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/test_files/${KERNEL_TO_REMOVE}")
     list(REMOVE_ITEM PLATFORM_TEST_KERNELS ${KERNEL_TO_REMOVE_PATH})
   endforeach()
 
-  if(MSVC OR CMAKE_SIZEOF_VOID_P EQUAL 8)
-    foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-      neo_gen_kernels(${PLATFORM_IT_LOWER} ${REVISION_ID} FALSE ${PLATFORM_TEST_KERNELS})
-      neo_gen_kernels_with_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${TEST_KERNEL} ${TEST_KERNEL_options})
+  set(PREVIOUS_KERNELS)
+
+  if(WIN32 OR CMAKE_SIZEOF_VOID_P EQUAL 8)
+    foreach(REVISION_CONFIG ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
+      parse_revision_config(${REVISION_CONFIG} ${PLATFORM_IT_LOWER} DEVICE_ID REVISION_ID)
+      neo_gen_kernels(${PLATFORM_IT_LOWER} ${DEVICE_ID} ${REVISION_ID} FALSE ${PLATFORM_TEST_KERNELS})
+      neo_gen_kernels_with_options(${PLATFORM_IT_LOWER} ${DEVICE_ID} ${REVISION_ID} ${TEST_KERNEL} ${TEST_KERNEL_options})
     endforeach()
 
     #compile gen specific kernels if any were found
     file(GLOB_RECURSE ${CORE_TYPE_LOWER}_TEST_KERNELS test_files/*.${CORE_TYPE_LOWER})
     if(NOT "${${CORE_TYPE_LOWER}_TEST_KERNELS}" STREQUAL "")
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels(${PLATFORM_IT_LOWER} ${REVISION_ID} FALSE ${${CORE_TYPE_LOWER}_TEST_KERNELS})
+      foreach(REVISION_CONFIG ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
+        parse_revision_config(${REVISION_CONFIG} ${PLATFORM_IT_LOWER} DEVICE_ID REVISION_ID)
+        neo_gen_kernels(${PLATFORM_IT_LOWER} ${DEVICE_ID} ${REVISION_ID} FALSE ${${CORE_TYPE_LOWER}_TEST_KERNELS})
       endforeach()
     endif()
 
     # Compile platform specific kernels if any were found
     file(GLOB_RECURSE ${PLATFORM_IT_LOWER}_TEST_KERNELS test_files/*.${PLATFORM_IT_LOWER})
     if(NOT "${${PLATFORM_IT_LOWER}_TEST_KERNELS}" STREQUAL "")
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels(${PLATFORM_IT_LOWER} ${REVISION_ID} FALSE ${${PLATFORM_IT_LOWER}_TEST_KERNELS})
+      foreach(REVISION_CONFIG ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
+        parse_revision_config(${REVISION_CONFIG} ${PLATFORM_IT_LOWER} DEVICE_ID REVISION_ID)
+        neo_gen_kernels(${PLATFORM_IT_LOWER} ${DEVICE_ID} ${REVISION_ID} FALSE ${${PLATFORM_IT_LOWER}_TEST_KERNELS})
       endforeach()
     endif()
 
-    # Gen9lp needs extra -m32 flag
-    if(("${CORE_TYPE_LOWER}" STREQUAL "gen9") AND (("${PLATFORM_IT_LOWER}" STREQUAL "bxt") OR ("${PLATFORM_IT_LOWER}" STREQUAL "glk")))
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels_with_internal_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${TEST_KERNEL_PRINTF} "" ${TEST_KERNEL_PRINTF_internal_options_gen9lp})
-        neo_gen_kernels_with_internal_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${TEST_KERNEL_STATELESS} "" ${TEST_KERNEL_STATELESS_internal_options_gen9lp})
-      endforeach()
-    else()
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels_with_internal_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${TEST_KERNEL_PRINTF} "" " ")
-        neo_gen_kernels_with_internal_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${TEST_KERNEL_STATELESS} "" ${TEST_KERNEL_STATELESS_internal_options})
-      endforeach()
-    endif()
-
-    set(BINDLESS_KERNELS_IMAGES "")
-    if(IMAGE_SUPPORT)
-      set(BINDLESS_KERNELS_IMAGES ${TEST_KERNEL_BINDLESS_IMAGES})
-    endif()
-
-    foreach(file ${TEST_KERNEL_BINDLESS} ${BINDLESS_KERNELS_IMAGES})
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        if(NOT ("${CORE_TYPE_LOWER}" STREQUAL "gen8"))
-          neo_gen_kernels_with_internal_options(${PLATFORM_IT_LOWER} ${REVISION_ID} ${file} "bindless" ${TEST_KERNEL_BINDLESS_internal_options})
-        endif()
-      endforeach()
-    endforeach()
-
-    if(PLATFORM_2_0_LOWER)
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels_with_options(${PLATFORM_IT_LOWER} ${REVISION_ID} "${TEST_KERNEL_2_0}" ${TEST_KERNEL_2_0_options})
-      endforeach()
-    endif()
-    if(PLATFORM_VME_LOWER)
-      foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-        neo_gen_kernels(${PLATFORM_IT_LOWER} ${REVISION_ID} TRUE ${TEST_KERNEL_VME})
-      endforeach()
-    endif()
   endif()
 
-  foreach(REVISION_ID ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
-    add_custom_target(prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID} DEPENDS ${kernels_to_compile_${PLATFORM_IT_LOWER}_${REVISION_ID}} copy_compiler_files)
+  foreach(REVISION_CONFIG ${${PLATFORM_IT}_${CORE_TYPE}_REVISIONS})
+    parse_revision_config(${REVISION_CONFIG} ${PLATFORM_IT_LOWER} DEVICE_ID REVISION_ID)
+    add_custom_target(prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID} DEPENDS ${kernels_to_compile_${PLATFORM_IT_LOWER}_${REVISION_ID}} copy_compiler_files ${PREVIOUS_TARGET})
     add_dependencies(prepare_test_kernels_for_ocl prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID})
     set_target_properties(prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID} PROPERTIES FOLDER "${PLATFORM_SPECIFIC_TEST_TARGETS_FOLDER}/${PLATFORM_IT_LOWER}/${REVISION_ID}")
+
+    if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+      set(PREVIOUS_TARGET "prepare_test_kernels_${PLATFORM_IT_LOWER}_${REVISION_ID}")
+    endif()
+
   endforeach()
 endmacro()
 
 macro(macro_for_each_core_type)
   apply_macro_for_each_platform("TESTED")
 endmacro()
+
+set(PREVIOUS_TARGET "")
 apply_macro_for_each_core_type("TESTED")
 add_subdirectories()
 create_project_source_tree(igdrcl_tests)

@@ -59,13 +59,11 @@ size_t HardwareCommandsHelper<GfxFamily>::sendCrossThreadData(
     bool inlineDataProgrammingRequired,
     WalkerType *walkerCmd,
     uint32_t &sizeCrossThreadData,
-    [[maybe_unused]] uint64_t scratchAddress) {
-
+    [[maybe_unused]] uint64_t scratchAddress,
+    const RootDeviceEnvironment &rootDeviceEnvironment) {
     constexpr bool heaplessModeEnabled = GfxFamily::template isHeaplessMode<WalkerType>();
 
-    if constexpr (heaplessModeEnabled == false) {
-        indirectHeap.align(WalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
-    }
+    indirectHeap.align(GfxFamily::cacheLineSize);
 
     auto offsetCrossThreadData = indirectHeap.getUsed();
     char *dest = nullptr;
@@ -91,41 +89,39 @@ size_t HardwareCommandsHelper<GfxFamily>::sendCrossThreadData(
             requiredWalkOrder,
             kernelDescriptor.kernelAttributes.simdSize);
 
-        const auto &gfxCoreHelper = kernel.getGfxCoreHelper();
-        auto sizeForImplicitArgsProgramming = ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, !generationOfLocalIdsByRuntime, gfxCoreHelper);
+        auto sizeForImplicitArgsProgramming = ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, !generationOfLocalIdsByRuntime, rootDeviceEnvironment);
 
-        auto sizeForLocalIdsProgramming = sizeForImplicitArgsProgramming - ImplicitArgs::getSize();
+        auto sizeForLocalIdsProgramming = sizeForImplicitArgsProgramming - NEO::ImplicitArgsHelper::getSizeForImplicitArgsStruct(pImplicitArgs, kernelDescriptor, true, rootDeviceEnvironment);
         offsetCrossThreadData += sizeForLocalIdsProgramming;
 
         auto ptrToPatchImplicitArgs = indirectHeap.getSpace(sizeForImplicitArgsProgramming);
+        EncodeDispatchKernel<GfxFamily>::template patchScratchAddressInImplicitArgs<heaplessModeEnabled>(*pImplicitArgs, scratchAddress, true);
 
-        ImplicitArgsHelper::patchImplicitArgs(ptrToPatchImplicitArgs, *pImplicitArgs, kernelDescriptor, std::make_pair(generationOfLocalIdsByRuntime, requiredWalkOrder), gfxCoreHelper);
+        ImplicitArgsHelper::patchImplicitArgs(ptrToPatchImplicitArgs, *pImplicitArgs, kernelDescriptor, std::make_pair(generationOfLocalIdsByRuntime, requiredWalkOrder), rootDeviceEnvironment, nullptr);
     }
 
     uint32_t sizeToCopy = sizeCrossThreadData;
     if (inlineDataProgrammingRequired == true) {
 
         constexpr uint32_t inlineDataSize = WalkerType::getInlineDataSize();
-
         sizeToCopy = std::min(inlineDataSize, sizeCrossThreadData);
         dest = reinterpret_cast<char *>(walkerCmd->getInlineDataPointer());
         memcpy_s(dest, sizeToCopy, kernel.getCrossThreadData(), sizeToCopy);
         auto offset = std::min(inlineDataSize, sizeCrossThreadData);
         sizeCrossThreadData -= offset;
         src += offset;
+
+        if constexpr (heaplessModeEnabled) {
+            uint64_t indirectDataAddress = indirectHeap.getHeapGpuBase();
+            indirectDataAddress += indirectHeap.getHeapGpuStartOffset();
+            indirectDataAddress += offsetCrossThreadData;
+            HardwareCommandsHelper<GfxFamily>::programInlineData<WalkerType>(kernel, walkerCmd, indirectDataAddress, scratchAddress);
+        }
     }
 
     if (sizeCrossThreadData > 0) {
         dest = static_cast<char *>(indirectHeap.getSpace(sizeCrossThreadData));
         memcpy_s(dest, sizeCrossThreadData, src, sizeCrossThreadData);
-    }
-
-    if constexpr (heaplessModeEnabled) {
-        auto device = kernel.getContext().getDevice(0);
-        uint64_t indirectDataAddress = device->getMemoryManager()->getInternalHeapBaseAddress(device->getRootDeviceIndex(), indirectHeap.getGraphicsAllocation()->isAllocatedInLocalMemoryPool());
-        indirectDataAddress += indirectHeap.getHeapGpuStartOffset();
-        indirectDataAddress += offsetCrossThreadData;
-        HardwareCommandsHelper<GfxFamily>::programInlineData<WalkerType>(kernel, walkerCmd, indirectDataAddress, scratchAddress);
     }
 
     if (debugManager.flags.AddPatchInfoCommentsForAUBDump.get()) {
@@ -136,8 +132,9 @@ size_t HardwareCommandsHelper<GfxFamily>::sendCrossThreadData(
 }
 
 template <typename GfxFamily>
+template <typename WalkerType>
 void HardwareCommandsHelper<GfxFamily>::setInterfaceDescriptorOffset(
-    DefaultWalkerType *walkerCmd,
+    WalkerType *walkerCmd,
     uint32_t &interfaceDescriptorIndex) {
 }
 

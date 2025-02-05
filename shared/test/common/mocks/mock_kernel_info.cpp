@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -144,10 +144,6 @@ void MockKernelInfo::setGlobalVariablesSurface(uint8_t pointerSize, CrossThreadD
     populatePointerArg(kernelDescriptor.payloadMappings.implicitArgs.globalVariablesSurfaceAddress, pointerSize, stateless, bindful);
 }
 
-void MockKernelInfo::setDeviceSideEnqueueEventPoolSurface(uint8_t pointerSize, CrossThreadDataOffset stateless, SurfaceStateHeapOffset bindful) {
-    populatePointerArg(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress, pointerSize, stateless, bindful);
-}
-
 void MockKernelInfo::setDeviceSideEnqueueDefaultQueueSurface(uint8_t pointerSize, CrossThreadDataOffset stateless, SurfaceStateHeapOffset bindful) {
     populatePointerArg(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueDefaultQueueSurfaceAddress, pointerSize, stateless, bindful);
 }
@@ -175,9 +171,6 @@ void MockKernelInfo::setSamplerTable(DynamicStateHeapOffset borderColor, uint8_t
     samplerTable.tableOffset = tableOffset;
 }
 
-void MockKernelInfo::setPerThreadScratchSize(uint32_t perThreadScratchSize, uint32_t slot) {
-    kernelDescriptor.kernelAttributes.perThreadScratchSize[slot] = perThreadScratchSize;
-}
 void MockKernelInfo::setLocalIds(const std::array<uint8_t, 3> &localIds) {
     kernelDescriptor.kernelAttributes.numLocalIdChannels = localIds[0] + localIds[1] + localIds[2];
     kernelDescriptor.kernelAttributes.localId[0] = localIds[0];

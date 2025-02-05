@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,9 +21,9 @@ struct MockAubMemoryOperationsHandler : public AubMemoryOperationsHandler {
     using AubMemoryOperationsHandler::getMemoryBanksBitfield;
     using AubMemoryOperationsHandler::residentAllocations;
 
-    MemoryOperationsStatus makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) override {
+    MemoryOperationsStatus makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations, bool isDummyExecNeeded) override {
         makeResidentCalled = true;
-        return AubMemoryOperationsHandler::makeResident(device, gfxAllocations);
+        return AubMemoryOperationsHandler::makeResident(device, gfxAllocations, isDummyExecNeeded);
     }
 
     MemoryOperationsStatus evict(Device *device, GraphicsAllocation &gfxAllocation) override {
@@ -46,11 +46,17 @@ struct MockAubMemoryOperationsHandler : public AubMemoryOperationsHandler {
         return AubMemoryOperationsHandler::evictWithinOsContext(osContext, gfxAllocation);
     }
 
+    MemoryOperationsStatus free(Device *device, GraphicsAllocation &gfxAllocation) override {
+        freeCalled = true;
+        return AubMemoryOperationsHandler::free(device, gfxAllocation);
+    }
+
     bool makeResidentCalled = false;
     bool evictCalled = false;
     bool isResidentCalled = false;
     bool makeResidentWithinOsContextCalled = false;
     bool evictWithinOsContextCalled = false;
+    bool freeCalled = false;
 };
 
 } // namespace NEO

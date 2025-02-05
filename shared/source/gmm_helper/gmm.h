@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,6 +35,7 @@ struct GmmRequirements {
     bool preferCompressed;
     bool allowLargePages;
     Overrider<bool> overriderCacheable;
+    Overrider<bool> overriderPreferNoCpuAccess;
 };
 
 class Gmm {
@@ -70,16 +71,20 @@ class Gmm {
     GMM_RESCREATE_PARAMS resourceParams = {};
     std::unique_ptr<GmmResourceInfo> gmmResourceInfo;
 
-    bool isCompressionEnabled = false;
+    const char *getUsageTypeString();
+    void setCompressionEnabled(bool compresionEnabled) { this->compressionEnabled = compresionEnabled; }
+    bool isCompressionEnabled() const { return compressionEnabled; }
 
   protected:
     void applyAuxFlagsForImage(ImageInfo &imgInfo, bool preferCompressed);
     void setupImageResourceParams(ImageInfo &imgInfo, bool preferCompressed);
     bool extraMemoryFlagsRequired();
     void applyExtraMemoryFlags(const StorageInfo &storageInfo);
+    void applyExtraInitFlag();
     void applyDebugOverrides();
     GmmHelper *gmmHelper = nullptr;
 
+    bool compressionEnabled = false;
     bool preferNoCpuAccess = false;
 };
 } // namespace NEO

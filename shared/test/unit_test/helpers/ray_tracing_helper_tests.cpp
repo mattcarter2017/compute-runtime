@@ -8,6 +8,7 @@
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/ray_tracing_helper.h"
 #include "shared/test/common/mocks/mock_device.h"
+#include "shared/test/common/mocks/mock_release_helper.h"
 #include "shared/test/common/test_macros/test.h"
 
 using namespace NEO;
@@ -44,16 +45,6 @@ TEST(RayTracingHelperTests, whenRTStackSizeIsRequestedThenCorrectValueIsReturned
     EXPECT_EQ(expectedSize, size);
 }
 
-TEST(RayTracingHelperTests, whenNumRtStacksPerDssIsRequestedThenCorrectValueIsReturned) {
-    MockDevice device;
-
-    uint32_t numDssRtStacks = RayTracingHelper::getNumRtStacksPerDss(device);
-    uint32_t expectedValue = device.getHardwareInfo().gtSystemInfo.MaxDualSubSlicesSupported
-                                 ? static_cast<uint32_t>(RayTracingHelper::getNumRtStacks(device) / device.getHardwareInfo().gtSystemInfo.MaxDualSubSlicesSupported + 0.5)
-                                 : RayTracingHelper::stackDssMultiplier;
-    EXPECT_EQ(expectedValue, numDssRtStacks);
-}
-
 TEST(RayTracingHelperTests, whenNumRtStacksIsQueriedThenItIsEqualToNumRtStacksPerDssMultipliedByDualSubsliceCount) {
     MockDevice device;
 
@@ -78,4 +69,55 @@ TEST(RayTracingHelperTests, whenStackSizePerRayIsRequestedThenCorrectValueIsRetu
 
 TEST(RayTracingHelperTests, whenGetMemoryBackedFifoSizeToPatchIsCalledThenCorrectValueIsReturned) {
     EXPECT_EQ(2u, RayTracingHelper::getMemoryBackedFifoSizeToPatch());
+}
+
+TEST(RayTracingHelperTests, whenNumRtStacksPerDssIsRequestedAndFixedValueIsTrueThenCorrectValueIsReturned) {
+    MockReleaseHelper mockReleaseHelper;
+    MockDevice mockDevice;
+
+    mockReleaseHelper.isNumRtStacksPerDssFixedValueResult = true;
+    mockDevice.mockReleaseHelper = &mockReleaseHelper;
+
+    uint32_t fixedSizeOfRtStacksPerDss = 2048;
+    uint32_t result = RayTracingHelper::getNumRtStacksPerDss(mockDevice);
+    EXPECT_EQ(fixedSizeOfRtStacksPerDss, result);
+}
+
+TEST(RayTracingHelperTests, whenNumRtStacksPerDssIsRequestedAndFixedValueIsFalseThenCorrectValueIsReturned) {
+    MockReleaseHelper mockReleaseHelper;
+    mockReleaseHelper.isNumRtStacksPerDssFixedValueResult = false;
+
+    uint32_t maxEuPerSubSlice = 16;
+    uint32_t threadCount = 672;
+    uint32_t euCount = 96;
+
+    auto hwInfo = *NEO::defaultHwInfo;
+    hwInfo.gtSystemInfo.MaxEuPerSubSlice = maxEuPerSubSlice;
+    hwInfo.gtSystemInfo.ThreadCount = threadCount;
+    hwInfo.gtSystemInfo.EUCount = euCount;
+
+    std::unique_ptr<MockDevice> mockDevice(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo, 0));
+    mockDevice->mockReleaseHelper = &mockReleaseHelper;
+
+    // maxEuPerSubSlice * (threadCount / euCount) * CommonConstants::maximalSimdSize = 3584u
+    constexpr uint32_t expectedValue = 3584;
+
+    EXPECT_EQ(expectedValue, RayTracingHelper::getNumRtStacksPerDss(*mockDevice));
+}
+
+TEST(RayTracingHelperTests, whenNumRtStacksPerDssExceedsMaxThenReturnsMaxRtStacksPerDssSupported) {
+    MockReleaseHelper mockReleaseHelper;
+    mockReleaseHelper.isNumRtStacksPerDssFixedValueResult = false;
+
+    auto hwInfo = *NEO::defaultHwInfo;
+    hwInfo.gtSystemInfo.MaxEuPerSubSlice = 512;
+    hwInfo.gtSystemInfo.ThreadCount = 2048;
+    hwInfo.gtSystemInfo.EUCount = 256;
+
+    std::unique_ptr<MockDevice> mockDevice(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo, 0));
+    mockDevice->mockReleaseHelper = &mockReleaseHelper;
+
+    uint32_t maxSizeOfRtStacksPerDss = 4096;
+    uint32_t result = RayTracingHelper::getNumRtStacksPerDss(*mockDevice);
+    EXPECT_EQ(maxSizeOfRtStacksPerDss, result);
 }

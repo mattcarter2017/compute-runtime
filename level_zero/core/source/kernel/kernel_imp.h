@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -49,6 +49,7 @@ struct KernelImp : Kernel {
     }
 
     ze_result_t getBaseAddress(uint64_t *baseAddress) override;
+    ze_result_t getKernelProgramBinary(size_t *kernelSize, char *pKernelBinary) override;
     ze_result_t setIndirectAccess(ze_kernel_indirect_access_flags_t flags) override;
     ze_result_t getIndirectAccess(ze_kernel_indirect_access_flags_t *flags) override;
     ze_result_t getSourceAttributes(uint32_t *pSize, char **pString) override;
@@ -69,14 +70,25 @@ struct KernelImp : Kernel {
 
     ze_result_t getKernelName(size_t *pSize, char *pName) override;
 
-    ze_result_t suggestMaxCooperativeGroupCount(uint32_t *totalGroupCount, NEO::EngineGroupType engineGroupType,
-                                                bool isEngineInstanced) override;
+    uint32_t suggestMaxCooperativeGroupCount(NEO::EngineGroupType engineGroupType, bool forceSingleTileQuery) override {
+        UNRECOVERABLE_IF(0 == this->groupSize[0]);
+        UNRECOVERABLE_IF(0 == this->groupSize[1]);
+        UNRECOVERABLE_IF(0 == this->groupSize[2]);
+
+        return suggestMaxCooperativeGroupCount(engineGroupType, this->groupSize, forceSingleTileQuery);
+    }
+
+    uint32_t suggestMaxCooperativeGroupCount(NEO::EngineGroupType engineGroupType, uint32_t *groupSize, bool forceSingleTileQuery);
 
     const uint8_t *getCrossThreadData() const override { return crossThreadData.get(); }
     uint32_t getCrossThreadDataSize() const override { return crossThreadDataSize; }
 
-    const std::vector<NEO::GraphicsAllocation *> &getResidencyContainer() const override {
-        return residencyContainer;
+    const std::vector<NEO::GraphicsAllocation *> &getArgumentsResidencyContainer() const override {
+        return argumentsResidencyContainer;
+    }
+
+    const std::vector<NEO::GraphicsAllocation *> &getInternalResidencyContainer() const override {
+        return internalResidencyContainer;
     }
 
     ze_result_t setArgImmediate(uint32_t argIndex, size_t argSize, const void *argVal);
@@ -111,7 +123,9 @@ struct KernelImp : Kernel {
     void printPrintfOutput(bool hangDetected) override;
 
     bool usesSyncBuffer() override;
+    bool usesRegionGroupBarrier() const override;
     void patchSyncBuffer(NEO::GraphicsAllocation *gfxAllocation, size_t bufferOffset) override;
+    void patchRegionGroupBarrier(NEO::GraphicsAllocation *gfxAllocation, size_t bufferOffset) override;
 
     const uint8_t *getSurfaceStateHeapData() const override { return surfaceStateHeapData.get(); }
     uint32_t getSurfaceStateHeapDataSize() const override;
@@ -175,6 +189,7 @@ struct KernelImp : Kernel {
     void patchCrossthreadDataWithPrivateAllocation(NEO::GraphicsAllocation *privateAllocation) override;
     void patchBindlessOffsetsInCrossThreadData(uint64_t bindlessSurfaceStateBaseOffset) const override;
     void patchBindlessOffsetsForImplicitArgs(uint64_t bindlessSurfaceStateBaseOffset) const;
+    void patchSamplerBindlessOffsetsInCrossThreadData(uint64_t samplerStateOffset) const override;
 
     NEO::GraphicsAllocation *getPrivateMemoryGraphicsAllocation() override {
         return privateMemoryGraphicsAllocation;
@@ -186,7 +201,41 @@ struct KernelImp : Kernel {
 
     KernelExt *getExtension(uint32_t extensionType);
 
-    void getExtendedKernelProperties(ze_base_desc_t *pExtendedProperties);
+    bool checkKernelContainsStatefulAccess();
+
+    size_t getSyncBufferIndex() const {
+        return syncBufferIndex;
+    }
+
+    NEO::GraphicsAllocation *getSyncBufferAllocation() const {
+        if (std::numeric_limits<size_t>::max() == syncBufferIndex) {
+            return nullptr;
+        }
+        return internalResidencyContainer[syncBufferIndex];
+    }
+
+    size_t getRegionGroupBarrierIndex() const {
+        return regionGroupBarrierIndex;
+    }
+
+    NEO::GraphicsAllocation *getRegionGroupBarrierAllocation() const {
+        if (std::numeric_limits<size_t>::max() == regionGroupBarrierIndex) {
+            return nullptr;
+        }
+        return internalResidencyContainer[regionGroupBarrierIndex];
+    }
+
+    const std::vector<uint32_t> &getSlmArgSizes() {
+        return slmArgSizes;
+    }
+    const std::vector<uint32_t> &getSlmArgOffsetValues() {
+        return slmArgOffsetValues;
+    }
+    uint8_t getRequiredSlmAlignment(uint32_t argIndex) const;
+
+    const std::vector<KernelArgInfo> &getKernelArgInfos() const {
+        return kernelArgInfos;
+    }
 
   protected:
     KernelImp() = default;
@@ -207,10 +256,14 @@ struct KernelImp : Kernel {
     typedef ze_result_t (KernelImp::*KernelArgHandler)(uint32_t argIndex, size_t argSize, const void *argVal);
     std::vector<KernelArgInfo> kernelArgInfos;
     std::vector<KernelImp::KernelArgHandler> kernelArgHandlers;
-    std::vector<NEO::GraphicsAllocation *> residencyContainer;
+    std::vector<NEO::GraphicsAllocation *> argumentsResidencyContainer;
+    std::vector<size_t> implicitArgsResidencyContainerIndices;
+    std::vector<NEO::GraphicsAllocation *> internalResidencyContainer;
 
     std::mutex *devicePrintfKernelMutex = nullptr;
     NEO::GraphicsAllocation *printfBuffer = nullptr;
+    size_t syncBufferIndex = std::numeric_limits<size_t>::max();
+    size_t regionGroupBarrierIndex = std::numeric_limits<size_t>::max();
 
     uint32_t groupSize[3] = {0u, 0u, 0u};
     uint32_t numThreadsPerThreadGroup = 1u;
@@ -232,6 +285,7 @@ struct KernelImp : Kernel {
 
     UnifiedMemoryControls unifiedMemoryControls;
     std::vector<uint32_t> slmArgSizes;
+    std::vector<uint32_t> slmArgOffsetValues;
     uint32_t slmArgsTotalSize = 0U;
     uint32_t requiredWorkgroupOrder = 0u;
 

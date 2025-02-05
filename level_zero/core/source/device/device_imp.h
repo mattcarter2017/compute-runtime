@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -83,7 +83,7 @@ struct DeviceImp : public Device, NEO::NonCopyableOrMovableClass {
     const NEO::ProductHelper &getProductHelper() override;
     const NEO::CompilerProductHelper &getCompilerProductHelper() override;
     const NEO::HardwareInfo &getHwInfo() const override;
-    NEO::OSInterface &getOsInterface() override;
+    NEO::OSInterface *getOsInterface() override;
     uint32_t getPlatformInfo() const override;
     MetricDeviceContext &getMetricDeviceContext() override;
     DebugSession *getDebugSession(const zet_debug_config_t &config) override;
@@ -104,16 +104,21 @@ struct DeviceImp : public Device, NEO::NonCopyableOrMovableClass {
     void getExtendedDeviceModuleProperties(ze_base_desc_t *pExtendedProperties);
     uint32_t getAdditionalEngines(uint32_t numAdditionalEnginesRequested,
                                   ze_command_queue_group_properties_t *pCommandQueueGroupProperties);
-    NEO::GraphicsAllocation *getDebugSurface() const override { return debugSurface; }
-    void setDebugSurface(NEO::GraphicsAllocation *debugSurface) { this->debugSurface = debugSurface; };
+    NEO::GraphicsAllocation *getDebugSurface() const override {
+        return this->getNEODevice()->getDebugSurface();
+    }
+    void setDebugSurface(NEO::GraphicsAllocation *debugSurface) {
+        this->getNEODevice()->setDebugSurface(debugSurface);
+    };
     ~DeviceImp() override;
     NEO::GraphicsAllocation *allocateManagedMemoryFromHostPtr(void *buffer, size_t size, struct CommandList *commandList) override;
     NEO::GraphicsAllocation *allocateMemoryFromHostPtr(const void *buffer, size_t size, bool hostCopyAllowed) override;
     void setSysmanHandle(SysmanDevice *pSysman) override;
     SysmanDevice *getSysmanHandle() override;
-    ze_result_t getCsrForOrdinalAndIndex(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index) override;
-    ze_result_t getCsrForOrdinalAndIndexWithPriority(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority) override;
-    ze_result_t getCsrForLowPriority(NEO::CommandStreamReceiver **csr) override;
+    ze_result_t getCsrForOrdinalAndIndex(NEO::CommandStreamReceiver **csr, uint32_t ordinal, uint32_t index, ze_command_queue_priority_t priority, bool allocateInterrupt) override;
+    ze_result_t getCsrForLowPriority(NEO::CommandStreamReceiver **csr, bool copyOnly) override;
+    ze_result_t getCsrForHighPriority(NEO::CommandStreamReceiver **csr, bool copyOnly);
+    bool isSuitableForLowPriority(ze_command_queue_priority_t priority, bool copyOnly);
     NEO::GraphicsAllocation *obtainReusableAllocation(size_t requiredSize, NEO::AllocationType type) override;
     void storeReusableAllocation(NEO::GraphicsAllocation &alloc) override;
     NEO::Device *getActiveDevice() const;
@@ -141,12 +146,16 @@ struct DeviceImp : public Device, NEO::NonCopyableOrMovableClass {
 
     BcsSplit bcsSplit;
 
+    ze_command_list_handle_t globalTimestampCommandList = nullptr;
+    void *globalTimestampAllocation = nullptr;
+    std::mutex globalTimestampMutex;
+
     bool resourcesReleased = false;
     bool calculationForDisablingEuFusionWithDpasNeeded = false;
     void releaseResources();
 
     NEO::SVMAllocsManager::MapBasedAllocationTracker peerAllocations;
-    NEO::SpinLock peerAllocationsMutex;
+    NEO::SVMAllocsManager::MapBasedAllocationTracker peerCounterAllocations;
     std::unordered_map<const void *, L0::Image *> peerImageAllocations;
     NEO::SpinLock peerImageAllocationsMutex;
     std::map<NEO::SvmAllocationData *, NEO::MemAdviseFlags> memAdviseSharedAllocations;
@@ -159,7 +168,9 @@ struct DeviceImp : public Device, NEO::NonCopyableOrMovableClass {
     void setFabricVertex(FabricVertex *inFabricVertex) { fabricVertex = inFabricVertex; }
 
     using CmdListCreateFunPtrT = L0::CommandList *(*)(uint32_t, Device *, NEO::EngineGroupType, ze_command_list_flags_t, ze_result_t &, bool);
-    CmdListCreateFunPtrT getCmdListCreateFunc(const ze_command_list_desc_t *desc);
+    CmdListCreateFunPtrT getCmdListCreateFunc(const ze_base_desc_t *desc);
+    void getAdditionalExtProperties(ze_base_properties_t *extendedProperties);
+    void getAdditionalMemoryExtProperties(ze_base_properties_t *extProperties, const NEO::HardwareInfo &hwInfo);
     ze_result_t getFabricVertex(ze_fabric_vertex_handle_t *phVertex) override;
 
     ze_result_t queryDeviceLuid(ze_device_luid_ext_properties_t *deviceLuidProperties);
@@ -168,19 +179,23 @@ struct DeviceImp : public Device, NEO::NonCopyableOrMovableClass {
     uint32_t getEventMaxKernelCount() const override;
     uint32_t queryDeviceNodeMask();
     NEO::EngineGroupType getInternalEngineGroupType();
+    uint32_t getCopyEngineOrdinal() const;
 
   protected:
+    ze_result_t getGlobalTimestampsUsingSubmission(uint64_t *hostTimestamp, uint64_t *deviceTimestamp);
+    ze_result_t getGlobalTimestampsUsingOsInterface(uint64_t *hostTimestamp, uint64_t *deviceTimestamp);
+    const char *getDeviceMemoryName();
     void adjustCommandQueueDesc(uint32_t &ordinal, uint32_t &index);
     NEO::EngineGroupType getEngineGroupTypeForOrdinal(uint32_t ordinal) const;
     void getP2PPropertiesDirectFabricConnection(DeviceImp *peerDeviceImp,
                                                 ze_device_p2p_bandwidth_exp_properties_t *bandwidthPropertiesDesc);
+    bool tryAssignSecondaryContext(aub_stream::EngineType engineType, NEO::EngineUsage engineUsage, NEO::CommandStreamReceiver **csr, bool allocateInterrupt);
     NEO::EngineGroupsT subDeviceCopyEngineGroups{};
 
-    NEO::GraphicsAllocation *debugSurface = nullptr;
     SysmanDevice *pSysmanDevice = nullptr;
     std::unique_ptr<DebugSession> debugSession;
 };
 
-void transferAndUnprotectMemoryWithHints(NEO::PageFaultManager *pageFaultHandler, void *allocPtr, NEO::PageFaultManager::PageFaultData &pageFaultData);
+void transferAndUnprotectMemoryWithHints(NEO::CpuPageFaultManager *pageFaultHandler, void *allocPtr, NEO::CpuPageFaultManager::PageFaultData &pageFaultData);
 
 } // namespace L0

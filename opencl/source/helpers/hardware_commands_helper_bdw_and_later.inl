@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -78,20 +78,21 @@ size_t HardwareCommandsHelper<GfxFamily>::sendCrossThreadData(
     bool inlineDataProgrammingRequired,
     WalkerType *walkerCmd,
     uint32_t &sizeCrossThreadData,
-    uint64_t scratchAddress) {
-    indirectHeap.align(WalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
+    uint64_t scratchAddress,
+    const RootDeviceEnvironment &rootDeviceEnvironment) {
+    indirectHeap.align(GfxFamily::cacheLineSize);
 
     auto pImplicitArgs = kernel.getImplicitArgs();
     if (pImplicitArgs) {
         const auto &kernelDescriptor = kernel.getDescriptor();
-        const auto &gfxCoreHelper = kernel.getGfxCoreHelper();
+
         auto isHwLocalIdGeneration = false;
-        auto sizeForImplicitArgsProgramming = ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, isHwLocalIdGeneration, gfxCoreHelper);
+        auto sizeForImplicitArgsProgramming = ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, isHwLocalIdGeneration, rootDeviceEnvironment);
 
         auto implicitArgsGpuVA = indirectHeap.getGraphicsAllocation()->getGpuAddress() + indirectHeap.getUsed();
         auto ptrToPatchImplicitArgs = indirectHeap.getSpace(sizeForImplicitArgsProgramming);
 
-        ImplicitArgsHelper::patchImplicitArgs(ptrToPatchImplicitArgs, *pImplicitArgs, kernelDescriptor, {}, gfxCoreHelper);
+        ImplicitArgsHelper::patchImplicitArgs(ptrToPatchImplicitArgs, *pImplicitArgs, kernelDescriptor, {}, rootDeviceEnvironment, nullptr);
 
         auto implicitArgsCrossThreadPtr = ptrOffset(reinterpret_cast<uint64_t *>(kernel.getCrossThreadData()), kernelDescriptor.payloadMappings.implicitArgs.implicitArgsBuffer);
         *implicitArgsCrossThreadPtr = implicitArgsGpuVA;
@@ -110,8 +111,9 @@ size_t HardwareCommandsHelper<GfxFamily>::sendCrossThreadData(
 }
 
 template <typename GfxFamily>
+template <typename WalkerType>
 void HardwareCommandsHelper<GfxFamily>::setInterfaceDescriptorOffset(
-    DefaultWalkerType *walkerCmd,
+    WalkerType *walkerCmd,
     uint32_t &interfaceDescriptorIndex) {
 
     walkerCmd->setInterfaceDescriptorOffset(interfaceDescriptorIndex++);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -246,7 +246,6 @@ HWTEST_F(PrintfHandlerTests, givenPrintfHandlerWhenEnqueueIsBlockedThenDontUsePr
     class MyMockCommandQueueHw : public CommandQueueHw<FamilyType> {
       public:
         using CommandQueueHw<FamilyType>::CommandQueueHw;
-        using CommandQueueHw<FamilyType>::enqueueKernel;
 
         WaitStatus waitForAllEngines(bool blockedQueue, PrintfHandler *printfHandler, bool cleanTemporaryAllocationsList) override {
             waitCalled = true;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,7 +32,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocationWithMultipleBuff
     auto bo2 = this->createBO(size);
     auto bo3 = this->createBO(size);
     BufferObjects bos{bo0, bo1, bo2, bo3};
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
     allocation->storageInfo.memoryBanks = maxNBitValue(MemoryBanks::getBankForLocalMemory(3));
 
     csr->CommandStreamReceiver::makeResident(*allocation);
@@ -139,10 +139,11 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenWaitUserFenceEnab
 
     auto testDrmCsr = static_cast<TestedDrmCommandStreamReceiver<FamilyType> *>(csr);
     testDrmCsr->useUserFenceWait = true;
-    testDrmCsr->useContextForUserFenceWait = true;
     testDrmCsr->activePartitions = static_cast<uint32_t>(drmCtxSize);
 
-    uint64_t tagAddress = castToUint64(const_cast<TagAddressType *>(testDrmCsr->getTagAddress()));
+    auto tagPtr = const_cast<TagAddressType *>(testDrmCsr->getTagAddress());
+    *tagPtr = 0;
+    uint64_t tagAddress = castToUint64(tagPtr);
     FlushStamp handleToWait = 123;
     testDrmCsr->waitForFlushStamp(handleToWait);
 
@@ -153,39 +154,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenWaitUserFenceEnab
     EXPECT_EQ(tagAddress, mock->context.receivedGemWaitUserFence.addr);
     EXPECT_EQ(handleToWait, mock->context.receivedGemWaitUserFence.value);
     EXPECT_NE(0u, mock->context.receivedGemWaitUserFence.ctxId);
-    EXPECT_EQ(DrmPrelimHelper::getGTEWaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.op);
-    EXPECT_EQ(0u, mock->context.receivedGemWaitUserFence.flags);
-    EXPECT_EQ(DrmPrelimHelper::getU64WaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.mask);
-    EXPECT_EQ(-1, mock->context.receivedGemWaitUserFence.timeout);
-}
-
-HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenWaitUserFenceEnabledWhenUseCtxIdNotSelectedThenExpectZeroContextId) {
-    if (!FamilyType::supportsCmdSet(IGFX_XE_HP_CORE)) {
-        GTEST_SKIP();
-    }
-
-    auto osContextLinux = static_cast<const OsContextLinux *>(device->getDefaultEngine().osContext);
-    std::vector<uint32_t> &drmCtxIds = const_cast<std::vector<uint32_t> &>(osContextLinux->getDrmContextIds());
-    size_t drmCtxSize = drmCtxIds.size();
-    for (uint32_t i = 0; i < drmCtxSize; i++) {
-        drmCtxIds[i] = 5u + i;
-    }
-
-    auto testDrmCsr = static_cast<TestedDrmCommandStreamReceiver<FamilyType> *>(csr);
-    testDrmCsr->useUserFenceWait = true;
-    testDrmCsr->useContextForUserFenceWait = false;
-
-    uint64_t tagAddress = castToUint64(const_cast<TaskCountType *>(testDrmCsr->getTagAddress()));
-    FlushStamp handleToWait = 123;
-    testDrmCsr->waitForFlushStamp(handleToWait);
-
-    EXPECT_EQ(1u, testDrmCsr->waitUserFenceResult.called);
-    EXPECT_EQ(123u, testDrmCsr->waitUserFenceResult.waitValue);
-
-    EXPECT_EQ(1u, mock->context.gemWaitUserFenceCalled);
-    EXPECT_EQ(tagAddress, mock->context.receivedGemWaitUserFence.addr);
-    EXPECT_EQ(handleToWait, mock->context.receivedGemWaitUserFence.value);
-    EXPECT_EQ(0u, mock->context.receivedGemWaitUserFence.ctxId);
     EXPECT_EQ(DrmPrelimHelper::getGTEWaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.op);
     EXPECT_EQ(0u, mock->context.receivedGemWaitUserFence.flags);
     EXPECT_EQ(DrmPrelimHelper::getU64WaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.mask);
@@ -206,9 +174,31 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenWaitUserFenceEnab
 
     auto testDrmCsr = static_cast<TestedDrmCommandStreamReceiver<FamilyType> *>(csr);
     testDrmCsr->useUserFenceWait = true;
-    testDrmCsr->useContextForUserFenceWait = false;
     testDrmCsr->activePartitions = 2u;
     EXPECT_NE(0u, testDrmCsr->immWritePostSyncWriteOffset);
+
+    auto rootExecEnvironment = executionEnvironment->rootDeviceEnvironments[0].get();
+    auto &gfxCoreHelper = rootExecEnvironment->getHelper<GfxCoreHelper>();
+    auto hwInfo = rootExecEnvironment->getHardwareInfo();
+
+    auto osContext = std::make_unique<OsContextLinux>(*mock, rootDeviceIndex, 0,
+                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*rootExecEnvironment)[0],
+                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*hwInfo), DeviceBitfield(3)));
+
+    osContext->ensureContextInitialized(false);
+    osContext->incRefInternal();
+
+    device->getMemoryManager()->unregisterEngineForCsr(testDrmCsr);
+
+    device->allEngines[0].osContext = osContext.get();
+
+    testDrmCsr->setupContext(*osContext);
+
+    auto tagPtr = testDrmCsr->getTagAddress();
+    *tagPtr = 0;
+
+    tagPtr = ptrOffset(tagPtr, testDrmCsr->immWritePostSyncWriteOffset);
+    *tagPtr = 0;
 
     uint64_t tagAddress = castToUint64(const_cast<TagAddressType *>(testDrmCsr->getTagAddress()));
     FlushStamp handleToWait = 123;
@@ -220,11 +210,63 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenWaitUserFenceEnab
     EXPECT_EQ(2u, mock->context.gemWaitUserFenceCalled);
     EXPECT_EQ(tagAddress + testDrmCsr->immWritePostSyncWriteOffset, mock->context.receivedGemWaitUserFence.addr);
     EXPECT_EQ(handleToWait, mock->context.receivedGemWaitUserFence.value);
-    EXPECT_EQ(0u, mock->context.receivedGemWaitUserFence.ctxId);
+    EXPECT_NE(0u, mock->context.receivedGemWaitUserFence.ctxId);
     EXPECT_EQ(DrmPrelimHelper::getGTEWaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.op);
     EXPECT_EQ(0u, mock->context.receivedGemWaitUserFence.flags);
     EXPECT_EQ(DrmPrelimHelper::getU64WaitUserFenceFlag(), mock->context.receivedGemWaitUserFence.mask);
     EXPECT_EQ(-1, mock->context.receivedGemWaitUserFence.timeout);
+}
+
+HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenExternalInterruptIdWhenWaitingTheExecuteFenceWaitOnce) {
+    if (!FamilyType::supportsCmdSet(IGFX_XE_HP_CORE)) {
+        GTEST_SKIP();
+    }
+
+    auto osContextLinux = static_cast<const OsContextLinux *>(device->getDefaultEngine().osContext);
+    std::vector<uint32_t> &drmCtxIds = const_cast<std::vector<uint32_t> &>(osContextLinux->getDrmContextIds());
+    size_t drmCtxSize = drmCtxIds.size();
+    for (uint32_t i = 0; i < drmCtxSize; i++) {
+        drmCtxIds[i] = 5u + i;
+    }
+
+    auto testDrmCsr = static_cast<TestedDrmCommandStreamReceiver<FamilyType> *>(csr);
+    testDrmCsr->useUserFenceWait = true;
+    testDrmCsr->activePartitions = 2u;
+    EXPECT_NE(0u, testDrmCsr->immWritePostSyncWriteOffset);
+    EXPECT_TRUE(testDrmCsr->waitUserFenceSupported());
+
+    auto rootExecEnvironment = executionEnvironment->rootDeviceEnvironments[0].get();
+    auto &gfxCoreHelper = rootExecEnvironment->getHelper<GfxCoreHelper>();
+    auto hwInfo = rootExecEnvironment->getHardwareInfo();
+
+    auto osContext = std::make_unique<OsContextLinux>(*mock, rootDeviceIndex, 0,
+                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*rootExecEnvironment)[0],
+                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*hwInfo), DeviceBitfield(3)));
+
+    osContext->ensureContextInitialized(false);
+    osContext->incRefInternal();
+
+    device->getMemoryManager()->unregisterEngineForCsr(testDrmCsr);
+
+    device->allEngines[0].osContext = osContext.get();
+
+    testDrmCsr->setupContext(*osContext);
+
+    auto tagPtr = testDrmCsr->getTagAddress();
+    *tagPtr = 0;
+
+    tagPtr = ptrOffset(tagPtr, testDrmCsr->immWritePostSyncWriteOffset);
+    *tagPtr = 0;
+
+    uint64_t tagAddress = castToUint64(const_cast<TagAddressType *>(testDrmCsr->getTagAddress()));
+
+    EXPECT_EQ(0u, mock->context.gemWaitUserFenceCalled);
+
+    testDrmCsr->waitUserFence(123, tagAddress, 1, true, NEO::InterruptId::notUsed, nullptr);
+    EXPECT_EQ(2u, mock->context.gemWaitUserFenceCalled);
+
+    testDrmCsr->waitUserFence(123, tagAddress, 1, true, 0x678, nullptr);
+    EXPECT_EQ(3u, mock->context.gemWaitUserFenceCalled);
 }
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenFailingIoctlWhenWaitingThenDoEarlyReturn) {
@@ -234,14 +276,39 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTestDrmPrelim, givenFailingIoctlWhenW
 
     auto testDrmCsr = static_cast<TestedDrmCommandStreamReceiver<FamilyType> *>(csr);
     testDrmCsr->useUserFenceWait = true;
-    testDrmCsr->useContextForUserFenceWait = false;
     testDrmCsr->activePartitions = 3u;
+
+    auto rootExecEnvironment = executionEnvironment->rootDeviceEnvironments[0].get();
+    auto &gfxCoreHelper = rootExecEnvironment->getHelper<GfxCoreHelper>();
+    auto hwInfo = rootExecEnvironment->getHardwareInfo();
+
+    auto osContext = std::make_unique<OsContextLinux>(*mock, rootDeviceIndex, 0,
+                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*rootExecEnvironment)[0],
+                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*hwInfo), DeviceBitfield(7)));
+
+    osContext->ensureContextInitialized(false);
+    osContext->incRefInternal();
+
+    device->getMemoryManager()->unregisterEngineForCsr(testDrmCsr);
+
+    device->allEngines[0].osContext = osContext.get();
+
+    testDrmCsr->setupContext(*osContext);
 
     mock->waitUserFenceCall.failSpecificCall = 2;
 
     FlushStamp handleToWait = 123;
 
     EXPECT_EQ(0u, mock->waitUserFenceCall.called);
+
+    auto tagPtr = testDrmCsr->getTagAddress();
+    *tagPtr = 0;
+
+    tagPtr = ptrOffset(tagPtr, testDrmCsr->immWritePostSyncWriteOffset);
+    *tagPtr = 0;
+
+    tagPtr = ptrOffset(tagPtr, testDrmCsr->immWritePostSyncWriteOffset);
+    *tagPtr = 0;
 
     testDrmCsr->waitForFlushStamp(handleToWait);
 
@@ -258,7 +325,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocationWithMultipleBuff
     auto bo2 = this->createBO(size);
     auto bo3 = this->createBO(size);
     BufferObjects bos{bo0, bo1, bo2, bo3};
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, bos, nullptr, 0u, size, MemoryPool::localMemory);
     allocation->storageInfo.memoryBanks = maxNBitValue(MemoryBanks::getBankForLocalMemory(3));
     allocation->storageInfo.tileInstanced = true;
 
@@ -291,13 +358,13 @@ class DrmCommandStreamForceTileTest : public ::testing::Test {
       public:
         ~MockDrmCommandStreamReceiver() override {
         }
-        MockDrmCommandStreamReceiver<GfxFamily>(ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex,
-                                                DeviceBitfield deviceBitfield,
-                                                GemCloseWorkerMode mode, uint32_t inputHandleId)
+        MockDrmCommandStreamReceiver(ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex,
+                                     DeviceBitfield deviceBitfield,
+                                     GemCloseWorkerMode mode, uint32_t inputHandleId)
             : DrmCommandStreamReceiver<GfxFamily>(executionEnvironment, rootDeviceIndex, deviceBitfield, mode), expectedHandleId(inputHandleId) {
         }
 
-        SubmissionStatus processResidency(const ResidencyContainer &allocationsForResidency, uint32_t handleId) override {
+        SubmissionStatus processResidency(ResidencyContainer &allocationsForResidency, uint32_t handleId) override {
             EXPECT_EQ(handleId, expectedHandleId);
             return DrmCommandStreamReceiver<GfxFamily>::processResidency(allocationsForResidency, handleId);
         }
@@ -321,7 +388,7 @@ class DrmCommandStreamForceTileTest : public ::testing::Test {
         osContext = std::make_unique<OsContextLinux>(*mock, rootDeviceIndex, 0,
                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*executionEnvironment.rootDeviceEnvironments[0])[0],
                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*hwInfo), DeviceBitfield(3)));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
 
         csr = new MockDrmCommandStreamReceiver<GfxFamily>(executionEnvironment,
                                                           rootDeviceIndex,
@@ -432,7 +499,7 @@ struct DrmImplicitScalingCommandStreamTest : ::testing::Test {
         osContext = std::make_unique<OsContextLinux>(*drm, 0, 0u,
                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*executionEnvironment->rootDeviceEnvironments[0])[0],
                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*defaultHwInfo), DeviceBitfield(0b11)));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
 
         memoryManager = new DrmMemoryManager(GemCloseWorkerMode::gemCloseWorkerActive, debugManager.flags.EnableForcePin.get(), true, *executionEnvironment);
         executionEnvironment->memoryManager.reset(memoryManager);
@@ -466,14 +533,14 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, givenTwoTilesW
     auto multiStorageBo0 = new BufferObject(0u, drm, 3, 30, 0, 1);
     auto multiStorageBo1 = new BufferObject(0u, drm, 3, 31, 0, 1);
     BufferObjects multiStorageBos{multiStorageBo0, multiStorageBo1};
-    auto multiStorageAllocation = new DrmAllocation(0, AllocationType::unknown, multiStorageBos, nullptr, 0u, size, MemoryPool::localMemory);
+    auto multiStorageAllocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, multiStorageBos, nullptr, 0u, size, MemoryPool::localMemory);
     multiStorageAllocation->storageInfo.memoryBanks = 0b11;
     csr->CommandStreamReceiver::makeResident(*multiStorageAllocation);
 
     auto tileInstancedBo0 = new BufferObject(0u, drm, 3, 40, 0, 1);
     auto tileInstancedBo1 = new BufferObject(0u, drm, 3, 41, 0, 1);
     BufferObjects tileInstancedBos{tileInstancedBo0, tileInstancedBo1};
-    auto tileInstancedAllocation = new DrmAllocation(0, AllocationType::unknown, tileInstancedBos, nullptr, 0u, size, MemoryPool::localMemory);
+    auto tileInstancedAllocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, tileInstancedBos, nullptr, 0u, size, MemoryPool::localMemory);
     tileInstancedAllocation->storageInfo.memoryBanks = 0b11;
     tileInstancedAllocation->storageInfo.tileInstanced = true;
     csr->CommandStreamReceiver::makeResident(*tileInstancedAllocation);
@@ -530,7 +597,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, whenForceExecu
     auto osContext = std::make_unique<OsContextLinux>(*drm, 0, 0u,
                                                       EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*executionEnvironment->rootDeviceEnvironments[0])[0],
                                                                                                    PreemptionHelper::getDefaultPreemptionMode(*defaultHwInfo)));
-    osContext->ensureContextInitialized();
+    osContext->ensureContextInitialized(false);
     auto csr = std::make_unique<MockCsr>(*executionEnvironment, 0, osContext->getDeviceBitfield(),
                                          GemCloseWorkerMode::gemCloseWorkerActive);
     csr->setupContext(*osContext);
@@ -540,7 +607,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, whenForceExecu
     auto tileInstancedBo2 = new BufferObject(0u, drm, 3, 42, 0, 1);
     auto tileInstancedBo3 = new BufferObject(0u, drm, 3, 43, 0, 1);
     BufferObjects tileInstancedBos{tileInstancedBo0, tileInstancedBo1, tileInstancedBo2, tileInstancedBo3};
-    auto tileInstancedAllocation = new DrmAllocation(0, AllocationType::unknown, tileInstancedBos, nullptr, 0u, 1024u, MemoryPool::localMemory);
+    auto tileInstancedAllocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, tileInstancedBos, nullptr, 0u, 1024u, MemoryPool::localMemory);
     tileInstancedAllocation->storageInfo.memoryBanks = 0b11;
     tileInstancedAllocation->storageInfo.tileInstanced = true;
     csr->CommandStreamReceiver::makeResident(*tileInstancedAllocation);
@@ -583,7 +650,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, whenForceExecu
     auto tileInstancedBo2 = new BufferObject(0u, drm, 3, 42, 0, 1);
     auto tileInstancedBo3 = new BufferObject(0u, drm, 3, 43, 0, 1);
     BufferObjects tileInstancedBos{tileInstancedBo0, tileInstancedBo1, tileInstancedBo2, tileInstancedBo3};
-    auto tileInstancedAllocation = new DrmAllocation(0, AllocationType::unknown, tileInstancedBos, nullptr, 0u, 1024u, MemoryPool::localMemory);
+    auto tileInstancedAllocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, tileInstancedBos, nullptr, 0u, 1024u, MemoryPool::localMemory);
     tileInstancedAllocation->storageInfo.memoryBanks = 0b11;
     tileInstancedAllocation->storageInfo.tileInstanced = true;
     csr->CommandStreamReceiver::makeResident(*tileInstancedAllocation);
@@ -612,7 +679,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, givenDisabledI
             execCalled++;
             return 0;
         }
-        SubmissionStatus processResidency(const ResidencyContainer &inputAllocationsForResidency, uint32_t handleId) override {
+        SubmissionStatus processResidency(ResidencyContainer &inputAllocationsForResidency, uint32_t handleId) override {
             EXPECT_EQ(0u, processResidencyCalled);
             EXPECT_EQ(0u, handleId);
             processResidencyCalled++;
@@ -629,7 +696,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, givenDisabledI
     const auto size = 1024u;
     BufferObject *bufferObject = new BufferObject(0u, drm, 3, 30, 0, 1);
     BufferObjects bufferObjects{bufferObject};
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, bufferObjects, nullptr, 0u, size, MemoryPool::localMemory);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, bufferObjects, nullptr, 0u, size, MemoryPool::localMemory);
     csr->CommandStreamReceiver::makeResident(*allocation);
 
     auto &cs = csr->getCS();
@@ -649,7 +716,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, givenMultiTile
             execCalled++;
             return 0;
         }
-        SubmissionStatus processResidency(const ResidencyContainer &inputAllocationsForResidency, uint32_t handleId) override {
+        SubmissionStatus processResidency(ResidencyContainer &inputAllocationsForResidency, uint32_t handleId) override {
             EXPECT_EQ(execCalled, handleId);
             return SubmissionStatus::success;
         }
@@ -663,7 +730,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, DrmImplicitScalingCommandStreamTest, givenMultiTile
     const auto size = 1024u;
     BufferObject *bufferObject = new BufferObject(0u, drm, 3, 30, 0, 1);
     BufferObjects bufferObjects{bufferObject};
-    auto allocation = new DrmAllocation(0, AllocationType::unknown, bufferObjects, nullptr, 0u, size, MemoryPool::localMemory);
+    auto allocation = new DrmAllocation(0, 1u /*num gmms*/, AllocationType::unknown, bufferObjects, nullptr, 0u, size, MemoryPool::localMemory);
     csr->CommandStreamReceiver::makeResident(*allocation);
 
     auto &cs = csr->getCS();

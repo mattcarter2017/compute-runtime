@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -97,6 +97,12 @@ bool WddmInterface20::submit(uint64_t commandBuffer, size_t size, void *commandH
     return STATUS_SUCCESS == status;
 }
 
+bool NEO::WddmInterface20::createMonitoredFenceForDirectSubmission(MonitoredFence &monitorFence, OsContextWin &osContext) {
+    auto ret = WddmInterface::createMonitoredFence(monitorFence);
+    monitorFence.currentFenceValue = 1;
+    return ret;
+}
+
 bool WddmInterface23::createHwQueue(OsContextWin &osContext) {
     D3DKMT_CREATEHWQUEUE createHwQueue = {};
 
@@ -150,14 +156,45 @@ bool WddmInterface23::submit(uint64_t commandBuffer, size_t size, void *commandH
     submitCommand.CommandBuffer = commandBuffer;
     submitCommand.CommandLength = static_cast<UINT>(size);
 
-    submitCommand.pPrivateDriverData = commandHeader;
-    submitCommand.PrivateDriverDataSize = sizeof(COMMAND_BUFFER_HEADER);
+    COMMAND_BUFFER_HEADER *pHeader = reinterpret_cast<COMMAND_BUFFER_HEADER *>(commandHeader);
+    UmKmDataTempStorage<COMMAND_BUFFER_HEADER> internalRepresentation;
+    if (wddm.getHwDeviceId()->getUmKmDataTranslator()->enabled()) {
+        internalRepresentation.resize(wddm.getHwDeviceId()->getUmKmDataTranslator()->getSizeForCommandBufferHeaderDataInternalRepresentation());
+        bool translated = wddm.getHwDeviceId()->getUmKmDataTranslator()->translateCommandBufferHeaderDataToInternalRepresentation(internalRepresentation.data(), internalRepresentation.size(), *pHeader);
+        UNRECOVERABLE_IF(false == translated);
+        submitCommand.pPrivateDriverData = internalRepresentation.data();
+        submitCommand.PrivateDriverDataSize = static_cast<uint32_t>(internalRepresentation.size());
+    } else {
+        submitCommand.pPrivateDriverData = pHeader;
+        submitCommand.PrivateDriverDataSize = sizeof(COMMAND_BUFFER_HEADER);
+    }
 
     if (!debugManager.flags.UseCommandBufferHeaderSizeForWddmQueueSubmission.get()) {
         submitCommand.PrivateDriverDataSize = MemoryConstants::pageSize;
     }
 
     auto status = wddm.getGdi()->submitCommandToHwQueue(&submitCommand);
-    UNRECOVERABLE_IF(status != STATUS_SUCCESS);
     return status == STATUS_SUCCESS;
+}
+
+bool NEO::WddmInterface23::createMonitoredFenceForDirectSubmission(MonitoredFence &monitorFence, OsContextWin &osContext) {
+    MonitoredFence monitorFenceForResidency{};
+    auto ret = WddmInterface::createMonitoredFence(monitorFenceForResidency);
+    auto &residencyController = osContext.getResidencyController();
+    auto lastSubmittedFence = residencyController.getMonitoredFence().lastSubmittedFence;
+    auto currentFenceValue = residencyController.getMonitoredFence().currentFenceValue;
+    residencyController.resetMonitoredFenceParams(monitorFenceForResidency.fenceHandle,
+                                                  const_cast<uint64_t *>(monitorFenceForResidency.cpuAddress),
+                                                  monitorFenceForResidency.gpuAddress);
+    residencyController.getMonitoredFence().currentFenceValue = currentFenceValue;
+    residencyController.getMonitoredFence().lastSubmittedFence = lastSubmittedFence;
+
+    auto hwQueue = osContext.getHwQueue();
+    monitorFence.cpuAddress = reinterpret_cast<uint64_t *>(hwQueue.progressFenceCpuVA);
+    monitorFence.currentFenceValue = currentFenceValue;
+    monitorFence.lastSubmittedFence = lastSubmittedFence;
+    monitorFence.gpuAddress = hwQueue.progressFenceGpuVA;
+    monitorFence.fenceHandle = hwQueue.progressFenceHandle;
+
+    return ret;
 }

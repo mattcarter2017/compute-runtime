@@ -1,11 +1,13 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "shared/source/helpers/product_config_helper.h"
+
+#include "shared/source/helpers/hw_info.h"
 
 #include "device_ids_configs.h"
 #include "hw_cmds.h"
@@ -51,9 +53,43 @@ void ProductConfigHelper::adjustDeviceName(std::string &device) {
     }
 }
 
+void ProductConfigHelper::adjustClosedRangeDeviceLegacyAcronyms(std::string &rangeFromStr, std::string &rangeToStr) {
+    // gen12lp is allowed for backwards compatibilty, but it only functions as a release.
+    // When gen12lp is used in a range with a family this function translates the family to a matching release
+    bool isGen12lpAcronymPresent = (rangeFromStr == "gen12lp" || rangeToStr == "gen12lp");
+    if (isGen12lpAcronymPresent) {
+        auto &allSuppportedProducts = getDeviceAotInfo();
+
+        auto adjustFamilyAcronymToRelease = [&](std::string &device) {
+            AOT::FAMILY family = getFamilyFromDeviceName(device);
+            if (family == AOT::UNKNOWN_FAMILY)
+                return;
+            auto latestReleaseInFamily = AOT::UNKNOWN_RELEASE;
+            for (const auto &product : allSuppportedProducts) {
+                if (product.family == family) {
+                    latestReleaseInFamily = std::max(product.release, latestReleaseInFamily);
+                }
+            }
+            device = getAcronymFromARelease(latestReleaseInFamily).str();
+        };
+
+        adjustFamilyAcronymToRelease(rangeFromStr);
+        adjustFamilyAcronymToRelease(rangeToStr);
+    }
+}
+
 NEO::ConstStringRef ProductConfigHelper::getAcronymFromAFamily(AOT::FAMILY family) {
     for (const auto &[acronym, value] : AOT::familyAcronyms) {
         if (value == family) {
+            return NEO::ConstStringRef(acronym);
+        }
+    }
+    return {};
+}
+
+NEO::ConstStringRef ProductConfigHelper::getAcronymFromARelease(AOT::RELEASE release) {
+    for (const auto &[acronym, value] : AOT::releaseAcronyms) {
+        if (value == release) {
             return NEO::ConstStringRef(acronym);
         }
     }
@@ -259,4 +295,43 @@ uint32_t ProductConfigHelper::getProductConfigFromVersionValue(const std::string
     product.revision = revision;
 
     return product.value;
+}
+void ProductConfigHelper::initialize() {
+    for (auto &device : deviceAotInfo) {
+        for (const auto &[acronym, value] : AOT::deviceAcronyms) {
+            if (value == device.aotConfig.value) {
+                device.deviceAcronyms.push_back(NEO::ConstStringRef(acronym));
+            }
+        }
+
+        for (const auto &[acronym, value] : AOT::rtlIdAcronyms) {
+            if (value == device.aotConfig.value) {
+                device.rtlIdAcronyms.push_back(NEO::ConstStringRef(acronym));
+            }
+        }
+
+        for (const auto &[acronym, value] : AOT::genericIdAcronyms) {
+            if (value == device.aotConfig.value) {
+                device.deviceAcronyms.push_back(NEO::ConstStringRef(acronym));
+            }
+        }
+    }
+}
+
+AOT::PRODUCT_CONFIG ProductConfigHelper::getProductConfigFromAcronym(const std::string &device) {
+    auto deviceAcronymIt = std::find_if(AOT::deviceAcronyms.begin(), AOT::deviceAcronyms.end(), findMapAcronymWithoutDash(device));
+    if (deviceAcronymIt != AOT::deviceAcronyms.end()) {
+        return deviceAcronymIt->second;
+    }
+
+    auto rtlIdAcronymIt = std::find_if(AOT::rtlIdAcronyms.begin(), AOT::rtlIdAcronyms.end(), findMapAcronymWithoutDash(device));
+    if (rtlIdAcronymIt != AOT::rtlIdAcronyms.end()) {
+        return rtlIdAcronymIt->second;
+    }
+
+    auto genericIdAcronymIt = std::find_if(AOT::genericIdAcronyms.begin(), AOT::genericIdAcronyms.end(), findMapAcronymWithoutDash(device));
+    if (genericIdAcronymIt != AOT::genericIdAcronyms.end()) {
+        return genericIdAcronymIt->second;
+    }
+    return AOT::UNKNOWN_ISA;
 }

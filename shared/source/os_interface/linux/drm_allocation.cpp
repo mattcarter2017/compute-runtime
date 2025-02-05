@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,6 +9,7 @@
 
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/execution_environment/root_device_environment.h"
+#include "shared/source/gmm_helper/gmm.h"
 #include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/memory_manager/residency.h"
@@ -41,6 +42,22 @@ std::string DrmAllocation::getAllocationInfoString() const {
         if (bo != nullptr) {
             ss << " Handle: " << bo->peekHandle();
         }
+    }
+    return ss.str();
+}
+
+std::string DrmAllocation::getPatIndexInfoString(const ProductHelper &productHelper) const {
+    std::stringstream ss;
+
+    auto bo = getBO();
+    if (bo) {
+        ss << " PATIndex: " << bo->peekPatIndex() << ",";
+    }
+    auto gmm = getDefaultGmm();
+    if (gmm) {
+        ss << " Gmm resource usage: "
+           << "[ " << gmm->getUsageTypeString() << " ],";
+        ss << " Cacheable: " << gmm->resourceParams.Flags.Info.Cacheable;
     }
     return ss.str();
 }
@@ -144,7 +161,7 @@ bool DrmAllocation::setCacheRegion(Drm *drm, CacheRegion regionIndex) {
         return true;
     }
 
-    auto cacheInfo = drm->getCacheInfo();
+    auto cacheInfo = drm->getL3CacheInfo();
     if (cacheInfo == nullptr) {
         return false;
     }
@@ -158,7 +175,7 @@ bool DrmAllocation::setCacheRegion(Drm *drm, CacheRegion regionIndex) {
 }
 
 bool DrmAllocation::setCacheAdvice(Drm *drm, size_t regionSize, CacheRegion regionIndex, bool isSystemMemoryPool) {
-    if (!drm->getCacheInfo()->getCacheRegion(regionSize, regionIndex)) {
+    if (!drm->getL3CacheInfo()->getCacheRegion(regionSize, regionIndex)) {
         return false;
     }
 
@@ -319,69 +336,14 @@ void DrmAllocation::registerBOBindExtHandle(Drm *drm) {
         return;
     }
 
-    DrmResourceClass resourceClass = DrmResourceClass::maxSize;
+    drm->getIoctlHelper()->registerBOBindHandle(drm, this);
+}
 
-    switch (this->allocationType) {
-    case AllocationType::debugContextSaveArea:
-        resourceClass = DrmResourceClass::contextSaveArea;
-        break;
-    case AllocationType::debugSbaTrackingBuffer:
-        resourceClass = DrmResourceClass::sbaTrackingBuffer;
-        break;
-    case AllocationType::kernelIsa:
-        resourceClass = DrmResourceClass::isa;
-        break;
-    case AllocationType::debugModuleArea:
-        resourceClass = DrmResourceClass::moduleHeapDebugArea;
-        break;
-    default:
-        break;
-    }
-
-    if (resourceClass != DrmResourceClass::maxSize) {
-        auto handle = 0;
-        if (resourceClass == DrmResourceClass::isa) {
-            auto deviceBitfiled = static_cast<uint32_t>(this->storageInfo.subDeviceBitfield.to_ulong());
-            handle = drm->registerResource(resourceClass, &deviceBitfiled, sizeof(deviceBitfiled));
-        } else {
-            uint64_t gpuAddress = getGpuAddress();
-            handle = drm->registerResource(resourceClass, &gpuAddress, sizeof(gpuAddress));
-        }
-
-        registeredBoBindHandles.push_back(handle);
-
-        auto &bos = getBOs();
-        uint32_t boIndex = 0u;
-
-        for (auto bo : bos) {
-            if (bo) {
-                bo->addBindExtHandle(handle);
-                bo->markForCapture();
-                if (resourceClass == DrmResourceClass::isa && storageInfo.tileInstanced == true) {
-                    auto cookieHandle = drm->registerIsaCookie(handle);
-                    bo->addBindExtHandle(cookieHandle);
-                    registeredBoBindHandles.push_back(cookieHandle);
-                }
-
-                if (resourceClass == DrmResourceClass::sbaTrackingBuffer && getOsContext()) {
-                    auto deviceIndex = [=]() -> uint32_t {
-                        if (storageInfo.tileInstanced == true) {
-                            return boIndex;
-                        }
-                        auto deviceBitfield = this->storageInfo.subDeviceBitfield;
-                        return deviceBitfield.any() ? static_cast<uint32_t>(Math::log2(static_cast<uint32_t>(deviceBitfield.to_ulong()))) : 0u;
-                    }();
-
-                    auto contextId = getOsContext()->getOfflineDumpContextId(deviceIndex);
-                    auto externalHandle = drm->registerResource(resourceClass, &contextId, sizeof(uint64_t));
-
-                    bo->addBindExtHandle(externalHandle);
-                    registeredBoBindHandles.push_back(externalHandle);
-                }
-
-                bo->requireImmediateBinding(true);
-            }
-            boIndex++;
+void DrmAllocation::setAsReadOnly() {
+    auto &bos = getBOs();
+    for (auto &bo : bos) {
+        if (bo) {
+            bo->setAsReadOnly(true);
         }
     }
 }
@@ -498,7 +460,7 @@ bool DrmAllocation::setMemPrefetch(Drm *drm, SubDeviceIdsVec &subDeviceIds) {
         }
     } else {
         auto bo = this->getBO();
-        if (bo->isChunked) {
+        if (bo->isChunked()) {
             auto drm = bo->peekDrm();
             success = prefetchBOWithChunking(const_cast<Drm *>(drm));
         } else {

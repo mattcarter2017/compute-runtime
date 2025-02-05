@@ -3,8 +3,11 @@
 %global rel xxx
 %global build_id xxx
 %global NEO_RELEASE_WITH_REGKEYS FALSE
-%global NEO_ENABLE_XE_DRM_DETECTION FALSE
-%global I915_HEADERS_DIR %{nil}
+%global NEO_ENABLE_I915_PRELIM_DETECTION FALSE
+%global NEO_ENABLE_XE_PRELIM_DETECTION FALSE
+%global NEO_ENABLE_XE_EU_DEBUG_SUPPORT FALSE
+%global NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM FALSE
+%global NEO_I915_PRELIM_HEADERS_DIR %{nil}
 
 %define _source_payload w5T16.xzdio
 %define _binary_payload w5T16.xzdio
@@ -19,7 +22,7 @@ License: MIT
 URL: https://github.com/intel/compute-runtime
 Source0: %{url}/archive/%{version}/compute-runtime.tar.xz
 Source1: copyright
-%if "%{I915_HEADERS_DIR}" != ""
+%if "%{NEO_I915_PRELIM_HEADERS_DIR}" != ""
 Source2: uapi.tar.xz
 %endif
 
@@ -28,7 +31,7 @@ BuildRequires: intel-gmmlib-devel
 BuildRequires: intel-igc-opencl-devel
 
 Requires: intel-gmmlib
-Requires: intel-igc-opencl
+Requires: intel-igc-opencl-2
 
 %description
 Runtime library providing the ability to use Intel GPUs with the oneAPI Level
@@ -50,7 +53,7 @@ Intel(R) Graphics Compute Runtime for oneAPI Level Zero - development headers
 %define debug_package %{nil}
 
 %prep
-%if "%{I915_HEADERS_DIR}" == ""
+%if "%{NEO_I915_PRELIM_HEADERS_DIR}" == ""
 %autosetup -p1 -n compute-runtime
 %else
 %autosetup -p1 -n compute-runtime -b 2
@@ -65,13 +68,15 @@ cd build
    -DCMAKE_BUILD_TYPE=Release \
    -DNEO_BUILD_WITH_OCL=FALSE \
    -DNEO_SKIP_UNIT_TESTS=TRUE \
-   -DNEO_ENABLE_i915_PRELIM_DETECTION=TRUE \
-   -DNEO_ENABLE_XE_DRM_DETECTION=%{NEO_ENABLE_XE_DRM_DETECTION} \
+   -DNEO_ENABLE_I915_PRELIM_DETECTION=%{NEO_ENABLE_I915_PRELIM_DETECTION} \
+   -DNEO_ENABLE_XE_PRELIM_DETECTION=%{NEO_ENABLE_XE_PRELIM_DETECTION} \
+   -DNEO_ENABLE_XE_EU_DEBUG_SUPPORT=%{NEO_ENABLE_XE_EU_DEBUG_SUPPORT} \
+   -DNEO_USE_XE_EU_DEBUG_EXP_UPSTREAM=%{NEO_USE_XE_EU_DEBUG_EXP_UPSTREAM} \
    -DRELEASE_WITH_REGKEYS=%{NEO_RELEASE_WITH_REGKEYS} \
    -DL0_INSTALL_UDEV_RULES=1 \
    -DUDEV_RULES_DIR=/etc/udev/rules.d/ \
    -DCMAKE_VERBOSE_MAKEFILE=FALSE \
-   -DI915_HEADERS_DIR=$(realpath %{I915_HEADERS_DIR})
+   -DNEO_I915_PRELIM_HEADERS_DIR=$(realpath %{NEO_I915_PRELIM_HEADERS_DIR})
 %ninja_build
 
 %install

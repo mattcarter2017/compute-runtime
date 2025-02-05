@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,13 +24,11 @@ cl_int CommandQueueHw<GfxFamily>::enqueueCopyBufferToImage(
     cl_uint numEventsInWaitList,
     const cl_event *eventWaitList,
     cl_event *event) {
-    auto eBuiltInOpsType = EBuiltInOps::copyBufferToImage3d;
 
-    if (forceStateless(srcBuffer->getSize())) {
-        eBuiltInOpsType = EBuiltInOps::copyBufferToImage3dStateless;
-    }
+    const bool useStateless = forceStateless(srcBuffer->getSize());
+    auto builtInType = EBuiltInOps::adjustBuiltinType<EBuiltInOps::copyBufferToImage3d>(useStateless, this->heaplessModeEnabled);
 
-    auto &builder = BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(eBuiltInOpsType,
+    auto &builder = BuiltInDispatchBuilderOp::getBuiltinDispatchInfoBuilder(builtInType,
                                                                             this->getClDevice());
     BuiltInOwnershipWrapper builtInLock(builder, this->context);
 

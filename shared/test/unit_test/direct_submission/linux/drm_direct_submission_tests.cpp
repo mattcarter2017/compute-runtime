@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,6 +10,7 @@
 #include "shared/source/direct_submission/dispatchers/blitter_dispatcher.h"
 #include "shared/source/direct_submission/dispatchers/render_dispatcher.h"
 #include "shared/source/direct_submission/linux/drm_direct_submission.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/flush_stamp.h"
 #include "shared/source/os_interface/linux/drm_gem_close_worker.h"
 #include "shared/source/os_interface/linux/os_context_linux.h"
@@ -53,7 +54,7 @@ struct DrmDirectSubmissionTest : public DrmMemoryManagerBasic {
         osContext = std::make_unique<OsContextLinux>(*executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>(), device->getRootDeviceIndex(), 0u,
                                                      EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                                   PreemptionMode::ThreadGroup, device->getDeviceBitfield()));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
         device->getDefaultEngine().commandStreamReceiver->setupContext(*osContext);
     }
 
@@ -81,6 +82,7 @@ struct MockDrmDirectSubmission : public DrmDirectSubmission<GfxFamily, Dispatche
     using BaseClass::getSizeNewResourceHandler;
     using BaseClass::getSizeSwitchRingBufferSection;
     using BaseClass::getTagAddressValue;
+    using BaseClass::gpuHangCheckPeriod;
     using BaseClass::handleNewResourcesSubmission;
     using BaseClass::handleResidency;
     using BaseClass::handleSwitchRingBuffers;
@@ -99,7 +101,6 @@ struct MockDrmDirectSubmission : public DrmDirectSubmission<GfxFamily, Dispatche
     using BaseClass::switchRingBuffers;
     using BaseClass::tagAddress;
     using BaseClass::updateTagValue;
-    using BaseClass::useNotifyForPostSync;
     using BaseClass::wait;
     using BaseClass::workPartitionAllocation;
 };
@@ -152,7 +153,7 @@ HWTEST_F(DrmDirectSubmissionTest, whenCreateDirectSubmissionThenValidObjectIsRet
     auto directSubmission = DirectSubmissionHw<FamilyType, RenderDispatcher<FamilyType>>::create(*device->getDefaultEngine().commandStreamReceiver);
     EXPECT_NE(directSubmission.get(), nullptr);
 
-    bool ret = directSubmission->initialize(false, false);
+    bool ret = directSubmission->initialize(false);
     EXPECT_TRUE(ret);
 }
 
@@ -196,6 +197,24 @@ HWTEST_F(DrmDirectSubmissionTest, givenDebugFlagSetWhenInitializingThenOverrideF
     debugManager.flags.EnableDrmCompletionFence.set(1);
     debugManager.flags.OverrideUserFenceStartValue.set(static_cast<int32_t>(fenceStartValue));
     auto &commandStreamReceiver = *device->getDefaultEngine().commandStreamReceiver;
+    auto drm = executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>();
+
+    ASSERT_TRUE(drm->completionFenceSupport());
+
+    MockDrmDirectSubmission<FamilyType, RenderDispatcher<FamilyType>> directSubmission(commandStreamReceiver);
+    EXPECT_EQ(fenceStartValue, directSubmission.completionFenceValue);
+}
+
+HWTEST_F(DrmDirectSubmissionTest, givenLatestSentTaskCountWhenInitializingThenSetStartValue) {
+    DebugManagerStateRestore restorer;
+
+    TaskCountType fenceStartValue = 1234;
+
+    debugManager.flags.EnableDrmCompletionFence.set(1);
+    auto &commandStreamReceiver = device->getUltCommandStreamReceiver<FamilyType>();
+
+    commandStreamReceiver.latestSentTaskCount = fenceStartValue;
+
     auto drm = executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>();
 
     ASSERT_TRUE(drm->completionFenceSupport());
@@ -371,7 +390,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenCompletionFenceSupportAndFenceIsNotComple
         OsContextLinux osContext(*drm, 0, 0u,
                                  EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                               PreemptionMode::ThreadGroup, firstTileBitfield));
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         commandStreamReceiver.setupContext(osContext);
         drm->waitUserFenceParams.clear();
         {
@@ -387,7 +406,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenCompletionFenceSupportAndFenceIsNotComple
         OsContextLinux osContext(*drm, 0, 0u,
                                  EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                               PreemptionMode::ThreadGroup, secondTileBitfield));
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         commandStreamReceiver.setupContext(osContext);
         drm->waitUserFenceParams.clear();
         {
@@ -404,7 +423,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenCompletionFenceSupportAndFenceIsNotComple
         OsContextLinux osContext(*drm, 0, 0u,
                                  EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                               PreemptionMode::ThreadGroup, twoTilesBitfield));
-        osContext.ensureContextInitialized();
+        osContext.ensureContextInitialized(false);
         commandStreamReceiver.setupContext(osContext);
         drm->waitUserFenceParams.clear();
         MockGraphicsAllocation workPartitionAllocation{};
@@ -516,7 +535,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenTile0AndCompletionFenceSupportWhenSubmitt
     OsContextLinux osContextTile0(*drm, 0, 0u,
                                   EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                PreemptionMode::ThreadGroup, firstTileBitfield));
-    osContextTile0.ensureContextInitialized();
+    osContextTile0.ensureContextInitialized(false);
     commandStreamReceiver.setupContext(osContextTile0);
 
     MockDrmDirectSubmission<FamilyType, RenderDispatcher<FamilyType>> drmDirectSubmission(commandStreamReceiver);
@@ -528,13 +547,18 @@ HWTEST_F(DrmDirectSubmissionTest, givenTile0AndCompletionFenceSupportWhenSubmitt
     MockBufferObject mockBO(0, drm);
     ringBuffer->getBufferObjectToModify(0) = &mockBO;
 
+    auto initialCompletionValue = commandStreamReceiver.peekLatestSentTaskCount();
+
     for (auto i = 0u; i < 2; i++) {
         mockBO.passedExecParams.clear();
         EXPECT_TRUE(drmDirectSubmission.submit(gpuAddress, size));
 
         ASSERT_EQ(1u, mockBO.passedExecParams.size());
         EXPECT_EQ(completionFenceBaseGpuAddress, mockBO.passedExecParams[0].completionGpuAddress);
-        EXPECT_EQ(i + 1, mockBO.passedExecParams[0].completionValue);
+
+        auto expectedCompletionValue = i + 1 + initialCompletionValue;
+
+        EXPECT_EQ(expectedCompletionValue, mockBO.passedExecParams[0].completionValue);
     }
     ringBuffer->getBufferObjectToModify(0) = initialBO;
 
@@ -555,7 +579,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenTile1AndCompletionFenceSupportWhenSubmitt
     OsContextLinux osContextTile1(*drm, 0, 0u,
                                   EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                PreemptionMode::ThreadGroup, secondTileBitfield));
-    osContextTile1.ensureContextInitialized();
+    osContextTile1.ensureContextInitialized(false);
     commandStreamReceiver.setupContext(osContextTile1);
 
     MockDrmDirectSubmission<FamilyType, RenderDispatcher<FamilyType>> drmDirectSubmission(commandStreamReceiver);
@@ -567,13 +591,17 @@ HWTEST_F(DrmDirectSubmissionTest, givenTile1AndCompletionFenceSupportWhenSubmitt
     MockBufferObject mockBO(0, drm);
     ringBuffer->getBufferObjectToModify(0) = &mockBO;
 
+    auto initialCompletionValue = commandStreamReceiver.peekLatestSentTaskCount();
+
     for (auto i = 0u; i < 2; i++) {
         mockBO.passedExecParams.clear();
         EXPECT_TRUE(drmDirectSubmission.submit(gpuAddress, size));
 
         ASSERT_EQ(1u, mockBO.passedExecParams.size());
         EXPECT_EQ(completionFenceBaseGpuAddress, mockBO.passedExecParams[0].completionGpuAddress);
-        EXPECT_EQ(i + 1, mockBO.passedExecParams[0].completionValue);
+
+        auto expectedCompletionValue = i + 1 + initialCompletionValue;
+        EXPECT_EQ(expectedCompletionValue, mockBO.passedExecParams[0].completionValue);
     }
     ringBuffer->getBufferObjectToModify(0) = initialBO;
 
@@ -594,7 +622,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenTwoTilesAndCompletionFenceSupportWhenSubm
     OsContextLinux osContextBothTiles(*drm, 0, 0u,
                                       EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                    PreemptionMode::ThreadGroup, twoTilesBitfield));
-    osContextBothTiles.ensureContextInitialized();
+    osContextBothTiles.ensureContextInitialized(false);
     commandStreamReceiver.setupContext(osContextBothTiles);
 
     MockGraphicsAllocation workPartitionAllocation{};
@@ -612,16 +640,20 @@ HWTEST_F(DrmDirectSubmissionTest, givenTwoTilesAndCompletionFenceSupportWhenSubm
     MockBufferObject mockBO(0, drm);
     ringBuffer->getBufferObjectToModify(0) = &mockBO;
 
+    auto initialCompletionValue = commandStreamReceiver.peekLatestSentTaskCount();
+
     for (auto i = 0u; i < 2; i++) {
         mockBO.passedExecParams.clear();
         EXPECT_TRUE(drmDirectSubmission.submit(gpuAddress, size));
 
         ASSERT_EQ(2u, mockBO.passedExecParams.size());
         EXPECT_EQ(completionFenceBaseGpuAddress, mockBO.passedExecParams[0].completionGpuAddress);
-        EXPECT_EQ(i + 1, mockBO.passedExecParams[0].completionValue);
+
+        auto expectedCompletionValue = i + initialCompletionValue + 1;
+        EXPECT_EQ(expectedCompletionValue, mockBO.passedExecParams[0].completionValue);
 
         EXPECT_EQ(completionFenceBaseGpuAddress + commandStreamReceiver.getImmWritePostSyncWriteOffset(), mockBO.passedExecParams[1].completionGpuAddress);
-        EXPECT_EQ(i + 1, mockBO.passedExecParams[1].completionValue);
+        EXPECT_EQ(expectedCompletionValue, mockBO.passedExecParams[1].completionValue);
     }
     ringBuffer->getBufferObjectToModify(0) = initialBO;
 
@@ -655,7 +687,6 @@ HWTEST_F(DrmDirectSubmissionTest, givenDisabledMonitorFenceWhenDispatchSwitchRin
 }
 
 HWTEST_F(DrmDirectSubmissionTest, givenDisabledMonitorFenceWhenUpdateTagValueThenTagIsNotUpdated) {
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using Dispatcher = RenderDispatcher<FamilyType>;
 
     MockDrmDirectSubmission<FamilyType, Dispatcher> directSubmission(*device->getDefaultEngine().commandStreamReceiver);
@@ -828,7 +859,7 @@ HWTEST_F(DrmDirectSubmissionTest,
     osContext = std::make_unique<OsContextLinux>(*executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>(), device->getRootDeviceIndex(), 0u,
                                                  EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                               PreemptionMode::ThreadGroup, device->getDeviceBitfield()));
-    osContext->ensureContextInitialized();
+    osContext->ensureContextInitialized(false);
     EXPECT_EQ(2u, osContext->getDeviceBitfield().count());
 
     auto ultCsr = reinterpret_cast<UltCommandStreamReceiver<FamilyType> *>(device->getDefaultEngine().commandStreamReceiver);
@@ -879,7 +910,7 @@ HWTEST_F(DrmDirectSubmissionTest, givenBlitterDispatcherAndMultiTileDeviceWhenCr
     osContext = std::make_unique<OsContextLinux>(*executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>(), device->getRootDeviceIndex(), 0u,
                                                  EngineDescriptorHelper::getDefaultDescriptor({aub_stream::ENGINE_RCS, EngineUsage::regular},
                                                                                               PreemptionMode::ThreadGroup, device->getDeviceBitfield()));
-    osContext->ensureContextInitialized();
+    osContext->ensureContextInitialized(false);
     EXPECT_EQ(2u, osContext->getDeviceBitfield().count());
 
     device->getDefaultEngine().commandStreamReceiver->setupContext(*osContext);
@@ -966,7 +997,7 @@ HWTEST_F(DrmDirectSubmissionTest,
 
     FlushStampTracker flushStamp(true);
 
-    EXPECT_TRUE(drmDirectSubmission.initialize(false, false));
+    EXPECT_TRUE(drmDirectSubmission.initialize(false));
 
     BatchBuffer batchBuffer = {};
     GraphicsAllocation *commandBuffer = nullptr;
@@ -1024,7 +1055,7 @@ HWTEST_F(DrmDirectSubmissionTest,
 
     FlushStampTracker flushStamp(true);
 
-    EXPECT_TRUE(drmDirectSubmission.initialize(false, false));
+    EXPECT_TRUE(drmDirectSubmission.initialize(false));
 
     BatchBuffer batchBuffer = {};
     GraphicsAllocation *commandBuffer = nullptr;
@@ -1066,4 +1097,29 @@ HWTEST_F(DrmDirectSubmissionTest,
 
     executionEnvironment.memoryManager->freeGraphicsMemory(commandBuffer);
     *drmDirectSubmission.tagAddress = 1;
+}
+
+HWTEST_F(DrmDirectSubmissionTest, givenGpuHangWhenWaitCalledThenGpuHangDetected) {
+    using Dispatcher = RenderDispatcher<FamilyType>;
+
+    VariableBackup<bool> backupWaitpkgUse(&WaitUtils::waitpkgUse, false);
+    VariableBackup<uint32_t> backupWaitCount(&WaitUtils::waitCount, 1);
+
+    MockDrmDirectSubmission<FamilyType, Dispatcher> directSubmission(*device->getDefaultEngine().commandStreamReceiver);
+    directSubmission.gpuHangCheckPeriod = {};
+    bool ret = directSubmission.allocateResources();
+    EXPECT_TRUE(ret);
+
+    auto pollAddress = directSubmission.tagAddress;
+    *pollAddress = 0;
+
+    auto drm = static_cast<DrmMock *>(executionEnvironment.rootDeviceEnvironments[0]->osInterface->getDriverModel()->as<Drm>());
+    ResetStats resetStats{};
+    resetStats.contextId = 0;
+    resetStats.batchActive = 1;
+    drm->resetStatsToReturn.push_back(resetStats);
+
+    EXPECT_EQ(0, drm->ioctlCount.getResetStats);
+    directSubmission.wait(1);
+    EXPECT_EQ(1, drm->ioctlCount.getResetStats);
 }

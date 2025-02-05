@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,16 +26,6 @@ namespace NEO {
 
 namespace SysCalls {
 
-bool pathExists(const std::string &path) {
-    struct stat statbuf = {};
-
-    if (stat(path.c_str(), &statbuf) == -1) {
-        return false;
-    }
-
-    return (statbuf.st_mode & S_IFDIR) != 0;
-}
-
 void exit(int code) {
     std::exit(code);
 }
@@ -43,6 +33,10 @@ void exit(int code) {
 unsigned int getProcessId() {
     static unsigned int pid = getpid();
     return pid;
+}
+
+unsigned int getCurrentProcessId() {
+    return getpid();
 }
 
 unsigned long getNumThreads() {
@@ -57,8 +51,8 @@ int mkdir(const std::string &path) {
     return ::mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 }
 
-int close(int fileDescriptor) {
-    return ::close(fileDescriptor);
+int close(int fd) {
+    return ::close(fd);
 }
 int open(const char *file, int flags) {
     return ::open(file, flags);
@@ -66,6 +60,11 @@ int open(const char *file, int flags) {
 int openWithMode(const char *file, int flags, int mode) {
     return ::open(file, flags, mode);
 }
+
+int fsync(int fd) {
+    return ::fsync(fd);
+}
+
 int ioctl(int fileDescriptor, unsigned long int request, void *arg) {
     return ::ioctl(fileDescriptor, request, arg);
 }
@@ -126,7 +125,7 @@ ssize_t read(int fd, void *buf, size_t count) {
     return ::read(fd, buf, count);
 }
 
-ssize_t write(int fd, void *buf, size_t count) {
+ssize_t write(int fd, const void *buf, size_t count) {
     return ::write(fd, buf, count);
 }
 
@@ -187,6 +186,9 @@ int closedir(DIR *dir) {
 
 off_t lseek(int fd, off_t offset, int whence) noexcept {
     return ::lseek(fd, offset, whence);
+}
+long sysconf(int name) {
+    return ::sysconf(name);
 }
 } // namespace SysCalls
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,6 +12,7 @@
 #include "shared/source/helpers/string.h"
 
 #include "level_zero/sysman/source/shared/firmware_util/sysman_firmware_util.h"
+#include "level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
 
 namespace L0 {
@@ -22,15 +23,7 @@ const std::string LinuxDiagnosticsImp::deviceDir("device");
 const std::string LinuxDiagnosticsImp::invalidateLmemFile("invalidate_lmem_mmaps");
 // the sysfs node will be at /sys/class/drm/card<n>/quiesce_gpu
 const std::string LinuxDiagnosticsImp::quiescentGpuFile("quiesce_gpu");
-void OsDiagnostics::getSupportedDiagTestsFromFW(void *pOsSysman, std::vector<std::string> &supportedDiagTests) {
-    LinuxSysmanImp *pLinuxSysmanImp = static_cast<LinuxSysmanImp *>(pOsSysman);
-    if (IGFX_PVC == pLinuxSysmanImp->getProductFamily()) {
-        FirmwareUtil *pFwInterface = pLinuxSysmanImp->getFwUtilInterface();
-        if (pFwInterface != nullptr) {
-            static_cast<FirmwareUtil *>(pFwInterface)->fwSupportedDiagTests(supportedDiagTests);
-        }
-    }
-}
+void OsDiagnostics::getSupportedDiagTestsFromFW(void *pOsSysman, std::vector<std::string> &supportedDiagTests) {}
 
 // before running diagnostics need to close all active workloads
 // writing 1 to /sys/class/drm/card<n>/quiesce_gpu will signal KMD

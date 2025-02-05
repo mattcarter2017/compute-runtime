@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,7 +7,12 @@
 
 #include "shared/source/os_interface/linux/drm_memory_operations_handler_default.h"
 
+#include "shared/source/command_stream/command_stream_receiver.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
+#include "shared/source/device/device.h"
+#include "shared/source/os_interface/linux/drm_allocation.h"
+#include "shared/source/os_interface/linux/drm_buffer_object.h"
+#include "shared/source/os_interface/linux/drm_memory_manager.h"
 
 #include <algorithm>
 
@@ -24,8 +29,30 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::makeResidentWithinOsCo
     return MemoryOperationsStatus::success;
 }
 
-MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations, bool isDummyExecNeeded) {
     OsContext *osContext = nullptr;
+    auto ret = this->makeResidentWithinOsContext(osContext, gfxAllocations, false);
+    if (!isDummyExecNeeded || ret != MemoryOperationsStatus::success) {
+        return ret;
+    }
+    ret = flushDummyExec(device, gfxAllocations);
+    if (ret != MemoryOperationsStatus::success) {
+        for (auto &alloc : gfxAllocations) {
+            evictWithinOsContext(osContext, *alloc);
+        }
+    }
+    return ret;
+}
+
+MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::lock(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+    OsContext *osContext = nullptr;
+    for (auto gfxAllocation = gfxAllocations.begin(); gfxAllocation != gfxAllocations.end(); gfxAllocation++) {
+        auto drmAllocation = static_cast<DrmAllocation *>(*gfxAllocation);
+        drmAllocation->setLockedMemory(true);
+        for (auto bo : drmAllocation->getBOs()) {
+            bo->requireExplicitLockedMemory(true);
+        }
+    }
     return this->makeResidentWithinOsContext(osContext, gfxAllocations, false);
 }
 
@@ -37,6 +64,16 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::evictWithinOsContext(O
 
 MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::evict(Device *device, GraphicsAllocation &gfxAllocation) {
     OsContext *osContext = nullptr;
+    auto drmAllocation = static_cast<DrmAllocation *>(&gfxAllocation);
+    drmAllocation->setLockedMemory(false);
+    if (drmAllocation->storageInfo.isChunked || drmAllocation->storageInfo.getNumBanks() == 1) {
+        auto bo = drmAllocation->getBO();
+        bo->requireExplicitLockedMemory(false);
+    } else {
+        for (auto bo : drmAllocation->getBOs()) {
+            bo->requireExplicitLockedMemory(false);
+        }
+    }
     return this->evictWithinOsContext(osContext, gfxAllocation);
 }
 
@@ -71,4 +108,25 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::evictUnusedAllocations
     return MemoryOperationsStatus::success;
 }
 
+MemoryOperationsStatus DrmMemoryOperationsHandlerDefault::flushDummyExec(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto memoryManager = reinterpret_cast<DrmMemoryManager *>(device->getMemoryManager());
+
+    std::vector<BufferObject *> boArray;
+    uint32_t boCount = 0;
+    for (auto &alloc : this->residency) {
+        for (auto &bo : reinterpret_cast<DrmAllocation *>(alloc)->getBOs()) {
+            if (bo != 0) {
+                boArray.push_back(bo);
+                boCount++;
+            }
+        }
+    }
+
+    auto submissionStatus = memoryManager->emitPinningRequestForBoContainer(boArray.data(), boCount, rootDeviceIndex);
+    if (submissionStatus != SubmissionStatus::success) {
+        return MemoryOperationsStatus::outOfMemory;
+    }
+    return MemoryOperationsStatus::success;
+}
 } // namespace NEO

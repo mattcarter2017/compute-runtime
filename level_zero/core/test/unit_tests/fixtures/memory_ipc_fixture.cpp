@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -96,7 +96,7 @@ void MemoryExportImportTest::SetUp() {
 
     neoDevice = NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<DriverHandleGetFdMock>();
@@ -178,7 +178,7 @@ void MemoryExportImportWSLTest::SetUp() {
 
     neoDevice = NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<DriverHandleGetMemHandleMock>();
@@ -213,6 +213,18 @@ ze_result_t ContextHandleMock::allocDeviceMem(ze_device_handle_t hDevice,
                                               size_t size,
                                               size_t alignment, void **ptr) {
     ze_result_t res = L0::ContextImp::allocDeviceMem(hDevice, deviceDesc, size, alignment, ptr);
+    if (ZE_RESULT_SUCCESS == res) {
+        driverHandle->allocationMap.first = *ptr;
+        driverHandle->allocationMap.second = driverHandle->mockHandle;
+    }
+
+    return res;
+}
+
+ze_result_t ContextHandleMock::allocHostMem(const ze_host_mem_alloc_desc_t *hostDesc,
+                                            size_t size,
+                                            size_t alignment, void **ptr) {
+    ze_result_t res = L0::ContextImp::allocHostMem(hostDesc, size, alignment, ptr);
     if (ZE_RESULT_SUCCESS == res) {
         driverHandle->allocationMap.first = *ptr;
         driverHandle->allocationMap.second = driverHandle->mockHandle;
@@ -256,7 +268,7 @@ void MemoryExportImportWinHandleTest::SetUp() {
 
     neoDevice = NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<DriverHandleGetWinHandleMock>();
@@ -318,6 +330,7 @@ NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::allocateGraphicsMemoryWithPro
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(properties.rootDeviceIndex,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -329,7 +342,7 @@ NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::allocateGraphicsMemoryWithPro
     return alloc;
 }
 
-NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
+NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
     if (failOnCreateGraphicsAllocationFromSharedHandle) {
         return nullptr;
     }
@@ -338,6 +351,7 @@ NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromS
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(properties.rootDeviceIndex,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -357,6 +371,7 @@ NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromM
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(properties.rootDeviceIndex,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -367,22 +382,6 @@ NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromM
     alloc->setGpuBaseAddress(0xabcd);
     return alloc;
 }
-NEO::GraphicsAllocation *MemoryManagerOpenIpcMock::createGraphicsAllocationFromNTHandle(void *handle, uint32_t rootDeviceIndex, AllocationType allocType) {
-    auto ptr = reinterpret_cast<void *>(sharedHandleAddress);
-    sharedHandleAddress += 0x1000;
-    auto gmmHelper = getGmmHelper(0);
-    auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
-    auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
-                                                              NEO::AllocationType::buffer,
-                                                              ptr,
-                                                              0x1000,
-                                                              0u,
-                                                              MemoryPool::system4KBPages,
-                                                              MemoryManager::maxOsContextCount,
-                                                              canonizedGpuAddress);
-    alloc->setGpuBaseAddress(0xabcd);
-    return alloc;
-};
 
 ze_result_t ContextIpcMock::getIpcMemHandle(const void *ptr, ze_ipc_mem_handle_t *pIpcHandle) {
     uint64_t handle = mockFd;
@@ -404,7 +403,7 @@ void MemoryOpenIpcHandleTest::SetUp() {
     neoDevice =
         NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<DriverHandleImp>();
@@ -433,6 +432,7 @@ NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::allocateGraphicsMe
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -450,6 +450,7 @@ NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::allocateGraphicsMe
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -470,6 +471,7 @@ NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllo
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -481,27 +483,7 @@ NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllo
     return alloc;
 }
 
-NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllocationFromNTHandle(void *handle, uint32_t rootDeviceIndex, AllocationType allocType) {
-    if (failOnCreateGraphicsAllocationFromNTHandle) {
-        return nullptr;
-    }
-
-    auto ptr = reinterpret_cast<void *>(sharedHandleAddress);
-    sharedHandleAddress += 0x1000;
-    auto gmmHelper = getGmmHelper(0);
-    auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
-    auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
-                                                              NEO::AllocationType::buffer,
-                                                              ptr,
-                                                              0x1000,
-                                                              0u,
-                                                              MemoryPool::system4KBPages,
-                                                              MemoryManager::maxOsContextCount,
-                                                              canonizedGpuAddress);
-    alloc->setGpuBaseAddress(0xabcd);
-    return alloc;
-}
-NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
+NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
     if (failOnCreateGraphicsAllocationFromSharedHandle) {
         return nullptr;
     }
@@ -510,6 +492,7 @@ NEO::GraphicsAllocation *MemoryManagerIpcImplicitScalingMock::createGraphicsAllo
     auto gmmHelper = getGmmHelper(0);
     auto canonizedGpuAddress = gmmHelper->canonize(castToUint64(ptr));
     auto alloc = new IpcImplicitScalingMockGraphicsAllocation(0u,
+                                                              1u /*num gmms*/,
                                                               NEO::AllocationType::buffer,
                                                               ptr,
                                                               0x1000,
@@ -528,7 +511,7 @@ void MemoryExportImportImplicitScalingTest::SetUp() {
     neoDevice =
         NEO::MockDevice::createWithNewExecutionEnvironment<NEO::MockDevice>(NEO::defaultHwInfo.get());
     auto mockBuiltIns = new MockBuiltins();
-    neoDevice->executionEnvironment->rootDeviceEnvironments[0]->builtins.reset(mockBuiltIns);
+    MockRootDeviceEnvironment::resetBuiltins(neoDevice->executionEnvironment->rootDeviceEnvironments[0].get(), mockBuiltIns);
     NEO::DeviceVector devices;
     devices.push_back(std::unique_ptr<NEO::Device>(neoDevice));
     driverHandle = std::make_unique<DriverHandleImp>();

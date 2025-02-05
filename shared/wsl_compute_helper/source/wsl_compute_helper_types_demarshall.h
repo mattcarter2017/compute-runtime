@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -999,6 +999,9 @@ struct Demarshaller<TOK_S_GT_SYSTEM_INFO> {
                 case TOK_FBD_GT_SYSTEM_INFO__MAX_VECS: {
                     dst.MaxVECS = readTokValue<decltype(dst.MaxVECS)>(*tok);
                 } break;
+                case TOK_FBD_GT_SYSTEM_INFO__SLMSIZE_IN_KB: {
+                    dst.SystemInfo.SLMSizeInKb = readTokValue<decltype(dst.SystemInfo.SLMSizeInKb)>(*tok);
+                } break;
                 };
                 tok = tok + 1 + tok->valueDwordCount;
             } else {
@@ -1850,6 +1853,9 @@ struct Demarshaller<TOK_S_SKU_FEATURE_TABLE> {
                 case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_DRIVER_FLR: {
                     dst.FtrDriverFLR = readTokValue<decltype(dst.FtrDriverFLR)>(*tok);
                 } break;
+                case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_HW_SCHEDULING: {
+                    dst.FtrHwScheduling = readTokValue<decltype(dst.FtrHwScheduling)>(*tok);
+                } break;
                 case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS37751__FTR_ASTC_LDR2D: {
                     dst.FtrAstcLdr2D = readTokValue<decltype(dst.FtrAstcLdr2D)>(*tok);
                 } break;
@@ -1880,6 +1886,9 @@ struct Demarshaller<TOK_S_SKU_FEATURE_TABLE> {
                 case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS91822__FTR_ASSIGNED_GPU_TILE: {
                     dst.FtrAssignedGpuTile = readTokValue<decltype(dst.FtrAssignedGpuTile)>(*tok);
                 } break;
+                case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_WALKER_MTP:
+                    dst.FtrWalkerMTP = readTokValue<decltype(dst.FtrWalkerMTP)>(*tok);
+                    break;
                 };
                 tok = tok + 1 + tok->valueDwordCount;
             } else {
@@ -3050,6 +3059,9 @@ struct Demarshaller<TOK_S_ADAPTER_INFO> {
                             case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_DRIVER_FLR: {
                                 dst.SkuTable.FtrDriverFLR = readTokValue<decltype(dst.SkuTable.FtrDriverFLR)>(*tokSkuTable);
                             } break;
+                            case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_HW_SCHEDULING: {
+                                dst.SkuTable.FtrHwScheduling = readTokValue<decltype(dst.SkuTable.FtrHwScheduling)>(*tokSkuTable);
+                            } break;
                             case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS37751__FTR_ASTC_LDR2D: {
                                 dst.SkuTable.FtrAstcLdr2D = readTokValue<decltype(dst.SkuTable.FtrAstcLdr2D)>(*tokSkuTable);
                             } break;
@@ -3080,6 +3092,9 @@ struct Demarshaller<TOK_S_ADAPTER_INFO> {
                             case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS91822__FTR_ASSIGNED_GPU_TILE: {
                                 dst.SkuTable.FtrAssignedGpuTile = readTokValue<decltype(dst.SkuTable.FtrAssignedGpuTile)>(*tokSkuTable);
                             } break;
+                            case TOK_FBD_SKU_FEATURE_TABLE__ANONYMOUS21990__FTR_WALKER_MTP:
+                                dst.SkuTable.FtrWalkerMTP = readTokValue<decltype(dst.SkuTable.FtrWalkerMTP)>(*tokSkuTable);
+                                break;
                             };
                             tokSkuTable = tokSkuTable + 1 + tokSkuTable->valueDwordCount;
                         } else {
@@ -3600,6 +3615,9 @@ struct Demarshaller<TOK_S_ADAPTER_INFO> {
                             } break;
                             case TOK_FBD_GT_SYSTEM_INFO__MAX_VECS: {
                                 dst.SystemInfo.MaxVECS = readTokValue<decltype(dst.SystemInfo.MaxVECS)>(*tokSystemInfo);
+                            } break;
+                            case TOK_FBD_GT_SYSTEM_INFO__SLMSIZE_IN_KB: {
+                                dst.SystemInfo.SLMSizeInKb = readTokValue<decltype(dst.SystemInfo.SLMSizeInKb)>(*tokSystemInfo);
                             } break;
                             };
                             tokSystemInfo = tokSystemInfo + 1 + tokSystemInfo->valueDwordCount;
@@ -4557,6 +4575,9 @@ struct Demarshaller<TOK_S_CREATECONTEXT_PVTDATA> {
                 } break;
                 case TOK_FBC_CREATECONTEXT_PVTDATA__GPU_VACONTEXT: {
                     dst.GpuVAContext = readTokValue<decltype(dst.GpuVAContext)>(*tok);
+                } break;
+                case TOK_FBD_CREATECONTEXT_PVTDATA__UMD_CONTEXT_TYPE: {
+                    dst.UmdContextType = readTokValue<decltype(dst.UmdContextType)>(*tok);
                 } break;
                 case TOK_FBC_CREATECONTEXT_PVTDATA__NO_RING_FLUSHES: {
                     dst.NoRingFlushes = readTokValue<decltype(dst.NoRingFlushes)>(*tok);

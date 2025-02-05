@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 #include "level_zero/sysman/source/shared/linux/pmu/sysman_pmu_imp.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
 
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 
@@ -34,14 +35,18 @@ static const std::map<zes_ras_error_category_exp_t, std::vector<std::string>> ca
       "sgunit-fatal", "soc-nonfatal-punit", "sgunit-fatal", "sgunit-nonfatal", "gsc-nonfatal-mia-shutdown",
       "gsc-nonfatal-aon-parity", "gsc-nonfatal-rom-parity", "gsc-nonfatal-fuse-crc-check",
       "gsc-nonfatal-selfmbist", "gsc-nonfatal-fuse-pull", "gsc-nonfatal-sram-ecc", "gsc-nonfatal-glitch-det",
-      "gsc-nonfatal-ucode-parity", "gsc-nonfatal-mia-int", "gsc-nonfatal-wdg-timeout"}},
+      "gsc-nonfatal-ucode-parity", "gsc-nonfatal-mia-int", "gsc-nonfatal-wdg-timeout", "soc-fatal-iosf-pciaer",
+      "soc-fatal-iosf-pcierr", "soc-fatal-pciaer", "soc-fatal-pcierr", "soc-fatal-serr-spi", "soc-fatal-serr-srcs",
+      "soc-fatal-ur-response", "soc-fatal-ur", "soc-fatal-hbm-mca", "soc-fatal-hbm-punit-mca"}},
     {ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS,
      {"fatal-fpu", "fatal-eu-grf", "fatal-sampler", "fatal-slm",
       "fatal-guc", "fatal-eu-ic", "fatal-subslice"}},
     {ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS,
      {"driver-object-migration", "driver-engine-other", "driver-ggtt",
       "driver-gt-interrupt", "driver-gt-other", "driver-guc-communication",
-      "driver-rps"}}};
+      "driver-rps"}},
+    {ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS,
+     {"soc-fatal-mdfi-east", "soc-fatal-mdfi-south", "soc-fatal-mdfi-west", "fatal-l3-fabric", "soc-fatal-cd0-mdfi"}}};
 
 static const std::map<zes_ras_error_category_exp_t, std::vector<std::string>> categoryToListOfEventsCorrectable = {
     {ZES_RAS_ERROR_CATEGORY_EXP_CACHE_ERRORS,
@@ -58,6 +63,15 @@ static void closeFd(int64_t &fd) {
         fd = -1;
     }
 }
+
+static const std::map<zes_ras_error_category_exp_t, zes_ras_error_cat_t> rasErrorCatExpToErrorCat = {
+    {ZES_RAS_ERROR_CATEGORY_EXP_CACHE_ERRORS, ZES_RAS_ERROR_CAT_CACHE_ERRORS},
+    {ZES_RAS_ERROR_CATEGORY_EXP_RESET, ZES_RAS_ERROR_CAT_RESET},
+    {ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS, ZES_RAS_ERROR_CAT_PROGRAMMING_ERRORS},
+    {ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS, ZES_RAS_ERROR_CAT_NON_COMPUTE_ERRORS},
+    {ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS, ZES_RAS_ERROR_CAT_COMPUTE_ERRORS},
+    {ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS, ZES_RAS_ERROR_CAT_DRIVER_ERRORS},
+    {ZES_RAS_ERROR_CATEGORY_EXP_DISPLAY_ERRORS, ZES_RAS_ERROR_CAT_DISPLAY_ERRORS}};
 
 static ze_result_t readI915EventsDirectory(LinuxSysmanImp *pLinuxSysmanImp, std::vector<std::string> &listOfEvents, std::string *eventDirectory) {
     // To know how many errors are supported on a platform scan
@@ -159,7 +173,7 @@ ze_result_t PmuRasUtil::rasGetState(zes_ras_state_t &state, ze_bool_t clear) {
     if (clear == true) {
         closeFds();
         memset(state.category, 0, maxRasErrorCategoryCount * sizeof(uint64_t));
-        memset(absoluteErrorCount, 0, maxRasErrorCategoryCount * sizeof(uint64_t));
+        memset(absoluteErrorCount, 0, maxRasErrorCategoryExpCount * sizeof(uint64_t));
     }
     initRasErrors(clear);
     // Iterate over all the file descriptor values present in vector which is mapped to given ras error category
@@ -176,6 +190,11 @@ ze_result_t PmuRasUtil::rasGetState(zes_ras_state_t &state, ze_bool_t clear) {
     /* The data buffer retrieved after reading pmu counters is parsed to get the error count for each suberror category */
     uint64_t initialIndex = 2; // Initial index in the buffer from which the data be parsed begins
     for (auto errorCat = errorCategoryToEventCount.begin(); errorCat != errorCategoryToEventCount.end(); errorCat++) {
+        auto errorCategory = rasErrorCatExpToErrorCat.find(errorCat->first);
+        if (errorCategory == rasErrorCatExpToErrorCat.end()) {
+            initialIndex += errorCat->second;
+            continue;
+        }
         uint64_t errorCount = 0;
         uint64_t j = 0;
         for (; j < errorCat->second; j++) {

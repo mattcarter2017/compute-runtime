@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020-2023 Intel Corporation
+# Copyright (C) 2020-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -10,6 +10,12 @@ list(GET aub_test_config 1 slices)
 list(GET aub_test_config 2 subslices)
 list(GET aub_test_config 3 eu_per_ss)
 list(GET aub_test_config 4 revision_id)
+list(LENGTH aub_test_config aub_test_config_num_entries)
+if(${aub_test_config_num_entries} GREATER_EQUAL 6)
+  list(GET aub_test_config 5 device_id)
+else()
+  set(device_id 0)
+endif()
 
 if(NOT TARGET aub_tests)
   add_custom_target(aub_tests)
@@ -34,6 +40,24 @@ if(NOT NEO_SKIP_OCL_UNIT_TESTS OR NOT NEO_SKIP_L0_UNIT_TESTS)
     list(APPEND aub_tests_options ${AUB_DUMP_IMAGE_FORMAT})
   endif()
 
+  set(aubstream_mode_flag "")
+  if(DEFINED NEO_GENERATE_AUBS_FOR)
+    set(aubstream_mode_flag "--null_aubstream")
+    foreach(product_with_aubs ${NEO_GENERATE_AUBS_FOR})
+      string(TOLOWER ${product_with_aubs} product_with_aubs_lower)
+      if(${product_with_aubs_lower} STREQUAL ${product})
+        set(aubstream_mode_flag "")
+        string(TOUPPER ${product} product_upper)
+        set_property(GLOBAL APPEND PROPERTY NEO_PLATFORMS_FOR_AUB_GENERATION "${product_upper} ")
+        break()
+      endif()
+
+    endforeach()
+  endif()
+  if(NOT ${aubstream_mode_flag} STREQUAL "")
+    list(APPEND aub_tests_options ${aubstream_mode_flag})
+  endif()
+
   add_custom_command(
                      TARGET run_${product}_${revision_id}_aub_tests
                      POST_BUILD
@@ -42,12 +66,11 @@ if(NOT NEO_SKIP_OCL_UNIT_TESTS OR NOT NEO_SKIP_L0_UNIT_TESTS)
                      COMMAND ${CMAKE_COMMAND} -E remove_directory ${TargetDir}/${product}_aub/${revision_id}
                      COMMAND ${CMAKE_COMMAND} -E make_directory ${TargetDir}/${product}_aub/${revision_id}
                      COMMAND ${CMAKE_COMMAND} -E make_directory ${TargetDir}/${product}_aub/${revision_id}/aub_out
-                     COMMAND ${CMAKE_COMMAND} -E make_directory ${TargetDir}/${product}_aub/${revision_id}/cl_cache
   )
 
 endif()
 
-if(NOT NEO_SKIP_OCL_UNIT_TESTS)
+if(TARGET igdrcl_aub_tests)
   add_dependencies(aub_tests igdrcl_aub_tests)
   add_dependencies(run_${product}_${revision_id}_aub_tests prepare_test_kernels_for_ocl)
 
@@ -67,11 +90,11 @@ if(NOT NEO_SKIP_OCL_UNIT_TESTS)
                      POST_BUILD
                      COMMAND WORKING_DIRECTORY ${TargetDir}
                      COMMAND echo Running AUB generation for ${product} in ${TargetDir}/${product}_aub
-                     COMMAND ${aub_test_cmd_prefix} --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} --gtest_repeat=1 ${aub_tests_options} ${NEO_TESTS_LISTENER_OPTION} ${GTEST_OUTPUT} --rev_id ${revision_id}
+                     COMMAND ${aub_test_cmd_prefix} --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} --gtest_repeat=1 ${aub_tests_options} ${NEO_TESTS_LISTENER_OPTION} ${GTEST_OUTPUT} --rev_id ${revision_id} --dev_id ${device_id}
   )
 endif()
 
-if(NOT NEO_SKIP_L0_UNIT_TESTS AND BUILD_WITH_L0)
+if(TARGET ze_intel_gpu_aub_tests)
   add_dependencies(aub_tests ze_intel_gpu_aub_tests)
   add_dependencies(run_${product}_${revision_id}_aub_tests prepare_test_kernels_for_l0)
 
@@ -91,11 +114,11 @@ if(NOT NEO_SKIP_L0_UNIT_TESTS AND BUILD_WITH_L0)
                      POST_BUILD
                      COMMAND WORKING_DIRECTORY ${TargetDir}
                      COMMAND echo Running Level Zero AUB generation for ${product} in ${TargetDir}/${product}_aub
-                     COMMAND ${l0_aub_test_cmd_prefix} --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} --gtest_repeat=1 ${aub_tests_options} ${GTEST_OUTPUT} --rev_id ${revision_id}
+                     COMMAND ${l0_aub_test_cmd_prefix} --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} --gtest_repeat=1 ${aub_tests_options} ${GTEST_OUTPUT} --rev_id ${revision_id} --dev_id ${device_id}
   )
 endif()
 
-if(DO_NOT_RUN_AUB_TESTS)
+if(NEO_SKIP_AUB_TESTS_RUN)
   set_target_properties(run_${product}_${revision_id}_aub_tests PROPERTIES
                         EXCLUDE_FROM_DEFAULT_BUILD TRUE
                         EXCLUDE_FROM_ALL TRUE

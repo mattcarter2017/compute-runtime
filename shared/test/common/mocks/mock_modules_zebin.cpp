@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -188,7 +188,10 @@ ZebinWithL0TestCommonModule::ZebinWithL0TestCommonModule(const NEO::HardwareInfo
     if (forceRecompilation) {
         elfHeader.machine = NEO::Elf::EM_NONE;
     } else {
-        elfHeader.machine = hwInfo.platform.eProductFamily;
+        auto compilerProductHelper = NEO::CompilerProductHelper::create(hwInfo.platform.eProductFamily);
+        auto copyHwInfo = hwInfo;
+        compilerProductHelper->adjustHwInfoForIgc(copyHwInfo);
+        elfHeader.machine = copyHwInfo.platform.eProductFamily;
     }
 
     const uint8_t testKernelData[0xac0] = {0u};
@@ -238,7 +241,11 @@ ZebinCopyBufferSimdModule<numBits>::ZebinCopyBufferSimdModule(const NEO::Hardwar
     auto &elfHeader = elfEncoder.getElfFileHeader();
     elfHeader.type = NEO::Zebin::Elf::ET_ZEBIN_EXE;
 
-    elfHeader.machine = hwInfo.platform.eProductFamily;
+    auto compilerProductHelper = NEO::CompilerProductHelper::create(hwInfo.platform.eProductFamily);
+    auto copyHwInfo = hwInfo;
+    compilerProductHelper->adjustHwInfoForIgc(copyHwInfo);
+
+    elfHeader.machine = copyHwInfo.platform.eProductFamily;
     auto &flags = reinterpret_cast<NEO::Zebin::Elf::ZebinTargetFlags &>(elfHeader.flags);
     flags.generatorId = 1u;
 
@@ -273,7 +280,7 @@ size_t writeIntelGTNote(ArrayRef<uint8_t> dst, NEO::Zebin::Elf::IntelGTSectionTy
 
 size_t writeIntelGTVersionNote(ArrayRef<uint8_t> dst, NEO::ConstStringRef version) {
     std::vector<uint8_t> desc(version.length() + 1U, 0U);
-    std::memcpy(desc.data(), version.begin(), version.length());
+    memcpy_s(desc.data(), desc.size(), version.begin(), version.length());
     return writeIntelGTNote(dst, NEO::Zebin::Elf::zebinVersion, {desc.data(), desc.size()});
 }
 

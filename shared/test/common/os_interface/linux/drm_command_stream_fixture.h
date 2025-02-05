@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,6 +18,8 @@
 #include "shared/test/common/mocks/linux/mock_drm_command_stream_receiver.h"
 #include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_sip.h"
+#include "shared/test/common/os_interface/linux/drm_mock_memory_info.h"
 
 #include "gtest/gtest.h"
 
@@ -55,18 +57,20 @@ class DrmCommandStreamTest : public ::testing::Test {
         osContext = std::make_unique<OsContextLinux>(*mock, 0, 0u,
                                                      EngineDescriptorHelper::getDefaultDescriptor(gfxCoreHelper.getGpgpuEngineInstances(*executionEnvironment.rootDeviceEnvironments[0])[0],
                                                                                                   PreemptionHelper::getDefaultPreemptionMode(*hwInfo)));
-        osContext->ensureContextInitialized();
+        osContext->ensureContextInitialized(false);
 
         csr = new MockDrmCsr<GfxFamily>(executionEnvironment, 0, 1, GemCloseWorkerMode::gemCloseWorkerActive);
         ASSERT_NE(nullptr, csr);
         csr->setupContext(*osContext);
 
         mock->ioctlCallsCount = 0u;
+        mock->memoryInfo.reset(new MockMemoryInfo{*mock});
         memoryManager = new DrmMemoryManager(GemCloseWorkerMode::gemCloseWorkerActive,
                                              debugManager.flags.EnableForcePin.get(),
                                              true,
                                              executionEnvironment);
         executionEnvironment.memoryManager.reset(memoryManager);
+        mock->memoryInfo.reset();
         // Memory manager creates pinBB with ioctl, expect one call
         EXPECT_EQ(1u, mock->ioctlCallsCount);
 
@@ -105,6 +109,7 @@ class DrmCommandStreamTest : public ::testing::Test {
 template <typename DrmType>
 class DrmCommandStreamEnhancedTemplate : public ::testing::Test {
   public:
+    VariableBackup<bool> mockSipBackup{&MockSipData::useMockSip, false};
     std::unique_ptr<DebugManagerStateRestore> dbgState;
     MockExecutionEnvironment *executionEnvironment;
     DrmType *mock;
@@ -123,7 +128,7 @@ class DrmCommandStreamEnhancedTemplate : public ::testing::Test {
         // make sure this is disabled, we don't want to test this now
         debugManager.flags.EnableForcePin.set(false);
 
-        mock = new DrmType(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+        mock = DrmType::create(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]).release();
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->osInterface = std::make_unique<OSInterface>();
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->osInterface->setDriverModel(std::unique_ptr<DriverModel>(mock));
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = DrmMemoryOperationsHandler::create(*mock, rootDeviceIndex, false);
@@ -204,7 +209,7 @@ class DrmCommandStreamEnhancedWithFailingExecTemplate : public ::testing::Test {
         // make sure this is disabled, we don't want to test this now
         debugManager.flags.EnableForcePin.set(false);
 
-        mock = new T(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]);
+        mock = T::create(*executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]).release();
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->osInterface = std::make_unique<OSInterface>();
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->osInterface->setDriverModel(std::unique_ptr<DriverModel>(mock));
         executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = DrmMemoryOperationsHandler::create(*mock, rootDeviceIndex, false);

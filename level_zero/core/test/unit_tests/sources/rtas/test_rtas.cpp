@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -221,7 +221,7 @@ struct MockRTASOsLibrary : public OsLibrary {
     std::string getFullPath() override {
         return std::string();
     }
-    static OsLibrary *load(const std::string &name) {
+    static OsLibrary *load(const OsLibraryCreateProperties &properties) {
         if (mockLoad == true) {
             auto ptr = new (std::nothrow) MockRTASOsLibrary();
             return ptr;
@@ -264,7 +264,7 @@ TEST_F(RTASTest, GivenLibraryLoadsSymbolsAndUnderlyingFunctionsSucceedThenSucces
         std::string getFullPath() override {
             return std::string();
         }
-        static OsLibrary *load(const std::string &name) {
+        static OsLibrary *load(const OsLibraryCreateProperties &properties) {
             auto ptr = new (std::nothrow) MockSymbolsLoadedOsLibrary();
             return ptr;
         }
@@ -275,7 +275,7 @@ TEST_F(RTASTest, GivenLibraryLoadsSymbolsAndUnderlyingFunctionsSucceedThenSucces
     ze_rtas_parallel_operation_exp_handle_t hParallelOperation;
     const ze_rtas_format_exp_t accelFormatA = {};
     const ze_rtas_format_exp_t accelFormatB = {};
-    L0::RTASBuilder::osLibraryLoadFunction = MockSymbolsLoadedOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockSymbolsLoadedOsLibrary::load};
     driverHandle->rtasLibraryHandle.reset();
 
     EXPECT_EQ(ZE_RESULT_SUCCESS, L0::zeRTASBuilderCreateExp(driverHandle->toHandle(), nullptr, &hBuilder));
@@ -301,7 +301,7 @@ TEST_F(RTASTest, GivenLibraryFailedToLoadSymbolsThenErrorIsReturned) {
     ze_rtas_parallel_operation_exp_handle_t hParallelOperation;
     const ze_rtas_format_exp_t accelFormatA = {};
     const ze_rtas_format_exp_t accelFormatB = {};
-    L0::RTASBuilder::osLibraryLoadFunction = MockRTASOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockRTASOsLibrary::load};
     driverHandle->rtasLibraryHandle.reset();
 
     EXPECT_EQ(ZE_RESULT_ERROR_DEPENDENCY_UNAVAILABLE, L0::zeRTASBuilderCreateExp(driverHandle->toHandle(), nullptr, &hBuilder));
@@ -333,7 +333,7 @@ TEST_F(RTASTest, GivenLibraryPreLoadedAndUnderlyingBuilderCreateFailsThenErrorIs
 
 TEST_F(RTASTest, GivenLibraryFailsToLoadThenBuilderCreateReturnsError) {
     ze_rtas_builder_exp_handle_t hBuilder;
-    L0::RTASBuilder::osLibraryLoadFunction = MockRTASOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockRTASOsLibrary::load};
     MockRTASOsLibrary::mockLoad = false;
     driverHandle->rtasLibraryHandle.reset();
 
@@ -349,11 +349,10 @@ TEST_F(RTASTest, GivenUnderlyingBuilderDestroySucceedsThenSuccessIsReturned) {
 }
 
 TEST_F(RTASTest, GivenUnderlyingBuilderDestroyFailsThenErrorIsReturned) {
-    RTASBuilder pRTASBuilder;
+    auto pRTASBuilder = std::make_unique<RTASBuilder>();
     builderDestroyExpImpl = &builderDestroyFail;
-    driverHandle->rtasLibraryHandle = std::make_unique<MockRTASOsLibrary>();
 
-    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, L0::zeRTASBuilderDestroyExp(pRTASBuilder.toHandle()));
+    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, L0::zeRTASBuilderDestroyExp(pRTASBuilder.get()));
     EXPECT_EQ(1u, builderDestroyFailCalled);
 }
 
@@ -454,10 +453,10 @@ TEST_F(RTASTest, GivenUnderlyingParallelOperationDestroySucceedsThenSuccessIsRet
 }
 
 TEST_F(RTASTest, GivenUnderlyingParallelOperationDestroyFailsThenErrorIsReturned) {
-    RTASParallelOperation pParallelOperation;
+    auto pParallelOperation = std::make_unique<RTASParallelOperation>();
     parallelOperationDestroyExpImpl = &parallelOperationDestroyFail;
 
-    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, L0::zeRTASParallelOperationDestroyExp(pParallelOperation.toHandle()));
+    EXPECT_EQ(ZE_RESULT_ERROR_UNKNOWN, L0::zeRTASParallelOperationDestroyExp(pParallelOperation.get()));
     EXPECT_EQ(1u, parallelOperationDestroyFailCalled);
 }
 
@@ -500,7 +499,7 @@ TEST_F(RTASTest, GivenNoSymbolAvailableInLibraryThenLoadEntryPointsReturnsFalse)
 }
 
 TEST_F(RTASTest, GivenRTASLibraryHandleUnavailableThenDependencyUnavailableErrorIsReturned) {
-    L0::RTASBuilder::osLibraryLoadFunction = MockRTASOsLibrary::load;
+    VariableBackup<decltype(NEO::OsLibrary::loadFunc)> funcBackup{&NEO::OsLibrary::loadFunc, MockRTASOsLibrary::load};
     MockRTASOsLibrary::mockLoad = false;
     driverHandle->rtasLibraryHandle.reset();
 

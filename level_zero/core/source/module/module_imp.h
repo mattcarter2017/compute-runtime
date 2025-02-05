@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -23,6 +23,7 @@
 
 namespace NEO {
 struct KernelDescriptor;
+class SharedIsaAllocation;
 
 namespace Zebin::Debug {
 struct Segments;
@@ -52,7 +53,7 @@ struct ModuleTranslationUnit {
                                                 const ze_module_constants_t *pConstants);
     MOCKABLE_VIRTUAL ze_result_t staticLinkSpirV(std::vector<const char *> inputSpirVs, std::vector<uint32_t> inputModuleSizes, const char *buildOptions, const char *internalBuildOptions,
                                                  std::vector<const ze_module_constants_t *> specConstants);
-    MOCKABLE_VIRTUAL ze_result_t createFromNativeBinary(const char *input, size_t inputSize);
+    MOCKABLE_VIRTUAL ze_result_t createFromNativeBinary(const char *input, size_t inputSize, const char *internalBuildOptions);
     MOCKABLE_VIRTUAL ze_result_t processUnpackedBinary();
     std::vector<uint8_t> generateElfFromSpirV(std::vector<const char *> inputSpirVs, std::vector<uint32_t> inputModuleSizes);
     bool processSpecConstantInfo(NEO::CompilerInterface *compilerInterface, const ze_module_constants_t *pConstants, const char *input, uint32_t inputSize);
@@ -125,7 +126,7 @@ struct ModuleImp : public Module {
     const KernelImmutableData *getKernelImmutableData(const char *kernelName) const override;
 
     const std::vector<std::unique_ptr<KernelImmutableData>> &getKernelImmutableDataVector() const override { return kernelImmDatas; }
-    NEO::GraphicsAllocation *getKernelsIsaParentAllocation() const { return kernelsIsaParentRegion.get(); }
+    NEO::GraphicsAllocation *getKernelsIsaParentAllocation() const;
 
     uint32_t getMaxGroupSize(const NEO::KernelDescriptor &kernelDescriptor) const override;
 
@@ -134,7 +135,7 @@ struct ModuleImp : public Module {
     bool verifyBuildOptions(std::string buildOptions) const;
     bool moveOptLevelOption(std::string &dstOptionsSet, std::string &srcOptionSet);
     bool moveProfileFlagsOption(std::string &dstOptionsSet, std::string &srcOptionSet);
-    void updateBuildLog(NEO::Device *neoDevice);
+    MOCKABLE_VIRTUAL void updateBuildLog(NEO::Device *neoDevice);
 
     Device *getDevice() const override { return device; }
 
@@ -142,7 +143,7 @@ struct ModuleImp : public Module {
 
     ze_result_t initialize(const ze_module_desc_t *desc, NEO::Device *neoDevice);
 
-    bool isSPIRv() { return builtFromSPIRv; }
+    bool isSPIRv() { return builtFromSpirv; }
 
     bool isPrecompiled() { return precompiled; }
 
@@ -159,14 +160,16 @@ struct ModuleImp : public Module {
     std::vector<std::shared_ptr<Kernel>> &getPrintfKernelContainer() { return this->printfKernelContainer; }
     std::weak_ptr<Kernel> getPrintfKernelWeakPtr(ze_kernel_handle_t kernelHandle) const;
     ze_result_t destroyPrintfKernel(ze_kernel_handle_t kernelHandle);
+    ModuleType getModuleType() const {
+        return this->type;
+    }
 
   protected:
     MOCKABLE_VIRTUAL ze_result_t initializeTranslationUnit(const ze_module_desc_t *desc, NEO::Device *neoDevice);
-    ze_result_t checkIfBuildShouldBeFailed(NEO::Device *neoDevice);
+    bool shouldBuildBeFailed(NEO::Device *neoDevice);
     ze_result_t allocateKernelImmutableDatas(size_t kernelsCount);
     ze_result_t initializeKernelImmutableDatas();
     void copyPatchedSegments(const NEO::Linker::PatchableSegments &isaSegmentsForPatching);
-    void verifyDebugCapabilities();
     void checkIfPrivateMemoryPerDispatchIsNeeded() override;
     NEO::Zebin::Debug::Segments getZebinSegments();
     void createDebugZebin();
@@ -177,7 +180,7 @@ struct ModuleImp : public Module {
     ze_result_t setIsaGraphicsAllocations();
     void transferIsaSegmentsToAllocation(NEO::Device *neoDevice, const NEO::Linker::PatchableSegments *isaSegmentsForPatching);
     std::pair<const void *, size_t> getKernelHeapPointerAndSize(const std::unique_ptr<KernelImmutableData> &kernelImmData, const NEO::Linker::PatchableSegments *isaSegmentsForPatching);
-    MOCKABLE_VIRTUAL size_t computeKernelIsaAllocationAlignedSizeWithPadding(size_t isaSize);
+    MOCKABLE_VIRTUAL size_t computeKernelIsaAllocationAlignedSizeWithPadding(size_t isaSize, bool lastKernel);
     MOCKABLE_VIRTUAL NEO::GraphicsAllocation *allocateKernelsIsaMemory(size_t size);
     StackVec<NEO::GraphicsAllocation *, 32> getModuleAllocations();
 
@@ -186,7 +189,7 @@ struct ModuleImp : public Module {
     std::unique_ptr<ModuleTranslationUnit> translationUnit;
     ModuleBuildLog *moduleBuildLog = nullptr;
     NEO::GraphicsAllocation *exportedFunctionsSurface = nullptr;
-    std::unique_ptr<NEO::GraphicsAllocation> kernelsIsaParentRegion;
+    std::unique_ptr<NEO::SharedIsaAllocation> sharedIsaAllocation;
     std::vector<std::shared_ptr<Kernel>> printfKernelContainer;
     std::vector<std::unique_ptr<KernelImmutableData>> kernelImmDatas;
     NEO::Linker::RelocatedSymbolsMap symbols;
@@ -198,7 +201,7 @@ struct ModuleImp : public Module {
 
     std::unordered_map<std::string, HostGlobalSymbol> hostGlobalSymbolsMap;
 
-    bool builtFromSPIRv = false;
+    bool builtFromSpirv = false;
     bool isFullyLinked = false;
     bool allocatePrivateMemoryPerDispatch = true;
     bool isZebinBinary = false;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -697,118 +697,6 @@ TEST(UnifiedMemoryTest, givenDeviceBitfieldWithSingleBitsSetWhenMultiOsContextFl
     svmManager->freeSVMAlloc(ptr);
 }
 
-TEST(UnifiedMemoryTest, givenInternalAllocationWhenItIsMadeResidentThenNewTrackingEntryIsCreated) {
-    MockCommandQueue cmdQ;
-    MockDevice device;
-    MockExecutionEnvironment executionEnvironment;
-    auto memoryManager = std::make_unique<MemoryManagerPropertiesCheck>(false, true, executionEnvironment);
-    auto unifiedMemoryManager = std::make_unique<MockSVMAllocsManager>(memoryManager.get(), false);
-    memoryManager->pageFaultManager = std::make_unique<MockPageFaultManager>();
-
-    RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
-    std::map<uint32_t, DeviceBitfield> deviceBitfields{{mockRootDeviceIndex, DeviceBitfield(0x1)}};
-    SVMAllocsManager::UnifiedMemoryProperties unifiedMemoryProperties(InternalMemoryType::sharedUnifiedMemory, 1, rootDeviceIndices, deviceBitfields);
-
-    auto ptr = unifiedMemoryManager->createSharedUnifiedMemoryAllocation(4096u, unifiedMemoryProperties, &cmdQ);
-
-    ASSERT_NE(nullptr, ptr);
-    auto graphicsAllocation = unifiedMemoryManager->getSVMAlloc(ptr);
-    auto &commandStreamReceiver = device.getGpgpuCommandStreamReceiver();
-    EXPECT_FALSE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    EXPECT_EQ(0u, unifiedMemoryManager->indirectAllocationsResidency.size());
-
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 1u);
-    EXPECT_TRUE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-    EXPECT_EQ(GraphicsAllocation::objectAlwaysResident, graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->getResidencyTaskCount(commandStreamReceiver.getOsContext().getContextId()));
-    EXPECT_FALSE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->peekEvictable());
-
-    EXPECT_EQ(1u, unifiedMemoryManager->indirectAllocationsResidency.size());
-    auto internalEntry = unifiedMemoryManager->indirectAllocationsResidency.find(&commandStreamReceiver)->second;
-    EXPECT_EQ(1u, internalEntry.latestSentTaskCount);
-    EXPECT_EQ(1u, internalEntry.latestResidentObjectId);
-
-    unifiedMemoryManager->freeSVMAlloc(ptr);
-}
-
-TEST(UnifiedMemoryTest, givenInternalAllocationWhenItIsMadeResidentThenSubsequentCallsDoNotCallResidency) {
-    MockCommandQueue cmdQ;
-    MockDevice device;
-    MockExecutionEnvironment executionEnvironment;
-    auto memoryManager = std::make_unique<MemoryManagerPropertiesCheck>(false, true, executionEnvironment);
-    auto unifiedMemoryManager = std::make_unique<MockSVMAllocsManager>(memoryManager.get(), false);
-    memoryManager->pageFaultManager = std::make_unique<MockPageFaultManager>();
-
-    RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
-    std::map<uint32_t, DeviceBitfield> deviceBitfields{{mockRootDeviceIndex, DeviceBitfield(0x1)}};
-    SVMAllocsManager::UnifiedMemoryProperties unifiedMemoryProperties(InternalMemoryType::sharedUnifiedMemory, 1, rootDeviceIndices, deviceBitfields);
-
-    auto ptr = unifiedMemoryManager->createSharedUnifiedMemoryAllocation(4096u, unifiedMemoryProperties, &cmdQ);
-    ASSERT_NE(nullptr, ptr);
-
-    auto graphicsAllocation = unifiedMemoryManager->getSVMAlloc(ptr);
-    auto &commandStreamReceiver = device.getGpgpuCommandStreamReceiver();
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 1u);
-
-    EXPECT_TRUE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    // now call with task count 2 , allocations shouldn't change
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 2u);
-    auto internalEntry = unifiedMemoryManager->indirectAllocationsResidency.find(&commandStreamReceiver)->second;
-
-    EXPECT_EQ(2u, internalEntry.latestSentTaskCount);
-    EXPECT_TRUE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    // force Graphics Allocation to be non resident
-    graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->updateResidencyTaskCount(GraphicsAllocation::objectNotResident, commandStreamReceiver.getOsContext().getContextId());
-    EXPECT_FALSE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    // now call with task count 3 , allocations shouldn't change
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 2u);
-    EXPECT_FALSE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-    unifiedMemoryManager->freeSVMAlloc(ptr);
-}
-
-TEST(UnifiedMemoryTest, givenInternalAllocationWhenNewAllocationIsCreatedThenItIsMadeResident) {
-    MockCommandQueue cmdQ;
-    MockDevice device;
-    MockExecutionEnvironment executionEnvironment;
-    auto memoryManager = std::make_unique<MemoryManagerPropertiesCheck>(false, true, executionEnvironment);
-    auto unifiedMemoryManager = std::make_unique<MockSVMAllocsManager>(memoryManager.get(), false);
-    memoryManager->pageFaultManager = std::make_unique<MockPageFaultManager>();
-
-    RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
-    std::map<uint32_t, DeviceBitfield> deviceBitfields{{mockRootDeviceIndex, DeviceBitfield(0x1)}};
-    SVMAllocsManager::UnifiedMemoryProperties unifiedMemoryProperties(InternalMemoryType::sharedUnifiedMemory, 1, rootDeviceIndices, deviceBitfields);
-
-    auto ptr = unifiedMemoryManager->createSharedUnifiedMemoryAllocation(4096u, unifiedMemoryProperties, &cmdQ);
-    ASSERT_NE(nullptr, ptr);
-
-    auto graphicsAllocation = unifiedMemoryManager->getSVMAlloc(ptr);
-    auto &commandStreamReceiver = device.getGpgpuCommandStreamReceiver();
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 1u);
-
-    EXPECT_TRUE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-    // force to non resident
-    graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->updateResidencyTaskCount(GraphicsAllocation::objectNotResident, commandStreamReceiver.getOsContext().getContextId());
-
-    auto ptr2 = unifiedMemoryManager->createSharedUnifiedMemoryAllocation(4096u, unifiedMemoryProperties, &cmdQ);
-    auto graphicsAllocation2 = unifiedMemoryManager->getSVMAlloc(ptr);
-
-    EXPECT_FALSE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    EXPECT_FALSE(graphicsAllocation2->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    // now call with task count 2, both allocations needs to be made resident
-    unifiedMemoryManager->makeIndirectAllocationsResident(commandStreamReceiver, 2u);
-
-    EXPECT_TRUE(graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-    EXPECT_TRUE(graphicsAllocation2->gpuAllocations.getDefaultGraphicsAllocation()->isResident(commandStreamReceiver.getOsContext().getContextId()));
-
-    unifiedMemoryManager->freeSVMAlloc(ptr);
-    unifiedMemoryManager->freeSVMAlloc(ptr2);
-}
-
 TEST(UnifiedMemoryTest, givenInternalAllocationsWhenTheyArePreparedForFreeingThenProperTaskCountIsAssigned) {
     MockCommandQueue cmdQ;
     MockDevice device;
@@ -834,9 +722,16 @@ TEST(UnifiedMemoryTest, givenInternalAllocationsWhenTheyArePreparedForFreeingThe
 
     auto allocationData = unifiedMemoryManager->getSVMAlloc(ptr);
 
-    unifiedMemoryManager->prepareIndirectAllocationForDestruction(allocationData);
+    unifiedMemoryManager->prepareIndirectAllocationForDestruction(allocationData, false);
     EXPECT_EQ(124u, graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->getTaskCount(commandStreamReceiver.getOsContext().getContextId()));
     EXPECT_EQ(124u, graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->getResidencyTaskCount(commandStreamReceiver.getOsContext().getContextId()));
+
+    graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->updateTaskCount(1u, commandStreamReceiver.getOsContext().getContextId());
+    graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->updateResidencyTaskCount(GraphicsAllocation::objectAlwaysResident, commandStreamReceiver.getOsContext().getContextId());
+    unifiedMemoryManager->prepareIndirectAllocationForDestruction(allocationData, true);
+    EXPECT_EQ(1u, graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->getTaskCount(commandStreamReceiver.getOsContext().getContextId()));
+    EXPECT_EQ(1u, graphicsAllocation->gpuAllocations.getDefaultGraphicsAllocation()->getResidencyTaskCount(commandStreamReceiver.getOsContext().getContextId()));
+
     unifiedMemoryManager->freeSVMAlloc(ptr);
 }
 
@@ -907,6 +802,21 @@ TEST_F(UnifiedMemoryManagerPropertiesTest, givenDeviceBitfieldWithSingleDeviceBi
     svmManager->freeSVMAlloc(ptr);
 }
 
+TEST_F(UnifiedMemoryManagerPropertiesTest, givenDebugFlagSetWhenCreatingAllocationThenSet2MbAlignemnt) {
+    DebugManagerStateRestore restore;
+    debugManager.flags.AlignLocalMemoryVaTo2MB.set(1);
+
+    RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
+    std::map<uint32_t, DeviceBitfield> deviceBitfields{{mockRootDeviceIndex, DeviceBitfield(0x1)}};
+    SVMAllocsManager::UnifiedMemoryProperties unifiedMemoryProperties(InternalMemoryType::sharedUnifiedMemory, 1, rootDeviceIndices, deviceBitfields);
+
+    auto ptr = svmManager->createUnifiedAllocationWithDeviceStorage(MemoryConstants::pageSize64k, {}, unifiedMemoryProperties);
+
+    EXPECT_TRUE(isAligned<MemoryConstants::pageSize2M>(ptr));
+
+    svmManager->freeSVMAlloc(ptr);
+}
+
 TEST_F(UnifiedMemoryManagerPropertiesTest,
        givenSvmManagerMultiOsContextSupportFlagTrueWhenRootDeviceIsSingleThenMultiStorageFlagFalse) {
     RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
@@ -919,6 +829,28 @@ TEST_F(UnifiedMemoryManagerPropertiesTest,
     EXPECT_FALSE(memoryManager->multiOsContextCapablePassed);
     EXPECT_FALSE(memoryManager->multiStorageResourcePassed);
     EXPECT_EQ(unifiedMemoryProperties.subdeviceBitfields.at(mockRootDeviceIndex), memoryManager->subDevicesBitfieldPassed);
+
+    svmManager->freeSVMAlloc(ptr);
+}
+
+TEST_F(UnifiedMemoryManagerPropertiesTest,
+       givenSizeGreaterThan2mbWhenDiscretGpuAndCreateHostUSMThenAlignSizeAndVATo2mb) {
+    RootDeviceIndicesContainer rootDeviceIndices = {mockRootDeviceIndex};
+    std::map<uint32_t, DeviceBitfield> deviceBitfields{{mockRootDeviceIndex, DeviceBitfield(0x1)}};
+    SVMAllocsManager::UnifiedMemoryProperties unifiedMemoryProperties(InternalMemoryType::hostUnifiedMemory, 1, rootDeviceIndices, deviceBitfields);
+
+    svmManager->multiOsContextSupport = true;
+    auto ptr = svmManager->createHostUnifiedMemoryAllocation(4 * MemoryConstants::pageSize2M + MemoryConstants::pageSize64k, unifiedMemoryProperties);
+
+    auto allocation = svmManager->getSVMAlloc(ptr);
+
+    if (executionEnvironment.rootDeviceEnvironments[0]->getHardwareInfo()->capabilityTable.isIntegratedDevice) {
+        EXPECT_EQ(4 * MemoryConstants::pageSize2M + MemoryConstants::pageSize64k, allocation->gpuAllocations.getDefaultGraphicsAllocation()->getUnderlyingBufferSize());
+        EXPECT_TRUE(isAligned(allocation->gpuAllocations.getDefaultGraphicsAllocation()->getGpuAddress(), MemoryConstants::pageSize));
+    } else {
+        EXPECT_EQ(5 * MemoryConstants::pageSize2M, allocation->gpuAllocations.getDefaultGraphicsAllocation()->getUnderlyingBufferSize());
+        EXPECT_TRUE(isAligned(allocation->gpuAllocations.getDefaultGraphicsAllocation()->getGpuAddress(), MemoryConstants::pageSize2M));
+    }
 
     svmManager->freeSVMAlloc(ptr);
 }
@@ -1029,16 +961,18 @@ TEST(UnifiedSharedMemoryTransferCalls, givenHostUsmAllocationWhenPointerIsUsedFo
     ASSERT_EQ(CL_SUCCESS, status);
 
     auto neoQueue = castToObject<CommandQueue>(commandQueue);
+    auto heaplessStateInit = neoQueue->getHeaplessStateInitEnabled();
+
     auto &temporaryAllocations = neoQueue->getGpgpuCommandStreamReceiver().getTemporaryAllocations();
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
     auto osContextId = neoQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
 
-    EXPECT_EQ(1u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 2u : 1u, gpuAllocation->getTaskCount(osContextId));
 
     status = clEnqueueReadBuffer(commandQueue, buffer, false, 0u, 4096u, hostMemory, 0u, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
-    EXPECT_EQ(2u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 3u : 2u, gpuAllocation->getTaskCount(osContextId));
 
     status = clReleaseMemObject(buffer);
     ASSERT_EQ(CL_SUCCESS, status);
@@ -1069,16 +1003,18 @@ TEST(UnifiedSharedMemoryTransferCalls, givenDeviceUsmAllocationWhenPtrIsUsedForT
     ASSERT_EQ(CL_SUCCESS, status);
 
     auto neoQueue = castToObject<CommandQueue>(commandQueue);
+    auto heaplessStateInit = neoQueue->getHeaplessStateInitEnabled();
+
     auto &temporaryAllocations = neoQueue->getGpgpuCommandStreamReceiver().getTemporaryAllocations();
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
     auto osContextId = neoQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
 
-    EXPECT_EQ(1u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 2u : 1u, gpuAllocation->getTaskCount(osContextId));
 
     status = clEnqueueReadBuffer(commandQueue, buffer, false, 0u, 4096u, deviceMemory, 0u, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, status);
 
-    EXPECT_EQ(2u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 3u : 2u, gpuAllocation->getTaskCount(osContextId));
 
     status = clReleaseMemObject(buffer);
     ASSERT_EQ(CL_SUCCESS, status);
@@ -1109,16 +1045,18 @@ TEST(UnifiedSharedMemoryTransferCalls, givenDeviceUsmAllocationWhenPtrIsUsedForT
     ASSERT_EQ(CL_SUCCESS, status);
 
     auto neoQueue = castToObject<CommandQueue>(commandQueue);
+    auto heaplessStateInit = neoQueue->getHeaplessStateInitEnabled();
+
     auto &temporaryAllocations = neoQueue->getGpgpuCommandStreamReceiver().getTemporaryAllocations();
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
     auto osContextId = neoQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
 
-    EXPECT_EQ(1u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 2u : 1u, gpuAllocation->getTaskCount(osContextId));
 
     status = clEnqueueReadBuffer(commandQueue, buffer, true, 0u, 4096u, deviceMemory, 0u, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, status);
 
-    EXPECT_EQ(2u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 3u : 2u, gpuAllocation->getTaskCount(osContextId));
 
     status = clReleaseMemObject(buffer);
     ASSERT_EQ(CL_SUCCESS, status);
@@ -1232,16 +1170,18 @@ TEST(UnifiedSharedMemoryTransferCalls, givenSharedUsmAllocationWithoutLocalMemor
     ASSERT_EQ(CL_SUCCESS, status);
 
     auto neoQueue = castToObject<CommandQueue>(commandQueue);
+    auto heaplessStateInit = neoQueue->getHeaplessStateInitEnabled();
+
     auto &temporaryAllocations = neoQueue->getGpgpuCommandStreamReceiver().getTemporaryAllocations();
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
     auto osContextId = neoQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
 
-    EXPECT_EQ(1u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 2u : 1u, gpuAllocation->getTaskCount(osContextId));
 
     status = clEnqueueReadBuffer(commandQueue, buffer, false, 0u, 4096u, sharedMemory, 0u, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
-    EXPECT_EQ(2u, gpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 3u : 2u, gpuAllocation->getTaskCount(osContextId));
 
     status = clReleaseMemObject(buffer);
     ASSERT_EQ(CL_SUCCESS, status);
@@ -1272,6 +1212,7 @@ TEST(UnifiedSharedMemoryTransferCalls, givenSharedUsmAllocationWithLocalMemoryWh
 
     auto neoQueue = castToObject<CommandQueue>(commandQueue);
     auto osContextId = neoQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
+    auto heaplessStateInit = neoQueue->getHeaplessStateInitEnabled();
 
     EXPECT_EQ(GraphicsAllocation::objectNotUsed, svmAllocation->cpuAllocation->getTaskCount(osContextId));
 
@@ -1281,12 +1222,12 @@ TEST(UnifiedSharedMemoryTransferCalls, givenSharedUsmAllocationWithLocalMemoryWh
     auto &temporaryAllocations = neoQueue->getGpgpuCommandStreamReceiver().getTemporaryAllocations();
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
 
-    EXPECT_EQ(1u, svmAllocation->cpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 2u : 1u, svmAllocation->cpuAllocation->getTaskCount(osContextId));
 
     status = clEnqueueReadBuffer(commandQueue, buffer, false, 0u, 4096u, sharedMemory, 0u, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, status);
     EXPECT_TRUE(temporaryAllocations.peekIsEmpty());
-    EXPECT_EQ(2u, svmAllocation->cpuAllocation->getTaskCount(osContextId));
+    EXPECT_EQ(heaplessStateInit ? 3u : 2u, svmAllocation->cpuAllocation->getTaskCount(osContextId));
 
     status = clReleaseMemObject(buffer);
     ASSERT_EQ(CL_SUCCESS, status);
@@ -1453,8 +1394,9 @@ TEST(UnifiedMemoryManagerTest, givenEnableStatelessCompressionWhenDeviceAllocati
 
         auto deviceMemAlloc = allocationsManager->getSVMAllocs()->get(deviceMemAllocPtr)->gpuAllocations.getGraphicsAllocation(device->getRootDeviceIndex());
         EXPECT_NE(nullptr, deviceMemAlloc);
-
-        EXPECT_EQ((enable > 0), deviceMemAlloc->isCompressionEnabled());
+        auto &gfxCoreHelper = device->getGfxCoreHelper();
+        auto isCompressionEnabled = gfxCoreHelper.usmCompressionSupported(device->getHardwareInfo());
+        EXPECT_EQ(enable > 0 || isCompressionEnabled, deviceMemAlloc->isCompressionEnabled());
 
         retVal = clMemFreeINTEL(&mockContext, deviceMemAllocPtr);
         EXPECT_EQ(CL_SUCCESS, retVal);

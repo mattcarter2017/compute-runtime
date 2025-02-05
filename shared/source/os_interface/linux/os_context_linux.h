@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,7 +29,7 @@ class OsContextLinux : public OsContext {
     const std::vector<uint32_t> &getDrmVmIds() const { return drmVmIds; }
     bool isDirectSubmissionSupported() const override;
     Drm &getDrm() const;
-    void waitForPagingFence();
+    virtual void waitForPagingFence();
     static OsContext *create(OSInterface *osInterface, uint32_t rootDeviceIndex, uint32_t contextId, const EngineDescriptor &engineDescriptor);
     void reInitializeContext() override;
     void setHangDetected() {
@@ -47,7 +47,7 @@ class OsContextLinux : public OsContext {
     void waitForBind(uint32_t drmIterator);
 
   protected:
-    bool initializeContext() override;
+    bool initializeContext(bool allocateInterrupt) override;
 
     unsigned int engineFlag = 0;
     std::vector<uint32_t> drmContextIds;

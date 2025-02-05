@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -29,7 +29,19 @@ ze_result_t FirmwareImp::firmwareFlash(void *pImage, uint32_t size) {
 }
 
 ze_result_t FirmwareImp::firmwareGetFlashProgress(uint32_t *pCompletionPercent) {
-    return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    return pOsFirmware->osGetFirmwareFlashProgress(pCompletionPercent);
+}
+
+ze_result_t FirmwareImp::firmwareGetSecurityVersion(char *pVersion) {
+    return pOsFirmware->osGetSecurityVersion(pVersion);
+}
+
+ze_result_t FirmwareImp::firmwareSetSecurityVersion() {
+    return pOsFirmware->osSetSecurityVersion();
+}
+
+ze_result_t FirmwareImp::firmwareGetConsoleLogs(size_t *pSize, char *pFirmwareLog) {
+    return pOsFirmware->osGetConsoleLogs(pSize, pFirmwareLog);
 }
 
 FirmwareImp::FirmwareImp(OsSysman *pOsSysman, const std::string &initalizedFwType) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -17,6 +17,7 @@
 namespace aub_stream {
 
 struct HardwareContext;
+struct CreateHardwareContext2Params;
 
 struct AubManagerOptions {
     uint32_t version{};
@@ -29,6 +30,7 @@ struct AubManagerOptions {
     uint64_t gpuAddressSpace{};
     SharedMemoryInfo sharedMemoryInfo{};
     bool throwOnError{};
+    uint64_t dataStolenMemorySize{4 * 1024 * 1024};
 };
 
 class AubManager {
@@ -62,6 +64,15 @@ class AubManager {
     virtual bool reserveOnlyPhysicalSpace(AllocationParams allocationParams, PhysicalAllocationInfo &physicalAllocInfo) { return false; }
     virtual bool mapSystemMemoryToPhysicalAddress(uint64_t physAddress, size_t size, size_t alignment, bool isLocalMemory, const void *p) { return false; }
     virtual void *translatePhysicalAddressToSystemMemory(uint64_t physicalAddress, bool isLocalMemory) { return nullptr; }
+    virtual void writeMMIO(uint32_t offset, uint32_t value) {}
+    virtual uint32_t readMMIO(uint32_t offset) { return 0; }
+    virtual void writePCICFG(uint32_t offset, uint32_t value) {}
+    virtual uint32_t readPCICFG(uint32_t offset) { return 0; }
+
+    virtual void blockMemWritesViaTbx(bool onoff) {}
+
+    virtual bool releaseHardwareContext(HardwareContext *context) { return false; };
+    virtual HardwareContext *createHardwareContext2(const CreateHardwareContext2Params &params, uint32_t device, uint32_t engine, uint32_t flags) { return nullptr; };
 };
 
 } // namespace aub_stream

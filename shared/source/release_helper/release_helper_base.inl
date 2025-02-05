@@ -1,10 +1,12 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/source/helpers/constants.h"
+#include "shared/source/helpers/string.h"
 #include "shared/source/release_helper/release_helper.h"
 
 namespace NEO {
@@ -38,11 +40,6 @@ bool ReleaseHelperHw<releaseType>::isProgramAllStateComputeCommandFieldsWARequir
 }
 
 template <ReleaseType releaseType>
-bool ReleaseHelperHw<releaseType>::isPrefetchDisablingRequired() const {
-    return false;
-}
-
-template <ReleaseType releaseType>
 bool ReleaseHelperHw<releaseType>::isSplitMatrixMultiplyAccumulateSupported() const {
     return false;
 }
@@ -58,33 +55,8 @@ inline bool ReleaseHelperHw<releaseType>::isAuxSurfaceModeOverrideRequired() con
 }
 
 template <ReleaseType releaseType>
-int ReleaseHelperHw<releaseType>::getProductMaxPreferredSlmSize(int preferredEnumValue) const {
-    return preferredEnumValue;
-}
-
-template <ReleaseType releaseType>
-bool ReleaseHelperHw<releaseType>::getMediaFrequencyTileIndex(uint32_t &tileIndex) const {
-    return false;
-}
-
-template <ReleaseType releaseType>
 bool ReleaseHelperHw<releaseType>::isResolvingSubDeviceIDNeeded() const {
     return true;
-}
-
-template <ReleaseType releaseType>
-bool ReleaseHelperHw<releaseType>::isCachingOnCpuAvailable() const {
-    return true;
-}
-
-template <ReleaseType releaseType>
-std::optional<GfxMemoryAllocationMethod> ReleaseHelperHw<releaseType>::getPreferredAllocationMethod(AllocationType allocationType) const {
-    return {};
-}
-
-template <ReleaseType releaseType>
-bool ReleaseHelperHw<releaseType>::shouldAdjustDepth() const {
-    return false;
 }
 
 template <ReleaseType releaseType>
@@ -108,12 +80,81 @@ bool ReleaseHelperHw<releaseType>::isBindlessAddressingDisabled() const {
 }
 
 template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::isGlobalBindlessAllocatorEnabled() const {
+    return false;
+}
+
+template <ReleaseType releaseType>
 uint32_t ReleaseHelperHw<releaseType>::getNumThreadsPerEu() const {
     return 8u;
 }
 
 template <ReleaseType releaseType>
-const ThreadsPerEUConfigs ReleaseHelperHw<releaseType>::getThreadsPerEUConfigs() const {
+uint64_t ReleaseHelperHw<releaseType>::getTotalMemBankSize() const {
+    return 32ull * MemoryConstants::gigaByte;
+}
+
+template <ReleaseType releaseType>
+const ThreadsPerEUConfigs ReleaseHelperHw<releaseType>::getThreadsPerEUConfigs(uint32_t numThreadsPerEu) const {
     return {4, 8};
+}
+
+template <ReleaseType releaseType>
+const std::string ReleaseHelperHw<releaseType>::getDeviceConfigString(uint32_t tileCount, uint32_t sliceCount, uint32_t subSliceCount, uint32_t euPerSubSliceCount) const {
+    char configString[16] = {0};
+    if (tileCount > 1) {
+        auto err = snprintf_s(configString, sizeof(configString), sizeof(configString), "%utx%ux%ux%u", tileCount, sliceCount, subSliceCount, euPerSubSliceCount);
+        UNRECOVERABLE_IF(err < 0);
+    } else {
+        auto err = snprintf_s(configString, sizeof(configString), sizeof(configString), "%ux%ux%u", sliceCount, subSliceCount, euPerSubSliceCount);
+        UNRECOVERABLE_IF(err < 0);
+    }
+    return configString;
+}
+
+template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::isRayTracingSupported() const {
+    return true;
+}
+
+template <ReleaseType releaseType>
+uint32_t ReleaseHelperHw<releaseType>::getAdditionalFp16Caps() const {
+    return 0u;
+}
+
+template <ReleaseType releaseType>
+uint32_t ReleaseHelperHw<releaseType>::getAdditionalExtraCaps() const {
+    return 0u;
+}
+
+template <ReleaseType releaseType>
+uint32_t ReleaseHelperHw<releaseType>::getStackSizePerRay() const {
+    return 0u;
+}
+
+template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::isLocalOnlyAllowed() const {
+    return true;
+}
+
+template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::isDummyBlitWaRequired() const {
+    return false;
+}
+
+template <ReleaseType releaseType>
+const SizeToPreferredSlmValueArray &ReleaseHelperHw<releaseType>::getSizeToPreferredSlmValue(bool isHeapless) const {
+    static const SizeToPreferredSlmValueArray sizeToPreferredSlmValue = {};
+    return sizeToPreferredSlmValue;
+}
+
+template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::isNumRtStacksPerDssFixedValue() const {
+    return true;
+}
+
+template <ReleaseType releaseType>
+bool ReleaseHelperHw<releaseType>::getFtrXe2Compression() const {
+    return true;
 }
 } // namespace NEO

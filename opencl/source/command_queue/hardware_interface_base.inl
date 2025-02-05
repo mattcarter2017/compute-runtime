@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -42,12 +42,12 @@ inline void HardwareInterface<GfxFamily>::dispatchProfilingPerfStartCommands(
     LinearStream *commandStream,
     CommandQueue &commandQueue) {
 
+    if (hwPerfCounter != nullptr) {
+        GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsStart(commandQueue, *hwPerfCounter, commandStream);
+    }
     // If hwTimeStampAlloc is passed (not nullptr), then we know that profiling is enabled
     if (hwTimeStamps != nullptr) {
         GpgpuWalkerHelper<GfxFamily>::dispatchProfilingCommandsStart(*hwTimeStamps, commandStream, commandQueue.getDevice().getRootDeviceEnvironment());
-    }
-    if (hwPerfCounter != nullptr) {
-        GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsStart(commandQueue, *hwPerfCounter, commandStream);
     }
 }
 
@@ -86,6 +86,12 @@ void HardwareInterface<GfxFamily>::dispatchWalker(
             const auto lws = generateWorkgroupSize(dispatchInfo);
             const_cast<DispatchInfo &>(dispatchInfo).setLWS(lws);
         }
+        if (dispatchInfo.getKernel() == mainKernel) {
+            if (!mainKernel->isLocalWorkSize2Patchable()) {
+                const auto &lws = dispatchInfo.getLocalWorkgroupSize();
+                mainKernel->setLocalWorkSizeValues(static_cast<uint32_t>(lws.x), static_cast<uint32_t>(lws.y), static_cast<uint32_t>(lws.z));
+            }
+        }
     }
 
     // Allocate command stream and indirect heaps
@@ -104,17 +110,16 @@ void HardwareInterface<GfxFamily>::dispatchWalker(
         size_t sizeToPatch = debugSurface->getUnderlyingBufferSize();
         Buffer::setSurfaceState(&commandQueue.getDevice(), commandQueue.getDevice().getDebugger()->getDebugSurfaceReservedSurfaceState(*ssh),
                                 false, false, sizeToPatch, addressToPatch, 0, debugSurface, 0, 0,
-                                mainKernel->getKernelInfo().kernelDescriptor.kernelAttributes.flags.useGlobalAtomics,
                                 mainKernel->areMultipleSubDevicesInContext());
     }
 
     if (walkerArgs.relaxedOrderingEnabled) {
-        RelaxedOrderingHelper::encodeRegistersBeforeDependencyCheckers<GfxFamily>(*commandStream);
+        RelaxedOrderingHelper::encodeRegistersBeforeDependencyCheckers<GfxFamily>(*commandStream, false);
     }
 
-    TimestampPacketHelper::programCsrDependenciesForTimestampPacketContainer<GfxFamily>(*commandStream, csrDependencies, walkerArgs.relaxedOrderingEnabled);
+    TimestampPacketHelper::programCsrDependenciesForTimestampPacketContainer<GfxFamily>(*commandStream, csrDependencies, walkerArgs.relaxedOrderingEnabled, commandQueue.isBcs());
 
-    dsh->align(EncodeStates<GfxFamily>::alignInterfaceDescriptorData);
+    dsh->align(NEO::EncodeDispatchKernel<GfxFamily>::getDefaultDshAlignment());
 
     walkerArgs.interfaceDescriptorIndex = 0;
     walkerArgs.offsetInterfaceDescriptorTable = dsh->getUsed();
@@ -160,7 +165,17 @@ void HardwareInterface<GfxFamily>::dispatchWalker(
     if (PauseOnGpuProperties::gpuScratchRegWriteAllowed(debugManager.flags.GpuScratchRegWriteAfterWalker.get(), commandQueue.getGpgpuCommandStreamReceiver().peekTaskCount())) {
         uint32_t registerOffset = debugManager.flags.GpuScratchRegWriteRegisterOffset.get();
         uint32_t registerData = debugManager.flags.GpuScratchRegWriteRegisterData.get();
-        LriHelper<GfxFamily>::program(commandStream, registerOffset, registerData, EncodeSetMMIO<GfxFamily>::isRemapApplicable(registerOffset));
+
+        PipeControlArgs args;
+        args.dcFlushEnable = MemorySynchronizationCommands<GfxFamily>::getDcFlushEnable(true, commandQueue.getDevice().getRootDeviceEnvironment());
+        MemorySynchronizationCommands<GfxFamily>::addBarrierWithPostSyncOperation(
+            *commandStream,
+            PostSyncMode::noWrite,
+            0u,
+            0u,
+            commandQueue.getDevice().getRootDeviceEnvironment(),
+            args);
+        LriHelper<GfxFamily>::program(commandStream, registerOffset, registerData, EncodeSetMMIO<GfxFamily>::isRemapApplicable(registerOffset), commandQueue.isBcs());
     }
 
     if (PauseOnGpuProperties::pauseModeAllowed(debugManager.flags.PauseOnEnqueue.get(), commandQueue.getGpgpuCommandStreamReceiver().peekTaskCount(), PauseOnGpuProperties::PauseMode::AfterWorkload)) {
@@ -288,7 +303,7 @@ inline void HardwareInterface<GfxFamily>::dispatchDebugPauseCommands(
             EncodeSemaphore<GfxFamily>::addMiSemaphoreWaitCommand(*commandStream,
                                                                   address,
                                                                   static_cast<uint32_t>(waitCondition),
-                                                                  COMPARE_OPERATION::COMPARE_OPERATION_SAD_EQUAL_SDD, false, false, false);
+                                                                  COMPARE_OPERATION::COMPARE_OPERATION_SAD_EQUAL_SDD, false, false, false, false, nullptr);
         }
     }
 }

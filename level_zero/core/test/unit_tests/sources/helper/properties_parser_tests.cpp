@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,7 +32,7 @@ std::pair<ze_image_type_t, NEO::ImageType> validTypes[] = {
     {ZE_IMAGE_TYPE_1DARRAY, NEO::ImageType::image1DArray},
     {ZE_IMAGE_TYPE_BUFFER, NEO::ImageType::image1DBuffer}};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     imageTypeFlags,
     ImageStaticFunctionConvertTypeTest,
     testing::ValuesIn(validTypes));
@@ -64,7 +64,44 @@ TEST(ConvertDescriptorTest, givenZeImageDescWhenConvertDescriptorThenCorrectImag
     EXPECT_EQ(desc.numSamples, 0u);
 }
 
-TEST(L0StructuresLookupTableTests, givenL0StructuresWithFDWhenPrepareLookupTableThenProperFieldsInLookupTableAreSet) {
+TEST(L0StructuresLookupTableTests, givenL0StructuresWithOpaqueFDWhenPrepareLookupTableThenProperFieldsInLookupTableAreSet) {
+    ze_image_desc_t imageDesc = {};
+    imageDesc.stype = ZE_STRUCTURE_TYPE_IMAGE_DESC;
+    imageDesc.height = 10;
+    imageDesc.width = 10;
+    imageDesc.depth = 10;
+    ze_external_memory_import_fd_t fdStructure = {};
+    fdStructure.stype = ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_FD;
+    fdStructure.fd = 1;
+    fdStructure.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD;
+    ze_image_view_planar_exp_desc_t imageView = {};
+    imageView.stype = ZE_STRUCTURE_TYPE_IMAGE_VIEW_PLANAR_EXP_DESC;
+    imageView.planeIndex = 1u;
+
+    imageDesc.pNext = &fdStructure;
+    fdStructure.pNext = &imageView;
+    imageView.pNext = nullptr;
+
+    StructuresLookupTable l0LookupTable = {};
+    auto result = prepareL0StructuresLookupTable(l0LookupTable, &imageDesc);
+
+    EXPECT_EQ(result, ZE_RESULT_SUCCESS);
+
+    EXPECT_TRUE(l0LookupTable.isSharedHandle);
+
+    EXPECT_TRUE(l0LookupTable.sharedHandleType.isSupportedHandle);
+    EXPECT_TRUE(l0LookupTable.sharedHandleType.isOpaqueFDHandle);
+    EXPECT_EQ(l0LookupTable.sharedHandleType.fd, fdStructure.fd);
+
+    EXPECT_TRUE(l0LookupTable.areImageProperties);
+
+    EXPECT_EQ(l0LookupTable.imageProperties.planeIndex, imageView.planeIndex);
+    EXPECT_EQ(l0LookupTable.imageProperties.imageDescriptor.imageWidth, imageDesc.width);
+    EXPECT_EQ(l0LookupTable.imageProperties.imageDescriptor.imageHeight, imageDesc.height);
+    EXPECT_EQ(l0LookupTable.imageProperties.imageDescriptor.imageDepth, imageDesc.depth);
+}
+
+TEST(L0StructuresLookupTableTests, givenL0StructuresWithDmaBufWhenPrepareLookupTableThenProperFieldsInLookupTableAreSet) {
     ze_image_desc_t imageDesc = {};
     imageDesc.stype = ZE_STRUCTURE_TYPE_IMAGE_DESC;
     imageDesc.height = 10;
@@ -101,6 +138,16 @@ TEST(L0StructuresLookupTableTests, givenL0StructuresWithFDWhenPrepareLookupTable
     EXPECT_EQ(l0LookupTable.imageProperties.imageDescriptor.imageDepth, imageDesc.depth);
 }
 
+TEST(L0StructuresLookupTableTests, givenL0StructuresWithUnsupportedImportHandlesWhenPrepareLookupTableThenUnsuppoertedErrorIsReturned) {
+    ze_external_memory_import_win32_handle_t exportStruct = {};
+    exportStruct.stype = ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_FD;
+    exportStruct.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32;
+
+    StructuresLookupTable l0LookupTable = {};
+    auto result = prepareL0StructuresLookupTable(l0LookupTable, &exportStruct);
+    EXPECT_EQ(result, ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION);
+}
+
 TEST(L0StructuresLookupTableTests, givenL0StructuresWithNTHandleWhenPrepareLookupTableThenProperFieldsInLookupTableAreSet) {
     uint64_t handle = 0x02;
     ze_external_memory_import_win32_handle_t importNTHandle = {};
@@ -116,7 +163,7 @@ TEST(L0StructuresLookupTableTests, givenL0StructuresWithNTHandleWhenPrepareLooku
     EXPECT_TRUE(l0LookupTable.isSharedHandle);
     EXPECT_TRUE(l0LookupTable.sharedHandleType.isSupportedHandle);
     EXPECT_TRUE(l0LookupTable.sharedHandleType.isNTHandle);
-    EXPECT_EQ(l0LookupTable.sharedHandleType.ntHnadle, importNTHandle.handle);
+    EXPECT_EQ(l0LookupTable.sharedHandleType.ntHandle, importNTHandle.handle);
 }
 
 TEST(L0StructuresLookupTableTests, givenL0StructuresWithSupportedExportHandlesWhenPrepareLookupTableThenProperFieldsInLookupTableAreSet) {
@@ -190,7 +237,7 @@ TEST(L0StructuresLookupTableTests, givenL0StructuresWithUnsupportedExportHandles
     EXPECT_EQ(result, ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION);
 
     EXPECT_FALSE(l0LookupTable.exportMemory);
-    exportStruct.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD;
+    exportStruct.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32_KMT;
 
     l0LookupTable = {};
     result = prepareL0StructuresLookupTable(l0LookupTable, &exportStruct);
@@ -234,11 +281,6 @@ TEST(L0StructuresLookupTableTests, givenL0StructuresWithUnsuportedOptionsWhenPre
     EXPECT_TRUE(l0LookupTable.isSharedHandle);
     EXPECT_FALSE(l0LookupTable.sharedHandleType.isSupportedHandle);
 
-    ze_external_memory_import_fd_t fdStructure = {};
-    fdStructure.stype = ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMPORT_FD;
-    fdStructure.fd = 1;
-    fdStructure.flags = ZE_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD;
-
     l0LookupTable = {};
     result = prepareL0StructuresLookupTable(l0LookupTable, &importNTHandle);
 
@@ -249,8 +291,6 @@ TEST(L0StructuresLookupTableTests, givenL0StructuresWithUnsuportedOptionsWhenPre
 
     l0LookupTable = {};
 
-    ze_device_module_properties_t moduleProperties = {};
-    moduleProperties.stype = ZE_STRUCTURE_TYPE_DEVICE_MODULE_PROPERTIES;
     result = prepareL0StructuresLookupTable(l0LookupTable, &importNTHandle);
 
     EXPECT_EQ(result, ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION);

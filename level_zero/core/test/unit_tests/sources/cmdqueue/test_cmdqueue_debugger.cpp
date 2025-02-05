@@ -1,14 +1,17 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/source/command_stream/preemption.h"
 #include "shared/source/gmm_helper/gmm_helper.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/test/common/cmd_parse/gen_cmd_parse.h"
 #include "shared/test/common/helpers/debug_manager_state_restore.h"
 #include "shared/test/common/helpers/default_hw_info.h"
+#include "shared/test/common/helpers/unit_test_helper.h"
 #include "shared/test/common/mocks/mock_bindless_heaps_helper.h"
 #include "shared/test/common/test_macros/hw_test.h"
 
@@ -17,6 +20,7 @@
 #include "level_zero/core/test/unit_tests/mocks/mock_cmdlist.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_cmdqueue.h"
 #include "level_zero/core/test/unit_tests/mocks/mock_kernel.h"
+#include "level_zero/core/test/unit_tests/mocks/mock_module.h"
 #include "level_zero/core/test/unit_tests/sources/debugger/l0_debugger_fixture.h"
 
 #include "test_traits_common.h"
@@ -29,11 +33,20 @@ HWTEST_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledWhenCmdListRequiringSbaPro
     DebugManagerStateRestore restorer;
     debugManager.flags.EnableStateBaseAddressTracking.set(1);
 
+    auto &compilerProductHelper = device->getCompilerProductHelper();
+    auto heaplessEnabled = compilerProductHelper.isHeaplessModeEnabled();
+
+    if (heaplessEnabled) {
+        GTEST_SKIP();
+    }
+
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
 
     bool internalQueueMode[] = {false, true};
+
+    std::unique_ptr<L0::ult::Module> mockModule = std::make_unique<L0::ult::Module>(device, nullptr, ModuleType::builtin);
 
     for (auto internalQueue : internalQueueMode) {
         ze_command_queue_desc_t queueDesc = {};
@@ -44,6 +57,8 @@ HWTEST_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledWhenCmdListRequiringSbaPro
         auto commandQueue = whiteboxCast(cmdQ);
 
         Mock<KernelImp> kernel;
+        kernel.module = mockModule.get();
+
         std::unique_ptr<L0::CommandList> commandList(CommandList::create(NEO::defaultHwInfo->platform.eProductFamily, device, NEO::EngineGroupType::renderCompute, 0u, returnValue, false));
         ze_group_count_t groupCount{1, 1, 1};
         NEO::LinearStream &cmdStream = commandQueue->commandStream;
@@ -58,7 +73,7 @@ HWTEST_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledWhenCmdListRequiringSbaPro
         ze_command_list_handle_t commandListHandle = commandList->toHandle();
         const uint32_t numCommandLists = 1u;
 
-        result = cmdQ->executeCommandLists(numCommandLists, &commandListHandle, nullptr, true);
+        result = cmdQ->executeCommandLists(numCommandLists, &commandListHandle, nullptr, true, nullptr);
         ASSERT_EQ(ZE_RESULT_SUCCESS, result);
 
         auto usedSpaceAfter = cmdStream.getUsed();
@@ -118,8 +133,7 @@ HWTEST_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledWhenCmdListRequiringSbaPro
     }
 }
 
-using IsBetweenGen9AndGen12lp = IsWithinGfxCore<IGFX_GEN9_CORE, IGFX_GEN12LP_CORE>;
-HWTEST2_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledAndRequiredGsbaWhenInternalCommandQueueThenProgramGsbaDoesNotWritesToSbaTrackingBuffer, IsBetweenGen9AndGen12lp) {
+HWTEST2_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledAndRequiredGsbaWhenInternalCommandQueueThenProgramGsbaDoesNotWritesToSbaTrackingBuffer, IsGen12LP) {
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
     using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
@@ -154,6 +168,81 @@ HWTEST2_F(L0CmdQueueDebuggerTest, givenDebuggingEnabledAndRequiredGsbaWhenIntern
     EXPECT_EQ(cmdList.end(), sdiItor);
 
     cmdQ->destroy();
+}
+
+HWTEST2_F(L0CmdQueueDebuggerTest, givenDebugEnabledWhenCommandsAreExecutedTwoTimesThenCsrBaseProgrammedOnlyTheFirstTime, MatchAny) {
+    DebugManagerStateRestore restorer;
+
+    auto &compilerProductHelper = device->getCompilerProductHelper();
+    auto heaplessEnabled = compilerProductHelper.isHeaplessModeEnabled();
+    auto heplessStateInitEnabled = compilerProductHelper.isHeaplessStateInitEnabled(heaplessEnabled);
+    if (heplessStateInitEnabled) {
+        GTEST_SKIP();
+    }
+
+    bool internalQueueMode[] = {false, true};
+
+    std::unique_ptr<L0::ult::Module> mockModule = std::make_unique<L0::ult::Module>(device, nullptr, ModuleType::builtin);
+
+    for (auto internalQueue : internalQueueMode) {
+        ze_command_queue_desc_t queueDesc = {};
+        ze_result_t returnValue;
+        auto cmdQ = CommandQueue::create(productFamily, device, neoDevice->getDefaultEngine().commandStreamReceiver, &queueDesc, false, internalQueue, false, returnValue);
+        ASSERT_NE(nullptr, cmdQ);
+
+        auto commandQueue = whiteboxCast(cmdQ);
+
+        Mock<KernelImp> kernel;
+        kernel.module = mockModule.get();
+
+        std::unique_ptr<L0::CommandList> commandList(CommandList::create(NEO::defaultHwInfo->platform.eProductFamily, device, NEO::EngineGroupType::renderCompute, 0u, returnValue, false));
+        ze_group_count_t groupCount{1, 1, 1};
+        NEO::LinearStream &cmdStream = commandQueue->commandStream;
+
+        auto usedSpaceBefore = cmdStream.getUsed();
+
+        CmdListKernelLaunchParams launchParams = {};
+        auto result = commandList->appendLaunchKernel(kernel.toHandle(), groupCount, nullptr, 0, nullptr, launchParams, false);
+        EXPECT_EQ(ZE_RESULT_SUCCESS, result);
+        commandList->close();
+
+        ze_command_list_handle_t commandListHandle = commandList->toHandle();
+        const uint32_t numCommandLists = 1u;
+
+        result = cmdQ->executeCommandLists(numCommandLists, &commandListHandle, nullptr, true, nullptr);
+        ASSERT_EQ(ZE_RESULT_SUCCESS, result);
+
+        auto usedSpaceAfter = cmdStream.getUsed();
+        ASSERT_GT(usedSpaceAfter, usedSpaceBefore);
+
+        GenCmdList cmdList;
+        ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(
+            cmdList, ptrOffset(cmdStream.getCpuBase(), 0), usedSpaceAfter));
+
+        bool csrSurfaceProgramming = NEO::PreemptionHelper::getRequiredPreambleSize<FamilyType>(*neoDevice) > 0;
+        csrSurfaceProgramming = csrSurfaceProgramming && !internalQueue;
+        auto itCsrCommand = NEO::UnitTestHelper<FamilyType>::findCsrBaseAddressCommand(cmdList.begin(), cmdList.end());
+        if (csrSurfaceProgramming) {
+            EXPECT_NE(cmdList.end(), itCsrCommand);
+        } else {
+            EXPECT_EQ(cmdList.end(), itCsrCommand);
+        }
+
+        result = cmdQ->executeCommandLists(numCommandLists, &commandListHandle, nullptr, true, nullptr);
+        ASSERT_EQ(ZE_RESULT_SUCCESS, result);
+
+        GenCmdList cmdList2;
+        auto cmdBufferAddress = ptrOffset(cmdStream.getCpuBase(), usedSpaceAfter);
+        auto usedSpaceOn2ndExecute = cmdStream.getUsed() - usedSpaceAfter;
+
+        ASSERT_TRUE(FamilyType::Parse::parseCommandBuffer(cmdList2, cmdBufferAddress, usedSpaceOn2ndExecute));
+
+        itCsrCommand = NEO::UnitTestHelper<FamilyType>::findCsrBaseAddressCommand(cmdList2.begin(), cmdList2.end());
+        EXPECT_EQ(cmdList2.end(), itCsrCommand);
+        cmdQ->destroy();
+
+        neoDevice->getDefaultEngine().commandStreamReceiver->getStreamProperties().stateBaseAddress.resetState();
+    }
 }
 
 } // namespace ult

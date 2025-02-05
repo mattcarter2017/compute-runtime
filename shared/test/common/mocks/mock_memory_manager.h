@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,6 +11,7 @@
 #include "shared/source/memory_manager/multi_graphics_allocation.h"
 #include "shared/source/memory_manager/os_agnostic_memory_manager.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
+#include "shared/test/common/mocks/mock_graphics_allocation.h"
 #include "shared/test/common/test_macros/mock_method_macros.h"
 
 namespace NEO {
@@ -46,16 +47,27 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     using MemoryManager::pageFaultManager;
     using MemoryManager::prefetchManager;
     using MemoryManager::supportsMultiStorageResources;
+    using MemoryManager::unMapPhysicalDeviceMemoryFromVirtualMemory;
+    using MemoryManager::unMapPhysicalHostMemoryFromVirtualMemory;
     using MemoryManager::useNonSvmHostPtrAlloc;
     using OsAgnosticMemoryManager::allocateGraphicsMemoryForImageFromHostPtr;
     using MemoryManagerCreate<OsAgnosticMemoryManager>::MemoryManagerCreate;
+    using MemoryManager::customHeapAllocators;
     using MemoryManager::enable64kbpages;
+    using MemoryManager::executionEnvironment;
     using MemoryManager::getPreferredAllocationMethod;
     using MemoryManager::isaInLocalMemory;
     using MemoryManager::isAllocationTypeToCapture;
     using MemoryManager::isCopyRequired;
+    using MemoryManager::latestContextId;
+    using MemoryManager::localMemAllocsSize;
     using MemoryManager::localMemorySupported;
     using MemoryManager::reservedMemory;
+    using MemoryManager::secondaryEngines;
+
+    static constexpr osHandle invalidSharedHandle = -1;
+    static const unsigned int moduleId;
+    static const unsigned int serverType;
 
     MockMemoryManager(ExecutionEnvironment &executionEnvironment) : MockMemoryManager(false, executionEnvironment) {}
 
@@ -73,6 +85,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     GraphicsAllocation *allocateMemoryByKMD(const AllocationData &allocationData) override;
     GraphicsAllocation *allocatePhysicalLocalDeviceMemory(const AllocationData &allocationData, AllocationStatus &status) override;
     GraphicsAllocation *allocatePhysicalDeviceMemory(const AllocationData &allocationData, AllocationStatus &status) override;
+    GraphicsAllocation *allocatePhysicalHostMemory(const AllocationData &allocationData, AllocationStatus &status) override;
     int redundancyRatio = 1;
 
     GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) override;
@@ -80,8 +93,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     GraphicsAllocation *allocateGraphicsMemoryWithProperties(const AllocationProperties &properties) override;
     GraphicsAllocation *allocateGraphicsMemoryWithProperties(const AllocationProperties &properties, const void *ptr) override;
     GraphicsAllocation *createGraphicsAllocationFromExistingStorage(AllocationProperties &properties, void *ptr, MultiGraphicsAllocation &multiGraphicsAllocation) override;
-    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override;
-    GraphicsAllocation *createGraphicsAllocationFromNTHandle(void *handle, uint32_t rootDeviceIndex, AllocationType allocType) override;
+    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override;
 
     void *allocateSystemMemory(size_t size, size_t alignment) override;
 
@@ -89,6 +101,41 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
         freeGraphicsMemoryCalled++;
         OsAgnosticMemoryManager::freeGraphicsMemoryImpl(gfxAllocation);
     };
+
+    AddressRange reserveGpuAddressOnHeap(const uint64_t requiredStartAddress, size_t size, const RootDeviceIndicesContainer &rootDeviceIndices, uint32_t *reservedOnRootDeviceIndex, HeapIndex heap, size_t alignment) override {
+        reserveGpuAddressOnHeapCalled++;
+        reserveGpuAddressOnHeapParamsPassed.push_back({requiredStartAddress, size, rootDeviceIndices, reservedOnRootDeviceIndex, heap, alignment});
+
+        bool shouldFail = failReserveGpuAddressOnHeap;
+        if (!reserveGpuAddressOnHeapFailOnCalls.empty() &&
+            std::find(reserveGpuAddressOnHeapFailOnCalls.begin(), reserveGpuAddressOnHeapFailOnCalls.end(), reserveGpuAddressOnHeapCalled - 1) != reserveGpuAddressOnHeapFailOnCalls.end()) {
+            shouldFail = true;
+        }
+
+        if (shouldFail) {
+            reserveGpuAddressOnHeapResult = AddressRange{0u, 0u};
+        } else {
+            reserveGpuAddressOnHeapResult = OsAgnosticMemoryManager::reserveGpuAddressOnHeap(requiredStartAddress, size, rootDeviceIndices, reservedOnRootDeviceIndex, heap, alignment);
+        }
+        return reserveGpuAddressOnHeapResult;
+    }
+
+    struct ReserveGpuAddressOnHeapParams {
+        uint64_t requiredStartAddress{};
+        size_t size{};
+        RootDeviceIndicesContainer rootDeviceIndices{};
+        uint32_t *reservedOnRootDeviceIndex{};
+        HeapIndex heap{};
+        size_t alignment{};
+    };
+
+    StackVec<ReserveGpuAddressOnHeapParams, 2> reserveGpuAddressOnHeapParamsPassed{};
+    StackVec<size_t, 5> reserveGpuAddressOnHeapFailOnCalls;
+
+    void freeGpuAddress(AddressRange addressRange, uint32_t rootDeviceIndex) override {
+        freeGpuAddressCalled++;
+        return OsAgnosticMemoryManager::freeGpuAddress(addressRange, rootDeviceIndex);
+    }
 
     void *lockResourceImpl(GraphicsAllocation &gfxAllocation) override {
         lockResourceCalled++;
@@ -125,6 +172,17 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
             return nullptr;
         }
         return OsAgnosticMemoryManager::reserveCpuAddressRange(size, rootDeviceIndex);
+    }
+
+    AddressRange reserveCpuAddress(const uint64_t requiredStartAddress, size_t size) override {
+        if (failReserveAddress) {
+            return {};
+        }
+        return OsAgnosticMemoryManager::reserveCpuAddress(requiredStartAddress, size);
+    }
+
+    void freeCpuAddress(AddressRange addressRange) override {
+        return OsAgnosticMemoryManager::freeCpuAddress(addressRange);
     }
 
     void *createMultiGraphicsAllocationInSystemMemoryPool(RootDeviceIndicesContainer &rootDeviceIndices,
@@ -197,6 +255,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
         }
         return allocateGraphicsMemoryForNonSvmHostPtrResult;
     }
+
     bool allowIndirectAllocationsAsPack(uint32_t rootDeviceIndex) override {
         if (overrideAllocateAsPackReturn != -1) {
             return !!overrideAllocateAsPackReturn;
@@ -205,21 +264,45 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
         }
     }
 
-    bool mapPhysicalToVirtualMemory(GraphicsAllocation *physicalAllocation, uint64_t gpuRange, size_t bufferSize) override {
+    bool mapPhysicalDeviceMemoryToVirtualMemory(GraphicsAllocation *physicalAllocation, uint64_t gpuRange, size_t bufferSize) override {
         if (failMapPhysicalToVirtualMemory) {
             return false;
         }
-        return OsAgnosticMemoryManager::mapPhysicalToVirtualMemory(physicalAllocation, gpuRange, bufferSize);
-    };
+        return OsAgnosticMemoryManager::mapPhysicalDeviceMemoryToVirtualMemory(physicalAllocation, gpuRange, bufferSize);
+    }
 
+    bool mapPhysicalHostMemoryToVirtualMemory(RootDeviceIndicesContainer &rootDeviceIndices, MultiGraphicsAllocation &multiGraphicsAllocation, GraphicsAllocation *physicalAllocation, uint64_t gpuRange, size_t bufferSize) override {
+        if (failMapPhysicalToVirtualMemory) {
+            return false;
+        }
+        return OsAgnosticMemoryManager::mapPhysicalHostMemoryToVirtualMemory(rootDeviceIndices, multiGraphicsAllocation, physicalAllocation, gpuRange, bufferSize);
+    }
+
+    void registerIpcExportedAllocation(GraphicsAllocation *graphicsAllocation) override {
+        registerIpcExportedAllocationCalled++;
+    }
+
+    void getExtraDeviceProperties(uint32_t rootDeviceIndex, uint32_t *moduleId, uint16_t *serverType) override {
+        *moduleId = MockMemoryManager::moduleId;
+        *serverType = MockMemoryManager::serverType;
+    }
+
+    bool reInitDeviceSpecificGfxPartition(uint32_t rootDeviceIndex) override;
+    void releaseDeviceSpecificGfxPartition(uint32_t rootDeviceIndex) override;
+
+    MockGraphicsAllocation *mockGa;
+    size_t ipcAllocationSize = 4096u;
     uint32_t copyMemoryToAllocationBanksCalled = 0u;
     uint32_t populateOsHandlesCalled = 0u;
     uint32_t allocateGraphicsMemoryForNonSvmHostPtrCalled = 0u;
     uint32_t freeGraphicsMemoryCalled = 0u;
+    uint32_t reserveGpuAddressOnHeapCalled = 0u;
+    uint32_t freeGpuAddressCalled = 0u;
     uint32_t unlockResourceCalled = 0u;
     uint32_t lockResourceCalled = 0u;
     uint32_t createGraphicsAllocationFromExistingStorageCalled = 0u;
     uint32_t allocInUseCalled = 0u;
+    uint32_t registerIpcExportedAllocationCalled = 0;
     int32_t overrideAllocateAsPackReturn = -1;
     std::vector<GraphicsAllocation *> allocationsFromExistingStorage{};
     AllocationData alignAllocationData;
@@ -230,7 +313,6 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     uint32_t waitForEnginesCompletionCalled = 0u;
     uint32_t allocateGraphicsMemoryWithPropertiesCount = 0;
     osHandle capturedSharedHandle = 0u;
-    osHandle invalidSharedHandle = -1;
     bool allocationCreated = false;
     bool allocation64kbPageCreated = false;
     bool allocationInDevicePoolCreated = false;
@@ -242,6 +324,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     bool allocate32BitGraphicsMemoryImplCalled = false;
     bool allocateForShareableCalled = false;
     bool failReserveAddress = false;
+    bool failReserveGpuAddressOnHeap = false;
     bool failAllocateSystemMemory = false;
     bool failAllocate32Bit = false;
     bool failLockResource = false;
@@ -261,6 +344,8 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     bool callBasePopulateOsHandles = true;
     bool callBaseAllocateGraphicsMemoryForNonSvmHostPtr = true;
     bool failMapPhysicalToVirtualMemory = false;
+    bool returnMockGAFromDevicePool = false;
+    bool returnMockGAFromHostPool = false;
     std::unique_ptr<MockExecutionEnvironment> mockExecutionEnvironment;
     DeviceBitfield recentlyPassedDeviceBitfield{};
     std::unique_ptr<MultiGraphicsAllocation> waitAllocations = nullptr;
@@ -270,6 +355,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     GraphicsAllocation *allocateGraphicsMemoryForNonSvmHostPtrResult = nullptr;
     std::unique_ptr<AllocationProperties> lastAllocationProperties = nullptr;
     std::function<void(const AllocationProperties &)> validateAllocateProperties = [](const AllocationProperties &) -> void {};
+    AddressRange reserveGpuAddressOnHeapResult = AddressRange{0u, 0u};
 };
 
 class MockAllocSysMemAgnosticMemoryManager : public OsAgnosticMemoryManager {
@@ -320,10 +406,7 @@ class FailMemoryManager : public MockMemoryManager {
         return nullptr;
     }
 
-    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override {
-        return nullptr;
-    }
-    GraphicsAllocation *createGraphicsAllocationFromNTHandle(void *handle, uint32_t rootDeviceIndex, AllocationType allocType) override {
+    GraphicsAllocation *createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) override {
         return nullptr;
     }
 
@@ -390,6 +473,8 @@ class MockMemoryManagerOsAgnosticContext : public MockMemoryManager {
     MockMemoryManagerOsAgnosticContext(NEO::ExecutionEnvironment &executionEnvironment) : MockMemoryManager(executionEnvironment) {}
     OsContext *createAndRegisterOsContext(CommandStreamReceiver *commandStreamReceiver,
                                           const EngineDescriptor &engineDescriptor) override;
+    OsContext *createAndRegisterSecondaryOsContext(const OsContext *primaryContext, CommandStreamReceiver *commandStreamReceiver,
+                                                   const EngineDescriptor &engineDescriptor) override;
 };
 
 class MockMemoryManagerWithDebuggableOsContext : public MockMemoryManager {

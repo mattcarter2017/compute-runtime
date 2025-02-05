@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,25 +8,30 @@
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/test/common/helpers/default_hw_info.h"
 #include "shared/test/common/helpers/unit_test_helper.h"
+#include "shared/test/common/mocks/mock_device.h"
 #include "shared/test/common/mocks/mock_execution_environment.h"
 #include "shared/test/common/test_macros/hw_test.h"
 #include "shared/test/unit_test/encoders/walker_partition_fixture_xehp_and_later.h"
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenWalkerPartitionWhenConstructCommandBufferIsCalledThenBatchBufferIsBeingProgrammed) {
     using WalkerType = typename FamilyType::DefaultWalkerType;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.partitionCount = 16u;
     testArgs.dcFlushEnable = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]);
+
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
 
     checkForProperCmdBufferAddressOffset = false;
     uint64_t gpuVirtualAddress = 0x8000123000;
     uint64_t postSyncAddress = 0x8000456000;
     WalkerType walker;
-    walker = FamilyType::cmdInitGpgpuWalker;
+    walker = FamilyType::template getInitGpuWalker<WalkerType>();
     walker.setPartitionType(WalkerType::PARTITION_TYPE::PARTITION_TYPE_X);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA<FamilyType>::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
     uint32_t totalBytesProgrammed;
 
@@ -57,7 +62,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenWalkerPartitionWhenConst
                                                                               &walker,
                                                                               totalBytesProgrammed,
                                                                               testArgs,
-                                                                              *defaultHwInfo);
+                                                                              *device);
 
     EXPECT_EQ(totalProgrammedSize, totalBytesProgrammed);
     auto wparidMaskProgrammingLocation = cmdBufferAddress;
@@ -162,6 +167,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
 
@@ -173,6 +179,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
 
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto postWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeAfterWalkerCounter);
@@ -182,7 +190,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     EXPECT_EQ(controlSectionOffset + sizeof(StaticPartitioningControlSection), totalBytesProgrammed);
 
     auto parsedOffset = 0u;
@@ -247,6 +255,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
     testArgs.dcFlushEnable = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]);
@@ -258,6 +267,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto postWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeAfterWalkerCounter);
@@ -268,7 +279,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     EXPECT_EQ(controlSectionOffset + sizeof(StaticPartitioningControlSection), totalBytesProgrammed);
 
     auto parsedOffset = 0u;
@@ -352,6 +363,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.semaphoreProgrammingRequired = true;
     testArgs.crossTileAtomicSynchronization = false;
     testArgs.tileCount = 4u;
@@ -364,6 +376,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     WalkerPartition::constructStaticallyPartitionedCommandBuffer<FamilyType, WalkerType>(cmdBuffer,
@@ -372,7 +386,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionAnd
                                                                                          &walker,
                                                                                          totalBytesProgrammed,
                                                                                          testArgs,
-                                                                                         *defaultHwInfo);
+                                                                                         *device);
     EXPECT_EQ(controlSectionOffset, totalBytesProgrammed);
 
     auto parsedOffset = 0u;
@@ -441,6 +455,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
     testArgs.emitSelfCleanup = true;
@@ -453,6 +468,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto preWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
@@ -464,7 +481,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -595,6 +612,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.crossTileAtomicSynchronization = false;
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
@@ -608,6 +626,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto preWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
@@ -619,7 +639,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -750,6 +770,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
     testArgs.useAtomicsForSelfCleanup = true;
@@ -763,6 +784,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto preWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
@@ -774,7 +797,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -911,6 +934,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.crossTileAtomicSynchronization = false;
     testArgs.tileCount = 4u;
     testArgs.partitionCount = testArgs.tileCount;
@@ -925,6 +949,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
     testArgs.workPartitionAllocationGpuVa = 0x8000444000;
     auto walker = createWalker<FamilyType>(postSyncAddress);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     const auto preWalkerSyncAddress = cmdBufferGpuAddress + controlSectionOffset + offsetof(StaticPartitioningControlSection, synchronizeBeforeWalkerCounter);
@@ -936,7 +962,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -1071,8 +1097,10 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWit
 
 HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenDebugModesForWalkerPartitionWhenConstructCommandBufferIsCalledThenBatchBufferIsBeingProgrammed) {
     using WalkerType = typename FamilyType::DefaultWalkerType;
+    using PostSyncType = decltype(FamilyType::template getPostSyncType<WalkerType>());
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     testArgs.crossTileAtomicSynchronization = false;
     testArgs.semaphoreProgrammingRequired = true;
     testArgs.tileCount = 4u;
@@ -1080,14 +1108,16 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenDebugModesForWalkerParti
     testArgs.emitBatchBufferEnd = true;
     testArgs.dcFlushEnable = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]);
 
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
+
     checkForProperCmdBufferAddressOffset = false;
     uint64_t gpuVirtualAddress = 0x8000123000;
     uint64_t postSyncAddress = 0x8000456000;
     WalkerType walker;
-    walker = FamilyType::cmdInitGpgpuWalker;
+    walker = FamilyType::template getInitGpuWalker<WalkerType>();
     walker.setPartitionType(WalkerType::PARTITION_TYPE::PARTITION_TYPE_X);
     auto &postSync = walker.getPostSync();
-    postSync.setOperation(POSTSYNC_DATA<FamilyType>::OPERATION::OPERATION_WRITE_TIMESTAMP);
+    postSync.setOperation(PostSyncType::OPERATION::OPERATION_WRITE_TIMESTAMP);
     postSync.setDestinationAddress(postSyncAddress);
     uint32_t totalBytesProgrammed;
 
@@ -1116,7 +1146,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenDebugModesForWalkerParti
                                                                               &walker,
                                                                               totalBytesProgrammed,
                                                                               testArgs,
-                                                                              *defaultHwInfo);
+                                                                              *device);
 
     EXPECT_EQ(totalProgrammedSize, totalBytesProgrammed);
     auto wparidMaskProgrammingLocation = cmdBufferAddress;
@@ -1230,6 +1260,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
 
     uint64_t expectedControlSectionOffset = sizeof(WalkerType);
 
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get()));
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedControlSectionOffset, controlSectionOffset);
@@ -1239,7 +1271,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -1272,6 +1304,8 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
     uint64_t expectedControlSectionOffset = sizeof(WalkerPartition::LOAD_REGISTER_MEM<FamilyType>) +
                                             sizeof(WalkerType);
 
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(defaultHwInfo.get()));
+
     uint32_t totalBytesProgrammed{};
     const auto controlSectionOffset = computeStaticPartitioningControlSectionOffset<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedControlSectionOffset, controlSectionOffset);
@@ -1281,7 +1315,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticWalkerPartitionWhe
                                                                              &walker,
                                                                              totalBytesProgrammed,
                                                                              testArgs,
-                                                                             *defaultHwInfo);
+                                                                             *device);
     const auto expectedBytesProgrammed = WalkerPartition::estimateSpaceRequiredInCommandBuffer<FamilyType, WalkerType>(testArgs);
     EXPECT_EQ(expectedBytesProgrammed, totalBytesProgrammed);
 
@@ -1307,8 +1341,9 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticPartitionIsPreferr
     using WalkerType = typename FamilyType::DefaultWalkerType;
 
     MockExecutionEnvironment mockExecutionEnvironment{};
+    mockExecutionEnvironment.incRefInternal();
     WalkerType walker;
-    walker = FamilyType::cmdInitGpgpuWalker;
+    walker = FamilyType::template getInitGpuWalker<WalkerType>();
     walker.setThreadGroupIdStartingX(1u);
 
     checkForProperCmdBufferAddressOffset = false;
@@ -1317,13 +1352,15 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticPartitionIsPreferr
     auto partitionCount = computePartitionCountAndSetPartitionType<FamilyType>(&walker, NEO::RequiredPartitionDim::none, 4u, preferredStaticPartitioning, &staticPartitioning);
     EXPECT_FALSE(staticPartitioning);
     EXPECT_EQ(1u, partitionCount);
-    EXPECT_EQ(FamilyType::COMPUTE_WALKER::PARTITION_TYPE::PARTITION_TYPE_DISABLED, walker.getPartitionType());
+    EXPECT_EQ(FamilyType::DefaultWalkerType::PARTITION_TYPE::PARTITION_TYPE_DISABLED, walker.getPartitionType());
 
     testArgs.partitionCount = partitionCount;
     testArgs.staticPartitioning = staticPartitioning;
     testArgs.preferredStaticPartitioning = preferredStaticPartitioning;
     testArgs.workPartitionAllocationGpuVa = 0x800BADA55000;
     testArgs.dcFlushEnable = MemorySynchronizationCommands<FamilyType>::getDcFlushEnable(true, *mockExecutionEnvironment.rootDeviceEnvironments[0]);
+
+    auto device = std::make_unique<MockDevice>(&mockExecutionEnvironment, 0);
 
     auto expectedCommandUsedSize = sizeof(WalkerPartition::LOAD_REGISTER_IMM<FamilyType>) +
                                    sizeof(WalkerPartition::MI_ATOMIC<FamilyType>) * 2 +
@@ -1350,7 +1387,7 @@ HWCMDTEST_F(IGFX_XE_HP_CORE, WalkerPartitionTests, givenStaticPartitionIsPreferr
                                                                               &walker,
                                                                               totalBytesProgrammed,
                                                                               testArgs,
-                                                                              *defaultHwInfo);
+                                                                              *device);
 
     EXPECT_EQ(totalProgrammedSize, totalBytesProgrammed);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,7 +28,7 @@ DebugSessionWindows::~DebugSessionWindows() {
 }
 
 DebugSession *DebugSession::create(const zet_debug_config_t &config, Device *device, ze_result_t &result, bool isRootAttach) {
-    if (!device->getOsInterface().isDebugAttachAvailable() || !isRootAttach) {
+    if (!device->getOsInterface()->isDebugAttachAvailable() || !isRootAttach) {
         result = ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
         return nullptr;
     }
@@ -55,7 +55,7 @@ DebugSession *DebugSession::create(const zet_debug_config_t &config, Device *dev
 }
 
 ze_result_t DebugSessionWindows::initialize() {
-    wddm = connectedDevice->getOsInterface().getDriverModel()->as<NEO::Wddm>();
+    wddm = connectedDevice->getOsInterface()->getDriverModel()->as<NEO::Wddm>();
     UNRECOVERABLE_IF(wddm == nullptr);
 
     KM_ESCAPE_INFO escapeInfo = {};
@@ -113,7 +113,7 @@ bool DebugSessionWindows::closeConnection() {
 }
 
 void DebugSessionWindows::startAsyncThread() {
-    asyncThread.thread = NEO::Thread::create(asyncThreadFunction, reinterpret_cast<void *>(this));
+    asyncThread.thread = NEO::Thread::createFunc(asyncThreadFunction, reinterpret_cast<void *>(this));
 }
 
 void DebugSessionWindows::closeAsyncThread() {
@@ -691,7 +691,7 @@ ze_result_t DebugSessionWindows::readSbaBuffer(EuThread::ThreadId threadId, NEO:
 void DebugSessionWindows::getSbaBufferGpuVa(uint64_t &gpuVa) {
     KM_ESCAPE_INFO escapeInfo = {};
     escapeInfo.KmEuDbgL0EscapeInfo.EscapeActionType = DBGUMD_ACTION_READ_MMIO;
-    escapeInfo.KmEuDbgL0EscapeInfo.MmioReadParams.MmioOffset = RegisterOffsets::csGprR15;
+    escapeInfo.KmEuDbgL0EscapeInfo.MmioReadParams.MmioOffset = DebuggerRegisterOffsets::csGprR15;
     escapeInfo.KmEuDbgL0EscapeInfo.MmioReadParams.RegisterOutBufferPtr = reinterpret_cast<uint64_t>(&gpuVa);
 
     auto status = runEscape(escapeInfo);

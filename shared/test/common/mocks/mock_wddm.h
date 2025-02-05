@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,6 +21,13 @@
 #include <unordered_set>
 
 namespace NEO {
+
+extern NTSTATUS (*pCallEscape)(D3DKMT_ESCAPE &escapeCommand);
+extern uint32_t (*pGetTimestampFrequency)();
+extern bool (*pPerfOpenEuStallStream)(uint32_t sampleRate, uint32_t minBufferSize);
+extern bool (*pPerfDisableEuStallStream)();
+extern bool (*pPerfReadEuStallStream)(uint8_t *pRawData, size_t *pRawDataSize);
+
 class GraphicsAllocation;
 
 inline constexpr auto virtualAllocAddress = is64bit ? 0x7FFFF0000000 : 0xFF000000;
@@ -40,8 +47,11 @@ class WddmMock : public Wddm {
     using Wddm::featureTable;
     using Wddm::forceEvictOnlyIfNecessary;
     using Wddm::getDeviceState;
+    using Wddm::getReadOnlyFlagValue;
     using Wddm::getSystemInfo;
+    using Wddm::gfxFeatureTable;
     using Wddm::gfxPlatform;
+    using Wddm::gfxWorkaroundTable;
     using Wddm::gmmMemory;
     using Wddm::hwDeviceId;
     using Wddm::mapGpuVirtualAddress;
@@ -64,7 +74,7 @@ class WddmMock : public Wddm {
     WddmMock(RootDeviceEnvironment &rootDeviceEnvironment);
     ~WddmMock() override;
 
-    bool mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr) override;
+    bool mapGpuVirtualAddress(Gmm *gmm, D3DKMT_HANDLE handle, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_VIRTUAL_ADDRESS preferredAddress, D3DGPU_VIRTUAL_ADDRESS &gpuPtr, AllocationType type) override;
     bool mapGpuVirtualAddress(WddmAllocation *allocation);
     bool freeGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS &gpuPtr, uint64_t size) override;
     NTSTATUS createAllocation(const void *alignedCpuPtr, const Gmm *gmm, D3DKMT_HANDLE &outHandle, D3DKMT_HANDLE &outResource, uint64_t *outSharedHandle) override;
@@ -74,7 +84,7 @@ class WddmMock : public Wddm {
     NTSTATUS createAllocation(WddmAllocation *wddmAllocation);
     bool createAllocation64k(WddmAllocation *wddmAllocation);
     bool destroyAllocation(WddmAllocation *alloc, OsContextWin *osContext);
-    bool openSharedHandle(D3DKMT_HANDLE handle, WddmAllocation *alloc) override;
+    bool openSharedHandle(const MemoryManager::OsHandleData &osHandleData, WddmAllocation *alloc) override;
     bool createContext(OsContextWin &osContext) override;
     void applyAdditionalContextFlags(CREATECONTEXT_PVTDATA &privateData, OsContextWin &osContext) override;
     bool destroyContext(D3DKMT_HANDLE context) override;
@@ -97,7 +107,7 @@ class WddmMock : public Wddm {
     NTSTATUS reserveGpuVirtualAddress(D3DGPU_VIRTUAL_ADDRESS baseAddress, D3DGPU_VIRTUAL_ADDRESS minimumAddress, D3DGPU_VIRTUAL_ADDRESS maximumAddress, D3DGPU_SIZE_T size, D3DGPU_VIRTUAL_ADDRESS *reservedAddress) override;
     bool reserveValidAddressRange(size_t size, void *&reservedMem) override;
     PLATFORM *getGfxPlatform() { return gfxPlatform.get(); }
-    uint64_t *getPagingFenceAddress() override;
+    volatile uint64_t *getPagingFenceAddress() override;
     void waitOnPagingFenceFromCpu(bool isKmdWaitNeeded) override;
     void delayPagingFenceFromCpu(int64_t delayTime) override;
     void createPagingFenceLogger() override;
@@ -139,6 +149,11 @@ class WddmMock : public Wddm {
     bool makeResident(const D3DKMT_HANDLE *handles, uint32_t count, bool cantTrimFurther, uint64_t *numberOfBytesToTrim, size_t totalSize) override;
     bool evict(const D3DKMT_HANDLE *handles, uint32_t num, uint64_t &sizeToTrim, bool evictNeeded) override;
     NTSTATUS createAllocationsAndMapGpuVa(OsHandleStorage &osHandles) override;
+    NTSTATUS escape(D3DKMT_ESCAPE &escapeCommand) override;
+    uint32_t getTimestampFrequency() const override;
+    bool perfOpenEuStallStream(uint32_t sampleRate, uint32_t minBufferSize) override;
+    bool perfDisableEuStallStream() override;
+    bool perfReadEuStallStream(uint8_t *pRawData, size_t *pRawDataSize) override;
 
     WddmMockHelpers::MakeResidentCall makeResidentResult;
     WddmMockHelpers::CallResult evictResult;

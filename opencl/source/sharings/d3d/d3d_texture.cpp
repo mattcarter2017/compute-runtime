@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -73,29 +73,22 @@ Image *D3DTexture<D3D>::create2d(Context *context, D3DTexture2d *d3dTexture, cl_
     auto memoryManager = context->getMemoryManager();
     auto rootDeviceIndex = context->getDevice(0)->getRootDeviceIndex();
 
-    if (textureDesc.MiscFlags & D3DResourceFlags::MISC_SHARED_NTHANDLE) {
-        sharingFcns->getSharedNTHandle(textureStaging, &sharedHandle);
-        if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, true)) {
-            alloc = memoryManager->createGraphicsAllocationFromNTHandle(sharedHandle, rootDeviceIndex, AllocationType::sharedImage);
-        } else {
-            err.set(CL_INVALID_D3D11_RESOURCE_KHR);
-            return nullptr;
-        }
+    bool ntHandle = textureDesc.MiscFlags & D3DResourceFlags::MISC_SHARED_NTHANDLE;
+    ntHandle ? sharingFcns->getSharedNTHandle(textureStaging, &sharedHandle) : sharingFcns->getSharedHandle(textureStaging, &sharedHandle);
+    AllocationProperties allocProperties(rootDeviceIndex,
+                                         false, // allocateMemory
+                                         0u,    // size
+                                         AllocationType::sharedImage,
+                                         false, // isMultiStorageAllocation
+                                         context->getDeviceBitfieldForAllocation(rootDeviceIndex));
+    if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, ntHandle)) {
+        MemoryManager::OsHandleData osHandleData{sharedHandle, arrayIndex};
+        alloc = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, allocProperties, false, false, true, nullptr);
     } else {
-        sharingFcns->getSharedHandle(textureStaging, &sharedHandle);
-        AllocationProperties allocProperties(rootDeviceIndex,
-                                             false, // allocateMemory
-                                             0u,    // size
-                                             AllocationType::sharedImage,
-                                             false, // isMultiStorageAllocation
-                                             context->getDeviceBitfieldForAllocation(rootDeviceIndex));
-        if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, false)) {
-            alloc = memoryManager->createGraphicsAllocationFromSharedHandle(toOsHandle(sharedHandle), allocProperties, false, false, true, nullptr);
-        } else {
-            err.set(CL_INVALID_D3D11_RESOURCE_KHR);
-            return nullptr;
-        }
+        err.set(CL_INVALID_D3D11_RESOURCE_KHR);
+        return nullptr;
     }
+
     if (alloc == nullptr) {
         err.set(CL_OUT_OF_HOST_MEMORY);
         return nullptr;
@@ -120,8 +113,8 @@ Image *D3DTexture<D3D>::create2d(Context *context, D3DTexture2d *d3dTexture, cl_
 
     if (alloc->getDefaultGmm()->unifiedAuxTranslationCapable()) {
         const auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
-        alloc->getDefaultGmm()->isCompressionEnabled = productHelper.isPageTableManagerSupported(*hwInfo) ? memoryManager->mapAuxGpuVA(alloc)
-                                                                                                          : true;
+        alloc->getDefaultGmm()->setCompressionEnabled(productHelper.isPageTableManagerSupported(*hwInfo) ? memoryManager->mapAuxGpuVA(alloc)
+                                                                                                         : true);
     }
     auto multiGraphicsAllocation = MultiGraphicsAllocation(rootDeviceIndex);
     multiGraphicsAllocation.addAllocation(alloc);
@@ -166,29 +159,22 @@ Image *D3DTexture<D3D>::create3d(Context *context, D3DTexture3d *d3dTexture, cl_
     auto memoryManager = context->getMemoryManager();
     auto rootDeviceIndex = context->getDevice(0)->getRootDeviceIndex();
 
-    if (textureDesc.MiscFlags & D3DResourceFlags::MISC_SHARED_NTHANDLE) {
-        sharingFcns->getSharedNTHandle(textureStaging, &sharedHandle);
-        if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, true)) {
-            alloc = memoryManager->createGraphicsAllocationFromNTHandle(sharedHandle, rootDeviceIndex, AllocationType::sharedImage);
-        } else {
-            err.set(CL_INVALID_D3D11_RESOURCE_KHR);
-            return nullptr;
-        }
+    bool ntHandle = textureDesc.MiscFlags & D3DResourceFlags::MISC_SHARED_NTHANDLE;
+    ntHandle ? sharingFcns->getSharedNTHandle(textureStaging, &sharedHandle) : sharingFcns->getSharedHandle(textureStaging, &sharedHandle);
+    AllocationProperties allocProperties(rootDeviceIndex,
+                                         false, // allocateMemory
+                                         0u,    // size
+                                         AllocationType::sharedImage,
+                                         false, // isMultiStorageAllocation
+                                         context->getDeviceBitfieldForAllocation(rootDeviceIndex));
+    if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, ntHandle)) {
+        MemoryManager::OsHandleData osHandleData{sharedHandle};
+        alloc = memoryManager->createGraphicsAllocationFromSharedHandle(osHandleData, allocProperties, false, false, true, nullptr);
     } else {
-        sharingFcns->getSharedHandle(textureStaging, &sharedHandle);
-        AllocationProperties allocProperties(rootDeviceIndex,
-                                             false, // allocateMemory
-                                             0u,    // size
-                                             AllocationType::sharedImage,
-                                             false, // isMultiStorageAllocation
-                                             context->getDeviceBitfieldForAllocation(rootDeviceIndex));
-        if (memoryManager->verifyHandle(toOsHandle(sharedHandle), rootDeviceIndex, false)) {
-            alloc = memoryManager->createGraphicsAllocationFromSharedHandle(toOsHandle(sharedHandle), allocProperties, false, false, true, nullptr);
-        } else {
-            err.set(CL_INVALID_D3D11_RESOURCE_KHR);
-            return nullptr;
-        }
+        err.set(CL_INVALID_D3D11_RESOURCE_KHR);
+        return nullptr;
     }
+
     bool is3DUavOrRtv = false;
     if (textureDesc.BindFlags & D3DBindFLags::D3D11_BIND_RENDER_TARGET || textureDesc.BindFlags & D3DBindFLags::D3D11_BIND_UNORDERED_ACCESS) {
         is3DUavOrRtv = true;
@@ -212,8 +198,8 @@ Image *D3DTexture<D3D>::create3d(Context *context, D3DTexture3d *d3dTexture, cl_
 
     if (alloc->getDefaultGmm()->unifiedAuxTranslationCapable()) {
         const auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
-        alloc->getDefaultGmm()->isCompressionEnabled = productHelper.isPageTableManagerSupported(*hwInfo) ? memoryManager->mapAuxGpuVA(alloc)
-                                                                                                          : true;
+        alloc->getDefaultGmm()->setCompressionEnabled(productHelper.isPageTableManagerSupported(*hwInfo) ? memoryManager->mapAuxGpuVA(alloc)
+                                                                                                         : true);
     }
     auto multiGraphicsAllocation = MultiGraphicsAllocation(rootDeviceIndex);
     multiGraphicsAllocation.addAllocation(alloc);

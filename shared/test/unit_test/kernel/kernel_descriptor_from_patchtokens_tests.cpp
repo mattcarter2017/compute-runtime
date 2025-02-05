@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -122,11 +122,6 @@ TEST(KernelDescriptorFromPatchtokens, GivenExecutionEnvironmentThenSetsProperPar
     NEO::populateKernelDescriptor(kernelDescriptor, kernelTokens, 4);
     EXPECT_EQ(128, kernelDescriptor.kernelAttributes.numGrfRequired);
 
-    EXPECT_FALSE(kernelDescriptor.kernelAttributes.flags.useGlobalAtomics);
-    execEnv.HasGlobalAtomics = 1U;
-    NEO::populateKernelDescriptor(kernelDescriptor, kernelTokens, 4);
-    EXPECT_TRUE(kernelDescriptor.kernelAttributes.flags.useGlobalAtomics);
-
     EXPECT_FALSE(kernelDescriptor.kernelAttributes.flags.usesStatelessWrites);
     execEnv.StatelessWritesCount = 1U;
     NEO::populateKernelDescriptor(kernelDescriptor, kernelTokens, 4);
@@ -240,7 +235,9 @@ TEST(KernelDescriptorFromPatchtokens, GivenImplicitArgsThenSetsProperPartsOfDesc
     kernelTokens.tokens.mediaVfeState[1] = &mediaVfeState1;
     NEO::populateKernelDescriptor(kernelDescriptor, kernelTokens, 4);
     EXPECT_EQ(mediaVfeState0.PerThreadScratchSpace, kernelDescriptor.kernelAttributes.perThreadScratchSize[0]);
+    EXPECT_EQ(mediaVfeState0.PerThreadScratchSpace, kernelDescriptor.kernelAttributes.spillFillScratchMemorySize);
     EXPECT_EQ(mediaVfeState1.PerThreadScratchSpace, kernelDescriptor.kernelAttributes.perThreadScratchSize[1]);
+    EXPECT_EQ(mediaVfeState1.PerThreadScratchSpace, kernelDescriptor.kernelAttributes.privateScratchMemorySize);
     kernelTokens.tokens.mediaVfeState[0] = nullptr;
     kernelTokens.tokens.mediaVfeState[1] = nullptr;
 
@@ -332,28 +329,6 @@ TEST(KernelDescriptorFromPatchtokens, GivenImplicitArgsThenSetsProperPartsOfDesc
     kernelDescriptor.kernelAttributes.numArgsStateful = 0;
     kernelTokens.tokens.allocateStatelessPrintfSurface = nullptr;
 
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.stateless));
-    EXPECT_EQ(0U, kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.pointerSize);
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.bindful));
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.bindless));
-    iOpenCL::SPatchAllocateStatelessEventPoolSurface eventPoolSurface = {};
-    eventPoolSurface.DataParamOffset = 2;
-    eventPoolSurface.DataParamSize = 3;
-    eventPoolSurface.SurfaceStateHeapOffset = 7;
-    kernelTokens.tokens.allocateStatelessEventPoolSurface = &eventPoolSurface;
-    NEO::populateKernelDescriptor(kernelDescriptor, kernelTokens, 4);
-    EXPECT_EQ(eventPoolSurface.DataParamOffset, kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.stateless);
-    EXPECT_EQ(eventPoolSurface.DataParamSize, kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.pointerSize);
-    EXPECT_EQ(eventPoolSurface.SurfaceStateHeapOffset, kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.bindful);
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueEventPoolSurfaceAddress.bindless));
-    EXPECT_EQ(1u, kernelDescriptor.kernelAttributes.numArgsStateful);
-    kernelDescriptor.kernelAttributes.numArgsStateful = 0;
-    kernelTokens.tokens.allocateStatelessEventPoolSurface = nullptr;
-
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueDefaultQueueSurfaceAddress.stateless));
-    EXPECT_EQ(0U, kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueDefaultQueueSurfaceAddress.pointerSize);
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueDefaultQueueSurfaceAddress.bindful));
-    EXPECT_TRUE(NEO::isUndefinedOffset(kernelDescriptor.payloadMappings.implicitArgs.deviceSideEnqueueDefaultQueueSurfaceAddress.bindless));
     iOpenCL::SPatchAllocateStatelessDefaultDeviceQueueSurface defaultDeviceQueueSurface = {};
     defaultDeviceQueueSurface.DataParamOffset = 2;
     defaultDeviceQueueSurface.DataParamSize = 3;

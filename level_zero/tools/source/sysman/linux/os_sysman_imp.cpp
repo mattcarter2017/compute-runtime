@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,6 +44,12 @@ ze_result_t LinuxSysmanImp::init() {
     result = pProcfsAccess->getFileName(pProcfsAccess->myProcessId(), myDeviceFd, myDeviceName);
     if (ZE_RESULT_SUCCESS != result) {
         return result;
+    }
+
+    std::string prelimVersion{};
+    pDrm->getPrelimVersion(prelimVersion);
+    if (prelimVersion != "") {
+        isUsingPrelimEnabledKmd = true;
     }
 
     if (pSysfsAccess == nullptr) {
@@ -112,7 +118,7 @@ SysfsAccess &LinuxSysmanImp::getSysfsAccess() {
 ze_result_t LinuxSysmanImp::initLocalDeviceAndDrmHandles() {
     pDevice = Device::fromHandle(pParentSysmanDeviceImp->hCoreDevice);
     DEBUG_BREAK_IF(nullptr == pDevice);
-    NEO::OSInterface &osInterface = pDevice->getOsInterface();
+    NEO::OSInterface &osInterface = *pDevice->getOsInterface();
     if (osInterface.getDriverModel()->getDriverModelType() != NEO::DriverModelType::drm) {
         return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
     }
@@ -335,6 +341,7 @@ void LinuxSysmanImp::releaseDeviceResources() {
     executionEnvironment->memoryManager->releaseDeviceSpecificMemResources(rootDeviceIndex);
     executionEnvironment->releaseRootDeviceEnvironmentResources(executionEnvironment->rootDeviceEnvironments[rootDeviceIndex].get());
     executionEnvironment->rootDeviceEnvironments[rootDeviceIndex].reset();
+    executionEnvironment->memoryManager->releaseDeviceSpecificGfxPartition(rootDeviceIndex);
 }
 
 void LinuxSysmanImp::reInitSysmanDeviceResources() {
@@ -379,7 +386,6 @@ ze_result_t LinuxSysmanImp::initDevice() {
         return ZE_RESULT_ERROR_DEVICE_LOST;
     }
     static_cast<L0::DriverHandleImp *>(device->getDriverHandle())->updateRootDeviceBitFields(neoDevice);
-    static_cast<L0::DriverHandleImp *>(device->getDriverHandle())->enableRootDeviceDebugger(neoDevice);
     Device::deviceReinit(device->getDriverHandle(), device, neoDevice, &result);
     reInitSysmanDeviceResources();
 
@@ -516,6 +522,7 @@ ze_result_t LinuxSysmanImp::osWarmReset() {
                                   "Card Bus remove after resizing VF bar failed\n");
             return result;
         }
+        NEO::sleep(std::chrono::seconds(10)); // Sleep for 10seconds to make sure that the config spaces of all devices are saved correctly.
 
         result = pFsAccess->write(rootPortPath + '/' + "rescan", "1");
         if (ZE_RESULT_SUCCESS != result) {
@@ -523,6 +530,7 @@ ze_result_t LinuxSysmanImp::osWarmReset() {
                                   "Rescanning root port failed after resizing VF bar failed\n");
             return result;
         }
+        NEO::sleep(std::chrono::seconds(10)); // Sleep for 10seconds, allows the rescan to complete on all devices attached to the root port.
     }
     return result;
 }

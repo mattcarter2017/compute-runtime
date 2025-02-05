@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -19,6 +19,9 @@ struct StateComputeModePropertiesSupport {
     bool pixelAsyncComputeThreadLimit = false;
     bool threadArbitrationPolicy = false;
     bool devicePreemptionMode = false;
+    bool allocationForScratchAndMidthreadPreemption = false;
+    bool enableVariableRegisterSizeAllocation = false;
+    bool pipelinedEuThreadArbitration = false;
 };
 
 struct StateComputeModeProperties {
@@ -28,28 +31,31 @@ struct StateComputeModeProperties {
     StreamProperty pixelAsyncComputeThreadLimit{};
     StreamProperty threadArbitrationPolicy{};
     StreamProperty devicePreemptionMode{};
+    StreamProperty memoryAllocationForScratchAndMidthreadPreemptionBuffers{};
+    StreamProperty enableVariableRegisterSizeAllocation{};
 
     void initSupport(const RootDeviceEnvironment &rootDeviceEnvironment);
     void resetState();
 
     void setPropertiesAll(bool requiresCoherency, uint32_t numGrfRequired, int32_t threadArbitrationPolicy, PreemptionMode devicePreemptionMode);
+    void setPropertiesPerContext(bool requiresCoherency, PreemptionMode devicePreemptionMode, bool clearDirtyState);
     void setPropertiesGrfNumberThreadArbitration(uint32_t numGrfRequired, int32_t threadArbitrationPolicy);
-    void setPropertiesCoherencyDevicePreemption(bool requiresCoherency, PreemptionMode devicePreemptionMode, bool clearDirtyState);
 
     void copyPropertiesAll(const StateComputeModeProperties &properties);
     void copyPropertiesGrfNumberThreadArbitration(const StateComputeModeProperties &properties);
+    void setPipelinedEuThreadArbitration();
+    bool isPipelinedEuThreadArbitrationEnabled() const;
 
     bool isDirty() const;
     void clearIsDirty();
 
   protected:
+    void clearIsDirtyPerContext();
     void clearIsDirtyExtraPerContext();
-    void clearIsDirtyExtraPerKernel();
     bool isDirtyExtra() const;
     void resetStateExtra();
 
     void setPropertiesExtraPerContext();
-    void setPropertiesExtraPerKernel();
 
     void copyPropertiesExtra(const StateComputeModeProperties &properties);
 
@@ -61,6 +67,7 @@ struct StateComputeModeProperties {
     StateComputeModePropertiesSupport scmPropertiesSupport = {};
     int32_t defaultThreadArbitrationPolicy = 0;
     bool propertiesSupportLoaded = false;
+    bool pipelinedEuThreadArbitration = false;
 };
 
 struct FrontEndPropertiesSupport {
@@ -79,9 +86,9 @@ struct FrontEndProperties {
     void initSupport(const RootDeviceEnvironment &rootDeviceEnvironment);
     void resetState();
 
-    void setPropertiesAll(bool isCooperativeKernel, bool disableEuFusion, bool disableOverdispatch, int32_t engineInstancedDevice);
-    void setPropertySingleSliceDispatchCcsMode(int32_t engineInstancedDevice);
-    void setPropertiesDisableOverdispatchEngineInstanced(bool disableOverdispatch, int32_t engineInstancedDevice, bool clearDirtyState);
+    void setPropertiesAll(bool isCooperativeKernel, bool disableEuFusion, bool disableOverdispatch);
+    void setPropertySingleSliceDispatchCcsMode();
+    void setPropertiesDisableOverdispatch(bool disableOverdispatch, bool clearDirtyState);
     void setPropertiesComputeDispatchAllWalkerEnableDisableEuFusion(bool isCooperativeKernel, bool disableEuFusion);
 
     void copyPropertiesAll(const FrontEndProperties &properties);
@@ -124,7 +131,6 @@ struct PipelineSelectProperties {
 };
 
 struct StateBaseAddressPropertiesSupport {
-    bool globalAtomics = false;
     bool bindingTablePoolBaseAddress = false;
 };
 
@@ -137,13 +143,12 @@ struct StateBaseAddressProperties {
     StreamPropertySizeT surfaceStateSize{};
     StreamPropertySizeT dynamicStateSize{};
     StreamPropertySizeT indirectObjectSize{};
-    StreamProperty globalAtomics{};
     StreamProperty statelessMocs{};
 
     void initSupport(const RootDeviceEnvironment &rootDeviceEnvironment);
     void resetState();
 
-    void setPropertiesAll(bool globalAtomics, int32_t statelessMocs,
+    void setPropertiesAll(int32_t statelessMocs,
                           int64_t bindingTablePoolBaseAddress, size_t bindingTablePoolSize,
                           int64_t surfaceStateBaseAddress, size_t surfaceStateSize,
                           int64_t dynamicStateBaseAddress, size_t dynamicStateSize,
@@ -154,7 +159,6 @@ struct StateBaseAddressProperties {
     void setPropertiesDynamicState(int64_t dynamicStateBaseAddress, size_t dynamicStateSize);
     void setPropertiesIndirectState(int64_t indirectObjectBaseAddress, size_t indirectObjectSize);
     void setPropertyStatelessMocs(int32_t statelessMocs);
-    void setPropertyGlobalAtomics(bool globalAtomics, bool clearDirtyState);
 
     void copyPropertiesAll(const StateBaseAddressProperties &properties);
     void copyPropertiesStatelessMocs(const StateBaseAddressProperties &properties);

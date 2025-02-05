@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,8 +8,10 @@
 #include "shared/test/unit_test/fixtures/command_container_fixture.h"
 
 #include "shared/source/indirect_heap/heap_size.h"
+#include "shared/source/indirect_heap/indirect_heap.h"
 #include "shared/source/os_interface/product_helper.h"
 #include "shared/test/common/mocks/mock_device.h"
+#include "shared/test/common/mocks/mock_graphics_allocation.h"
 
 namespace NEO {
 
@@ -37,39 +39,79 @@ EncodeDispatchKernelArgs CommandEncodeStatesFixture::createDefaultDispatchKernel
                                                                                      bool requiresUncachedMocs) {
 
     EncodeDispatchKernelArgs args{
-        0,                                          // eventAddress
-        0,                                          // postSyncImmValue
-        0,                                          // inOrderCounterValue
-        device,                                     // device
-        nullptr,                                    // inOrderExecInfo
-        dispatchInterface,                          // dispatchInterface
-        nullptr,                                    // surfaceStateHeap
-        nullptr,                                    // dynamicStateHeap
-        threadGroupDimensions,                      // threadGroupDimensions
-        nullptr,                                    // outWalkerPtr
-        nullptr,                                    // additionalCommands
-        PreemptionMode::Disabled,                   // preemptionMode
-        NEO::RequiredPartitionDim::none,            // requiredPartitionDim
-        NEO::RequiredDispatchWalkOrder::none,       // requiredDispatchWalkOrder
-        NEO::additionalKernelLaunchSizeParamNotSet, // additionalSizeParam
-        1,                                          // partitionCount
-        false,                                      // isIndirect
-        false,                                      // isPredicate
-        false,                                      // isTimestampEvent
-        requiresUncachedMocs,                       // requiresUncachedMocs
-        false,                                      // useGlobalAtomics
-        false,                                      // isInternal
-        false,                                      // isCooperative
-        false,                                      // isHostScopeSignalEvent
-        false,                                      // isKernelUsingSystemAllocation
-        false,                                      // isKernelDispatchedFromImmediateCmdList
-        false,                                      // isRcs
-        false,                                      // dcFlushEnable
-        false,                                      // isHeaplessModeEnabled
-        false,                                      // interruptEvent
+        0,                                        // eventAddress
+        0,                                        // postSyncImmValue
+        0,                                        // inOrderCounterValue
+        device,                                   // device
+        nullptr,                                  // inOrderExecInfo
+        dispatchInterface,                        // dispatchInterface
+        nullptr,                                  // surfaceStateHeap
+        nullptr,                                  // dynamicStateHeap
+        threadGroupDimensions,                    // threadGroupDimensions
+        nullptr,                                  // outWalkerPtr
+        nullptr,                                  // cpuWalkerBuffer
+        nullptr,                                  // cpuPayloadBuffer
+        nullptr,                                  // outImplicitArgsPtr
+        nullptr,                                  // additionalCommands
+        PreemptionMode::Disabled,                 // preemptionMode
+        NEO::RequiredPartitionDim::none,          // requiredPartitionDim
+        NEO::RequiredDispatchWalkOrder::none,     // requiredDispatchWalkOrder
+        NEO::localRegionSizeParamNotSet,          // localRegionSize
+        1,                                        // partitionCount
+        0,                                        // reserveExtraPayloadSpace
+        1,                                        // maxWgCountPerTile
+        NEO::ThreadArbitrationPolicy::NotPresent, // defaultPipelinedThreadArbitrationPolicy
+        false,                                    // isIndirect
+        false,                                    // isPredicate
+        false,                                    // isTimestampEvent
+        requiresUncachedMocs,                     // requiresUncachedMocs
+        false,                                    // isInternal
+        false,                                    // isCooperative
+        false,                                    // isHostScopeSignalEvent
+        false,                                    // isKernelUsingSystemAllocation
+        false,                                    // isKernelDispatchedFromImmediateCmdList
+        false,                                    // isRcs
+        false,                                    // dcFlushEnable
+        false,                                    // isHeaplessModeEnabled
+        false,                                    // isHeaplessStateInitEnabled
+        false,                                    // interruptEvent
+        false,                                    // immediateScratchAddressPatching
+        false,                                    // makeCommandView
     };
 
     return args;
+}
+
+EncodeWalkerArgs CommandEncodeStatesFixture::createDefaultEncodeWalkerArgs(const KernelDescriptor &kernelDescriptor) {
+
+    EncodeWalkerArgs args{
+        .kernelExecutionType = KernelExecutionType::defaultType,
+        .requiredDispatchWalkOrder = RequiredDispatchWalkOrder::none,
+        .localRegionSize = 0,
+        .maxFrontEndThreads = 0,
+        .requiredSystemFence = false,
+        .hasSample = kernelDescriptor.kernelAttributes.flags.hasSample};
+
+    return args;
+}
+
+void ScratchProgrammingFixture::setUp() {
+    NEO::DeviceFixture::setUp();
+    size_t sizeStream = 512;
+    size_t alignmentStream = 0x1000;
+    ssh = new IndirectHeap{nullptr};
+    sshBuffer = alignedMalloc(sizeStream, alignmentStream);
+    ASSERT_NE(nullptr, sshBuffer);
+    ssh->replaceBuffer(sshBuffer, sizeStream);
+    auto graphicsAllocation = new MockGraphicsAllocation(sshBuffer, sizeStream);
+    ssh->replaceGraphicsAllocation(graphicsAllocation);
+}
+
+void ScratchProgrammingFixture::tearDown() {
+    delete ssh->getGraphicsAllocation();
+    delete ssh;
+    alignedFree(sshBuffer);
+    NEO::DeviceFixture::tearDown();
 }
 
 } // namespace NEO

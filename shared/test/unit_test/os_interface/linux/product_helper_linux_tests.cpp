@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,7 @@
 #include "shared/test/unit_test/os_interface/linux/product_helper_linux_tests.h"
 
 #include "shared/source/command_stream/preemption_mode.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/os_interface/linux/i915.h"
 #include "shared/source/os_interface/os_interface.h"
@@ -50,21 +51,6 @@ TEST_F(MockProductHelperTestLinux, GivenDummyConfigWhenConfiguringHwInfoThenSucc
     EXPECT_EQ(0, ret);
 }
 
-HWTEST2_F(MockProductHelperTestLinux, givenDebugFlagSetWhenEnablingBlitterOperationsSupportThenIgnore, IsAtMostGen11) {
-    DebugManagerStateRestore restore{};
-    HardwareInfo hardwareInfo = *defaultHwInfo;
-
-    debugManager.flags.EnableBlitterOperationsSupport.set(1);
-    mockProductHelper->configureHardwareCustom(&hardwareInfo, nullptr);
-    EXPECT_FALSE(hardwareInfo.capabilityTable.blitterOperationsSupported);
-}
-
-HWTEST2_F(MockProductHelperTestLinux, givenUnsupportedChipsetUniqueUUIDWhenGettingUuidThenReturnFalse, IsAtMostGen11) {
-    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<ProductHelper>();
-    std::array<uint8_t, ProductHelper::uuidSize> id;
-    EXPECT_FALSE(productHelper.getUuid(nullptr, 0u, 0u, id));
-}
-
 TEST_F(MockProductHelperTestLinux, GivenDummyConfigThenEdramIsDetected) {
     mockProductHelper->use128MbEdram = true;
     int ret = mockProductHelper->configureHwInfoDrm(&pInHwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
@@ -84,22 +70,6 @@ TEST_F(MockProductHelperTestLinux, givenDisabledPlatformCoherencyWhenConfiguring
     EXPECT_FALSE(outHwInfo.capabilityTable.ftrSupportsCoherency);
 }
 
-TEST_F(MockProductHelperTestLinux, GivenFailGetEuCountWhenConfiguringHwInfoThenFails) {
-    drm->storedRetValForEUVal = -4;
-    drm->failRetTopology = true;
-
-    int ret = mockProductHelper->configureHwInfoDrm(&pInHwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(-4, ret);
-}
-
-TEST_F(MockProductHelperTestLinux, GivenFailGetSsCountWhenConfiguringHwInfoThenFails) {
-    drm->storedRetValForSSVal = -5;
-    drm->failRetTopology = true;
-
-    int ret = mockProductHelper->configureHwInfoDrm(&pInHwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(-5, ret);
-}
-
 TEST_F(MockProductHelperTestLinux, whenFailGettingTopologyThenFallbackToEuCountIoctl) {
     drm->failRetTopology = true;
 
@@ -111,7 +81,8 @@ TEST_F(MockProductHelperTestLinux, givenInvalidTopologyDataWhenConfiguringThenRe
     auto storedSVal = drm->storedSVal;
     auto storedSSVal = drm->storedSSVal;
     auto storedEUVal = drm->storedEUVal;
-
+    drm->engineInfoQueried = true;
+    drm->systemInfoQueried = true;
     {
         // 0 euCount
         drm->storedSVal = storedSVal;
@@ -119,6 +90,7 @@ TEST_F(MockProductHelperTestLinux, givenInvalidTopologyDataWhenConfiguringThenRe
         drm->storedEUVal = 0;
 
         DrmQueryTopologyData topologyData = {};
+        drm->topologyQueried = false;
         EXPECT_FALSE(drm->queryTopology(outHwInfo, topologyData));
     }
 
@@ -129,6 +101,7 @@ TEST_F(MockProductHelperTestLinux, givenInvalidTopologyDataWhenConfiguringThenRe
         drm->storedEUVal = storedEUVal;
 
         DrmQueryTopologyData topologyData = {};
+        drm->topologyQueried = false;
         EXPECT_FALSE(drm->queryTopology(outHwInfo, topologyData));
     }
 
@@ -139,6 +112,7 @@ TEST_F(MockProductHelperTestLinux, givenInvalidTopologyDataWhenConfiguringThenRe
         drm->storedEUVal = storedEUVal;
 
         DrmQueryTopologyData topologyData = {};
+        drm->topologyQueried = false;
         EXPECT_FALSE(drm->queryTopology(outHwInfo, topologyData));
     }
 }
@@ -172,11 +146,13 @@ HWTEST_F(MockProductHelperTestLinux, GivenPreemptionDrmEnabledMidThreadOnWhenCon
 
     mockProductHelper->enableMidThreadPreemption = true;
 
-    UnitTestHelper<FamilyType>::setExtraMidThreadPreemptionFlag(pInHwInfo, true);
+    pInHwInfo.featureTable.flags.ftrWalkerMTP = true;
 
     int ret = mockProductHelper->configureHwInfoDrm(&pInHwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
     EXPECT_EQ(0, ret);
-    EXPECT_EQ(PreemptionMode::MidThread, outHwInfo.capabilityTable.defaultPreemptionMode);
+    if (getRootDeviceEnvironment().compilerProductHelper->isMidThreadPreemptionSupported(outHwInfo)) {
+        EXPECT_EQ(PreemptionMode::MidThread, outHwInfo.capabilityTable.defaultPreemptionMode);
+    }
     EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
@@ -368,85 +344,11 @@ HWTEST2_F(HwConfigLinux, givenPlatformWithPlatformQuerySupportedWhenItIsCalledTh
     EXPECT_TRUE(productHelper.isPlatformQuerySupported());
 }
 
-HWTEST2_F(HwConfigLinux, GivenDifferentValuesFromTopologyQueryWhenConfiguringHwInfoThenMaxSlicesSupportedSetToAvailableCountInGtSystemInfo, MatchAny) {
-    auto executionEnvironment = std::make_unique<ExecutionEnvironment>();
-    executionEnvironment->prepareRootDeviceEnvironments(1);
-
-    executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(NEO::defaultHwInfo.get());
-    auto drm = new DrmMock(*executionEnvironment->rootDeviceEnvironments[0]);
-    executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
-    auto osInterface = executionEnvironment->rootDeviceEnvironments[0]->osInterface.get();
-    osInterface->setDriverModel(std::unique_ptr<DriverModel>(drm));
-
-    auto hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
-    HardwareInfo outHwInfo;
-    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<ProductHelper>();
-
-    hwInfo.gtSystemInfo.MaxSubSlicesSupported = drm->storedSSVal * 2;
-    hwInfo.gtSystemInfo.MaxDualSubSlicesSupported = drm->storedSSVal * 2;
-    hwInfo.gtSystemInfo.MaxEuPerSubSlice = 16;
-    hwInfo.gtSystemInfo.MaxSlicesSupported = drm->storedSVal * 4;
-
-    int ret = productHelper.configureHwInfoDrm(&hwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(0, ret);
-
-    EXPECT_EQ(static_cast<uint32_t>(drm->storedSSVal * 2), outHwInfo.gtSystemInfo.MaxSubSlicesSupported);
-    EXPECT_EQ(static_cast<uint32_t>(drm->storedSSVal * 2), outHwInfo.gtSystemInfo.MaxDualSubSlicesSupported);
-    EXPECT_EQ(16u, outHwInfo.gtSystemInfo.MaxEuPerSubSlice);
-    EXPECT_EQ(static_cast<uint32_t>(drm->storedSVal), outHwInfo.gtSystemInfo.MaxSlicesSupported);
-
-    drm->storedSVal = 3;
-    drm->storedSSVal = 12;
-    drm->storedEUVal = 12 * 8;
-
-    hwInfo.gtSystemInfo.MaxSubSlicesSupported = drm->storedSSVal / 2;
-    hwInfo.gtSystemInfo.MaxDualSubSlicesSupported = drm->storedSSVal / 2;
-    hwInfo.gtSystemInfo.MaxEuPerSubSlice = 6;
-    hwInfo.gtSystemInfo.MaxSlicesSupported = drm->storedSVal / 2;
-
-    ret = productHelper.configureHwInfoDrm(&hwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(0, ret);
-
-    EXPECT_EQ(12u, outHwInfo.gtSystemInfo.MaxSubSlicesSupported);
-    EXPECT_EQ(6u, outHwInfo.gtSystemInfo.MaxEuPerSubSlice); // MaxEuPerSubslice is preserved
-    EXPECT_EQ(static_cast<uint32_t>(drm->storedSVal), outHwInfo.gtSystemInfo.MaxSlicesSupported);
-
-    EXPECT_EQ(outHwInfo.gtSystemInfo.MaxSubSlicesSupported, outHwInfo.gtSystemInfo.MaxDualSubSlicesSupported);
-
-    hwInfo.gtSystemInfo.MaxEuPerSubSlice = 0;
-
-    ret = productHelper.configureHwInfoDrm(&hwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(0, ret);
-    EXPECT_EQ(8u, outHwInfo.gtSystemInfo.MaxEuPerSubSlice);
-}
-
-HWTEST2_F(HwConfigLinux, givenSliceCountWhenConfigureHwInfoDrmThenProperInitializationInSliceInfoEnabled, MatchAny) {
-    auto executionEnvironment = std::make_unique<ExecutionEnvironment>();
-    executionEnvironment->prepareRootDeviceEnvironments(1);
-
-    executionEnvironment->rootDeviceEnvironments[0]->setHwInfoAndInitHelpers(NEO::defaultHwInfo.get());
-    auto drm = new DrmMock(*executionEnvironment->rootDeviceEnvironments[0]);
-    executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
-
-    auto osInterface = executionEnvironment->rootDeviceEnvironments[0]->osInterface.get();
-    osInterface->setDriverModel(std::unique_ptr<DriverModel>(drm));
-
-    auto hwInfo = *executionEnvironment->rootDeviceEnvironments[0]->getHardwareInfo();
-    HardwareInfo outHwInfo;
-    auto &productHelper = executionEnvironment->rootDeviceEnvironments[0]->getHelper<ProductHelper>();
-    uint32_t sliceCount = 4;
-    drm->storedSVal = sliceCount;
-    hwInfo.gtSystemInfo.SliceCount = sliceCount;
-
-    int ret = productHelper.configureHwInfoDrm(&hwInfo, &outHwInfo, *executionEnvironment->rootDeviceEnvironments[0].get());
-    EXPECT_EQ(0, ret);
-
-    for (uint32_t i = 0; i < sliceCount; i++) {
-        EXPECT_TRUE(outHwInfo.gtSystemInfo.SliceInfo[i].Enabled);
-    }
-}
-
 HWTEST2_F(ProductHelperTest, givenProductHelperWhenIsPlatformQueryNotSupportedThenReturnFalse, IsAtLeastMtl) {
 
     EXPECT_TRUE(productHelper->isPlatformQuerySupported());
+}
+
+HWTEST2_F(ProductHelperTest, givenProductHelperWhenAskedIsDisableScratchPagesSupportedThenReturnTrue, IsAtLeastXeHpcCore) {
+    EXPECT_TRUE(productHelper->isDisableScratchPagesSupported());
 }

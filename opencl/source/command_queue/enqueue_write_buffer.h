@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -31,6 +31,24 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
 
     CsrSelectionArgs csrSelectionArgs{cmdType, {}, buffer, device->getRootDeviceIndex(), &size};
     CommandStreamReceiver &csr = selectCsrForBuiltinOperation(csrSelectionArgs);
+    return enqueueWriteBufferImpl(buffer, blockingWrite, offset, size, ptr, mapAllocation, numEventsInWaitList, eventWaitList, event, csr);
+}
+
+template <typename GfxFamily>
+cl_int CommandQueueHw<GfxFamily>::enqueueWriteBufferImpl(
+    Buffer *buffer,
+    cl_bool blockingWrite,
+    size_t offset,
+    size_t size,
+    const void *ptr,
+    GraphicsAllocation *mapAllocation,
+    cl_uint numEventsInWaitList,
+    const cl_event *eventWaitList,
+    cl_event *event,
+    CommandStreamReceiver &csr) {
+    const cl_command_type cmdType = CL_COMMAND_WRITE_BUFFER;
+
+    CsrSelectionArgs csrSelectionArgs{cmdType, {}, buffer, device->getRootDeviceIndex(), &size};
 
     auto rootDeviceIndex = getDevice().getRootDeviceIndex();
     auto isMemTransferNeeded = buffer->isMemObjZeroCopy() ? buffer->checkIfMemoryTransferIsRequired(offset, 0, ptr, cmdType) : true;
@@ -42,6 +60,10 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
         cl_int retVal = getContext().tryGetExistingHostPtrAllocation(ptr, size, rootDeviceIndex, mapAllocation, memoryType, isCpuCopyAllowed);
         if (retVal != CL_SUCCESS) {
             return retVal;
+        }
+        if (mapAllocation) {
+            mapAllocation->setAubWritable(true, GraphicsAllocation::defaultBank);
+            mapAllocation->setTbxWritable(true, GraphicsAllocation::defaultBank);
         }
     }
 
@@ -58,10 +80,9 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
                                                   numEventsInWaitList, eventWaitList, event);
     }
 
-    auto eBuiltInOps = EBuiltInOps::copyBufferToBuffer;
-    if (forceStateless(buffer->getSize())) {
-        eBuiltInOps = EBuiltInOps::copyBufferToBufferStateless;
-    }
+    const bool useStateless = forceStateless(buffer->getSize());
+    const bool useHeapless = this->getHeaplessModeEnabled();
+    auto builtInType = EBuiltInOps::adjustBuiltinType<EBuiltInOps::copyBufferToBuffer>(useStateless, useHeapless);
 
     void *srcPtr = const_cast<void *>(ptr);
 
@@ -102,7 +123,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
     dc.direction = csrSelectionArgs.direction;
 
     MultiDispatchInfo dispatchInfo(dc);
-    const auto dispatchResult = dispatchBcsOrGpgpuEnqueue<CL_COMMAND_WRITE_BUFFER>(dispatchInfo, surfaces, eBuiltInOps, numEventsInWaitList, eventWaitList, event, blockingWrite, csr);
+    const auto dispatchResult = dispatchBcsOrGpgpuEnqueue<CL_COMMAND_WRITE_BUFFER>(dispatchInfo, surfaces, builtInType, numEventsInWaitList, eventWaitList, event, blockingWrite, csr);
     if (dispatchResult != CL_SUCCESS) {
         return dispatchResult;
     }

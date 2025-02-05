@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -27,8 +27,7 @@ struct BuiltinFunctionsLibImpl : BuiltinFunctionsLib {
     struct BuiltinData;
     BuiltinFunctionsLibImpl(Device *device, NEO::BuiltIns *builtInsLib);
     ~BuiltinFunctionsLibImpl() override {
-        builtins->reset();
-        imageBuiltins->reset();
+        this->ensureInitCompletionImpl();
     }
 
     Kernel *getFunction(Builtin func) override;
@@ -36,6 +35,7 @@ struct BuiltinFunctionsLibImpl : BuiltinFunctionsLib {
     void initBuiltinKernel(Builtin builtId) override;
     void initBuiltinImageKernel(ImageBuiltin func) override;
     void ensureInitCompletion() override;
+    void ensureInitCompletionImpl();
     MOCKABLE_VIRTUAL std::unique_ptr<BuiltinFunctionsLibImpl::BuiltinData> loadBuiltIn(NEO::EBuiltInOps::Type builtin, const char *builtInName);
 
     static bool initBuiltinsAsyncEnabled(Device *device);
@@ -47,8 +47,8 @@ struct BuiltinFunctionsLibImpl : BuiltinFunctionsLib {
     Device *device;
     NEO::BuiltIns *builtInsLib;
 
-    std::future<void> initAsync = {};
     bool initAsyncComplete = true;
+    std::atomic_bool initAsync = false;
 };
 struct BuiltinFunctionsLibImpl::BuiltinData {
     MOCKABLE_VIRTUAL ~BuiltinData();

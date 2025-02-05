@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,7 +24,6 @@ struct RuntimeCapabilityTable {
     KmdNotifyProperties kmdNotifyProperties;
     uint64_t gpuAddressSpace;
     uint64_t sharedSystemMemCapabilities;
-    double defaultProfilingTimerResolution;
     size_t requiredPreemptionSurfaceSize;
     const char *deviceName;
     const char *preferredPlatformName;
@@ -60,7 +59,6 @@ struct RuntimeCapabilityTable {
     bool supportsOnDemandPageFaults;
     bool supportsIndependentForwardProgress;
     bool hostPtrTrackingEnabled;
-    bool levelZeroSupported;
     bool isIntegratedDevice;
     bool supportsMediaBlock;
     bool p2pAccessSupported;
@@ -68,6 +66,7 @@ struct RuntimeCapabilityTable {
     bool fusedEuEnabled;
     bool l0DebuggerSupported;
     bool supportsFloatAtomics;
+    uint32_t cxlType;
 };
 
 inline bool operator==(const RuntimeCapabilityTable &lhs, const RuntimeCapabilityTable &rhs) {
@@ -92,7 +91,6 @@ inline bool operator==(const RuntimeCapabilityTable &lhs, const RuntimeCapabilit
     result &= (lhs.kmdNotifyProperties.enableQuickKmdSleepForSporadicWaits == rhs.kmdNotifyProperties.enableQuickKmdSleepForSporadicWaits);
     result &= (lhs.gpuAddressSpace == rhs.gpuAddressSpace);
     result &= (lhs.sharedSystemMemCapabilities == rhs.sharedSystemMemCapabilities);
-    result &= (lhs.defaultProfilingTimerResolution == rhs.defaultProfilingTimerResolution);
     result &= (lhs.requiredPreemptionSurfaceSize == rhs.requiredPreemptionSurfaceSize);
     result &= (lhs.defaultPreemptionMode == rhs.defaultPreemptionMode);
     result &= (lhs.defaultEngineType == rhs.defaultEngineType);
@@ -127,7 +125,6 @@ inline bool operator==(const RuntimeCapabilityTable &lhs, const RuntimeCapabilit
     result &= (lhs.supportsOnDemandPageFaults == rhs.supportsOnDemandPageFaults);
     result &= (lhs.supportsIndependentForwardProgress == rhs.supportsIndependentForwardProgress);
     result &= (lhs.hostPtrTrackingEnabled == rhs.hostPtrTrackingEnabled);
-    result &= (lhs.levelZeroSupported == rhs.levelZeroSupported);
     result &= (lhs.isIntegratedDevice == rhs.isIntegratedDevice);
     result &= (lhs.supportsMediaBlock == rhs.supportsMediaBlock);
     result &= (lhs.fusedEuEnabled == rhs.fusedEuEnabled);
@@ -168,5 +165,8 @@ bool getHwInfoForPlatformString(std::string &platform, const HardwareInfo *&hwIn
 void setHwInfoValuesFromConfig(const uint64_t hwInfoConfig, HardwareInfo &hwInfoIn);
 bool parseHwInfoConfigString(const std::string &hwInfoConfigStr, uint64_t &hwInfoConfig);
 aub_stream::EngineType getChosenEngineType(const HardwareInfo &hwInfo);
+void setupDefaultGtSysInfo(HardwareInfo *hwInfo, const ReleaseHelper *releaseHelper);
+void setupDefaultFeatureTableAndWorkaroundTable(HardwareInfo *hwInfo, const ReleaseHelper &releaseHelper);
+uint32_t getNumSubSlicesPerSlice(const HardwareInfo &hwInfo);
 
 } // namespace NEO

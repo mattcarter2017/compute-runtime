@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,12 +13,14 @@
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/basic_math.h"
+#include "shared/source/helpers/bit_helpers.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/local_id_gen.h"
 #include "shared/source/helpers/pipe_control_args.h"
 #include "shared/source/helpers/timestamp_packet.h"
+#include "shared/source/indirect_heap/indirect_heap.h"
 #include "shared/source/memory_manager/allocation_properties.h"
 #include "shared/source/memory_manager/graphics_allocation.h"
 #include "shared/source/os_interface/os_interface.h"
@@ -113,7 +115,7 @@ void GfxCoreHelperHw<Family>::setRenderSurfaceStateForScratchResource(const Root
     state.setHeight(length.surfaceState.height + 1);
     state.setDepth(length.surfaceState.depth + 1);
     if (pitch) {
-        state.setSurfacePitch(pitch);
+        EncodeSurfaceState<Family>::setPitchForScratch(&state, pitch, rootDeviceEnvironment.getProductHelper());
     }
 
     // The graphics allocation for Host Ptr surface will be created in makeResident call and GPU address is expected to be the same as CPU address
@@ -293,6 +295,7 @@ void MemorySynchronizationCommands<GfxFamily>::setSingleBarrier(void *commandsBu
     }
 
     if (postSyncMode != PostSyncMode::noWrite) {
+        args.postSyncCmd = commandsBuffer;
         pipeControl.setAddress(static_cast<uint32_t>(gpuAddress & 0x0000FFFFFFFFULL));
         pipeControl.setAddressHigh(static_cast<uint32_t>(gpuAddress >> 32));
     }
@@ -357,9 +360,9 @@ size_t MemorySynchronizationCommands<GfxFamily>::getSizeForSingleBarrier(bool tl
 template <typename GfxFamily>
 size_t MemorySynchronizationCommands<GfxFamily>::getSizeForBarrierWithPostSyncOperation(const RootDeviceEnvironment &rootDeviceEnvironment, bool tlbInvalidationRequired) {
 
-    size_t size = getSizeForSingleBarrier(tlbInvalidationRequired) +
-                  getSizeForBarrierWa(rootDeviceEnvironment) +
-                  getSizeForSingleAdditionalSynchronization(rootDeviceEnvironment);
+    size_t size = getSizeForSingleBarrier(tlbInvalidationRequired);
+    size += getSizeForBarrierWa(rootDeviceEnvironment);
+    size += getSizeForSingleAdditionalSynchronization(rootDeviceEnvironment);
     return size;
 }
 
@@ -399,23 +402,12 @@ uint32_t GfxCoreHelperHw<GfxFamily>::getMetricsLibraryGenId() const {
 
 template <typename GfxFamily>
 uint32_t GfxCoreHelperHw<GfxFamily>::alignSlmSize(uint32_t slmSize) const {
-    if (slmSize == 0u) {
-        return 0u;
-    }
-    slmSize = std::max(slmSize, 1024u);
-    slmSize = Math::nextPowerOfTwo(slmSize);
-    UNRECOVERABLE_IF(slmSize > 64u * MemoryConstants::kiloByte);
-    return slmSize;
+    return EncodeDispatchKernel<GfxFamily>::alignSlmSize(slmSize);
 }
 
 template <typename GfxFamily>
 uint32_t GfxCoreHelperHw<GfxFamily>::computeSlmValues(const HardwareInfo &hwInfo, uint32_t slmSize) const {
-    auto value = std::max(slmSize, 1024u);
-    value = Math::nextPowerOfTwo(value);
-    value = Math::getMinLsbSet(value);
-    value = value - 9;
-    DEBUG_BREAK_IF(value > 7);
-    return value * !!slmSize;
+    return EncodeDispatchKernel<GfxFamily>::computeSlmValues(hwInfo, slmSize);
 }
 
 template <typename GfxFamily>
@@ -446,7 +438,7 @@ inline uint32_t GfxCoreHelperHw<GfxFamily>::getMinimalSIMDSize() const {
 template <typename GfxFamily>
 std::unique_ptr<TagAllocatorBase> GfxCoreHelperHw<GfxFamily>::createTimestampPacketAllocator(const RootDeviceIndicesContainer &rootDeviceIndices, MemoryManager *memoryManager,
                                                                                              size_t initialTagCount, CommandStreamReceiverType csrType, DeviceBitfield deviceBitfield) const {
-    bool doNotReleaseNodes = (csrType > CommandStreamReceiverType::CSR_HW) ||
+    bool doNotReleaseNodes = (csrType > CommandStreamReceiverType::hardware) ||
                              debugManager.flags.DisableTimestampPacketOptimizations.get();
 
     auto tagAlignment = getTimestampPacketAllocatorAlignment();
@@ -454,10 +446,12 @@ std::unique_ptr<TagAllocatorBase> GfxCoreHelperHw<GfxFamily>::createTimestampPac
     if (debugManager.flags.OverrideTimestampPacketSize.get() != -1) {
         if (debugManager.flags.OverrideTimestampPacketSize.get() == 4) {
             using TimestampPackets32T = TimestampPackets<uint32_t, GfxFamily::timestampPacketCount>;
-            return std::make_unique<TagAllocator<TimestampPackets32T>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPackets32T), doNotReleaseNodes, deviceBitfield);
+            return std::make_unique<TagAllocator<TimestampPackets32T>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPackets32T), NEO::TimestampPacketConstants::initValue,
+                                                                       doNotReleaseNodes, true, deviceBitfield);
         } else if (debugManager.flags.OverrideTimestampPacketSize.get() == 8) {
             using TimestampPackets64T = TimestampPackets<uint64_t, GfxFamily::timestampPacketCount>;
-            return std::make_unique<TagAllocator<TimestampPackets64T>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPackets64T), doNotReleaseNodes, deviceBitfield);
+            return std::make_unique<TagAllocator<TimestampPackets64T>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPackets64T), NEO::TimestampPacketConstants::initValue,
+                                                                       doNotReleaseNodes, true, deviceBitfield);
         } else {
             UNRECOVERABLE_IF(true);
         }
@@ -466,7 +460,8 @@ std::unique_ptr<TagAllocatorBase> GfxCoreHelperHw<GfxFamily>::createTimestampPac
     using TimestampPacketType = typename GfxFamily::TimestampPacketType;
     using TimestampPacketsT = TimestampPackets<TimestampPacketType, GfxFamily::timestampPacketCount>;
 
-    return std::make_unique<TagAllocator<TimestampPacketsT>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPacketsT), doNotReleaseNodes, deviceBitfield);
+    return std::make_unique<TagAllocator<TimestampPacketsT>>(rootDeviceIndices, memoryManager, initialTagCount, tagAlignment, sizeof(TimestampPacketsT), NEO::TimestampPacketConstants::initValue,
+                                                             doNotReleaseNodes, true, deviceBitfield);
 }
 
 template <typename GfxFamily>
@@ -529,12 +524,22 @@ void MemorySynchronizationCommands<GfxFamily>::addStateCacheFlush(LinearStream &
 }
 
 template <typename GfxFamily>
-const StackVec<size_t, 3> GfxCoreHelperHw<GfxFamily>::getDeviceSubGroupSizes() const {
-    return {8, 16, 32};
+size_t MemorySynchronizationCommands<GfxFamily>::getSizeForInstructionCacheFlush() {
+    return MemorySynchronizationCommands<GfxFamily>::getSizeForSingleBarrier(false);
 }
 
 template <typename GfxFamily>
-void GfxCoreHelperHw<GfxFamily>::setExtraAllocationData(AllocationData &allocationData, const AllocationProperties &properties, const RootDeviceEnvironment &rootDeviceEnvironment) const {}
+void MemorySynchronizationCommands<GfxFamily>::addInstructionCacheFlush(LinearStream &commandStream) {
+    PipeControlArgs args;
+    args.instructionCacheInvalidateEnable = true;
+
+    MemorySynchronizationCommands<GfxFamily>::addSingleBarrier(commandStream, args);
+}
+
+template <typename GfxFamily>
+const StackVec<size_t, 3> GfxCoreHelperHw<GfxFamily>::getDeviceSubGroupSizes() const {
+    return {8, 16, 32};
+}
 
 template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::isBankOverrideRequired(const HardwareInfo &hwInfo, const ProductHelper &productHelper) const {
@@ -548,7 +553,7 @@ int32_t GfxCoreHelperHw<GfxFamily>::getDefaultThreadArbitrationPolicy() const {
 
 template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::useOnlyGlobalTimestamps() const {
-    return false;
+    return debugManager.flags.ForceUseOnlyGlobalTimestamps.get();
 }
 
 template <typename GfxFamily>
@@ -559,16 +564,6 @@ bool GfxCoreHelperHw<GfxFamily>::useSystemMemoryPlacementForISA(const HardwareIn
 template <typename GfxFamily>
 bool MemorySynchronizationCommands<GfxFamily>::isBarrierPriorToPipelineSelectWaRequired(const RootDeviceEnvironment &rootDeviceEnvironment) {
     return false;
-}
-
-template <typename GfxFamily>
-bool GfxCoreHelperHw<GfxFamily>::isAdditionalFeatureFlagRequired(const FeatureTable *featureTable) const {
-    return false;
-}
-
-template <typename GfxFamily>
-uint32_t GfxCoreHelperHw<GfxFamily>::getNumCacheRegions() const {
-    return 0;
 }
 
 template <typename GfxFamily>
@@ -583,11 +578,6 @@ size_t GfxCoreHelperHw<GfxFamily>::getPreemptionAllocationAlignment() const {
 
 template <typename GfxFamily>
 void GfxCoreHelperHw<GfxFamily>::applyAdditionalCompressionSettings(Gmm &gmm, bool isNotCompressed) const {}
-
-template <typename GfxFamily>
-bool GfxCoreHelperHw<GfxFamily>::isRunaloneModeRequired(DebuggingMode debuggingMode) const {
-    return false;
-}
 
 template <typename GfxFamily>
 void GfxCoreHelperHw<GfxFamily>::applyRenderCompressionFlag(Gmm &gmm, uint32_t isCompressed) const {
@@ -648,13 +638,6 @@ bool GfxCoreHelperHw<GfxFamily>::isPlatformFlushTaskEnabled(const ProductHelper 
 }
 
 template <typename GfxFamily>
-uint64_t GfxCoreHelperHw<GfxFamily>::getPatIndex(CacheRegion cacheRegion, CachePolicy cachePolicy) const {
-    UNRECOVERABLE_IF(true);
-
-    return -1;
-}
-
-template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::copyThroughLockedPtrEnabled(const HardwareInfo &hwInfo, const ProductHelper &productHelper) const {
     if (debugManager.flags.ExperimentalCopyThroughLock.get() != -1) {
         return debugManager.flags.ExperimentalCopyThroughLock.get() == 1;
@@ -663,20 +646,7 @@ bool GfxCoreHelperHw<GfxFamily>::copyThroughLockedPtrEnabled(const HardwareInfo 
 }
 
 template <typename GfxFamily>
-uint32_t GfxCoreHelperHw<GfxFamily>::getAmountOfAllocationsToFill() const {
-    if (debugManager.flags.SetAmountOfReusableAllocations.get() != -1) {
-        return debugManager.flags.SetAmountOfReusableAllocations.get();
-    }
-    return 0u;
-}
-
-template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::isChipsetUniqueUUIDSupported() const {
-    return false;
-}
-
-template <typename GfxFamily>
-bool GfxCoreHelperHw<GfxFamily>::largeGrfModeSupported() const {
     return false;
 }
 
@@ -696,7 +666,7 @@ uint32_t GfxCoreHelperHw<GfxFamily>::overrideMaxWorkGroupSize(uint32_t maxWG) co
 }
 
 template <typename GfxFamily>
-uint32_t GfxCoreHelperHw<GfxFamily>::adjustMaxWorkGroupSize(const uint32_t numGrf, const uint32_t simd, bool isHwLocalGeneration, const uint32_t defaultMaxGroupSize) const {
+uint32_t GfxCoreHelperHw<GfxFamily>::adjustMaxWorkGroupSize(const uint32_t grfCount, const uint32_t simd, bool isHwLocalGeneration, const uint32_t defaultMaxGroupSize, const RootDeviceEnvironment &rootDeviceEnvironment) const {
     return defaultMaxGroupSize;
 }
 
@@ -706,13 +676,13 @@ uint32_t GfxCoreHelperHw<GfxFamily>::getMinimalGrfSize() const {
 }
 
 template <typename GfxFamily>
-uint32_t GfxCoreHelperHw<GfxFamily>::calculateNumThreadsPerThreadGroup(uint32_t simd, uint32_t totalWorkItems, uint32_t grfSize, bool isHwLocalIdGeneration) const {
+uint32_t GfxCoreHelperHw<GfxFamily>::calculateNumThreadsPerThreadGroup(uint32_t simd, uint32_t totalWorkItems, uint32_t grfCount, bool isHwLocalIdGeneration, const RootDeviceEnvironment &rootDeviceEnvironment) const {
     return getThreadsPerWG(simd, totalWorkItems);
 }
 
 template <typename GfxFamily>
-char const *GfxCoreHelperHw<GfxFamily>::getDefaultDeviceHierarchy() const {
-    return deviceHierarchyComposite;
+DeviceHierarchyMode GfxCoreHelperHw<GfxFamily>::getDefaultDeviceHierarchy() const {
+    return DeviceHierarchyMode::composite;
 }
 
 template <typename GfxFamily>
@@ -736,13 +706,131 @@ uint32_t GfxCoreHelperHw<GfxFamily>::getContextGroupContextsCount() const {
 }
 
 template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::getContextGroupHpContextsCount(EngineGroupType type, bool hpEngineAvailable) const {
+    if (hpEngineAvailable) {
+        return 0;
+    }
+    return std::min(getContextGroupContextsCount() / 2, 4u);
+}
+
+template <typename GfxFamily>
+void GfxCoreHelperHw<GfxFamily>::adjustCopyEngineRegularContextCount(const size_t enginesCount, uint32_t &contextCount) const {
+}
+
+template <typename GfxFamily>
+aub_stream::EngineType GfxCoreHelperHw<GfxFamily>::getDefaultHpCopyEngine(const HardwareInfo &hwInfo) const {
+    return hpCopyEngineType;
+}
+
+template <typename GfxFamily>
+void GfxCoreHelperHw<GfxFamily>::initializeDefaultHpCopyEngine(const HardwareInfo &hwInfo) {
+    hpCopyEngineType = aub_stream::EngineType::NUM_ENGINES;
+}
+
+template <typename GfxFamily>
+void GfxCoreHelperHw<GfxFamily>::initializeFromProductHelper(const ProductHelper &productHelper) {
+    secondaryContextsEnabled = productHelper.areSecondaryContextsSupported();
+}
+
+template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::is48ResourceNeededForCmdBuffer() const {
     return true;
 }
 
 template <typename GfxFamily>
 bool GfxCoreHelperHw<GfxFamily>::singleTileExecImplicitScalingRequired(bool cooperativeKernel) const {
-    return cooperativeKernel;
+    return EncodeDispatchKernel<GfxFamily>::singleTileExecImplicitScalingRequired(cooperativeKernel);
+}
+
+template <typename GfxFamily>
+bool GfxCoreHelperHw<GfxFamily>::duplicatedInOrderCounterStorageEnabled(const RootDeviceEnvironment &rootDeviceEnvironment) const {
+    return (debugManager.flags.InOrderDuplicatedCounterStorageEnabled.get() == 1);
+}
+
+template <typename GfxFamily>
+bool GfxCoreHelperHw<GfxFamily>::inOrderAtomicSignallingEnabled(const RootDeviceEnvironment &rootDeviceEnvironment) const {
+    return (debugManager.flags.InOrderAtomicSignallingEnabled.get() == 1);
+}
+
+template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::getRenderSurfaceStatePitch(void *renderSurfaceState, const ProductHelper &productHelper) const {
+    using RENDER_SURFACE_STATE = typename GfxFamily::RENDER_SURFACE_STATE;
+    auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(renderSurfaceState);
+    return EncodeSurfaceState<GfxFamily>::getPitchForScratchInBytes(surfaceState, productHelper);
+}
+
+template <typename GfxFamily>
+bool GfxCoreHelperHw<GfxFamily>::isRuntimeLocalIdsGenerationRequired(uint32_t activeChannels,
+                                                                     const size_t *lws,
+                                                                     std::array<uint8_t, 3> &walkOrder,
+                                                                     bool requireInputWalkOrder,
+                                                                     uint32_t &requiredWalkOrder,
+                                                                     uint32_t simd) const {
+    return EncodeDispatchKernel<GfxFamily>::isRuntimeLocalIdsGenerationRequired(activeChannels,
+                                                                                lws,
+                                                                                walkOrder,
+                                                                                requireInputWalkOrder,
+                                                                                requiredWalkOrder,
+                                                                                simd);
+}
+
+template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::getMaxPtssIndex(const ProductHelper &productHelper) const {
+    return 15u;
+}
+
+template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::getDefaultSshSize(const ProductHelper &productHelper) const {
+    return HeapSize::defaultHeapSize;
+}
+
+template <typename GfxFamily>
+void *LriHelper<GfxFamily>::program(LinearStream *cmdStream, uint32_t address, uint32_t value, bool remap, bool isBcs) {
+    auto lri = cmdStream->getSpaceForCmd<MI_LOAD_REGISTER_IMM>();
+    return LriHelper<GfxFamily>::program(lri, address, value, remap, isBcs);
+}
+
+template <typename GfxFamily>
+void MemorySynchronizationCommands<GfxFamily>::encodeAdditionalTimestampOffsets(LinearStream &commandStream, uint64_t contextAddress, uint64_t globalAddress, bool isBcs) {
+}
+
+template <typename GfxFamily>
+bool GfxCoreHelperHw<GfxFamily>::usmCompressionSupported(const NEO::HardwareInfo &hwInfo) const {
+    return false;
+}
+
+template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::calculateAvailableThreadCount(const HardwareInfo &hwInfo, uint32_t grfCount) const {
+    auto maxThreadsPerEuCount = 8u;
+    if (grfCount == GrfConfig::largeGrfNumber) {
+        maxThreadsPerEuCount = 4;
+    }
+    return std::min(hwInfo.gtSystemInfo.ThreadCount, maxThreadsPerEuCount * hwInfo.gtSystemInfo.EUCount);
+}
+
+template <typename GfxFamily>
+void GfxCoreHelperHw<GfxFamily>::alignThreadGroupCountToDssSize(uint32_t &threadCount, uint32_t dssCount, uint32_t threadsPerDss, uint32_t threadGroupSize) const {
+    uint32_t availableTreadCount = (threadsPerDss / threadGroupSize) * dssCount;
+    threadCount = std::min(threadCount, availableTreadCount);
+}
+
+template <typename GfxFamily>
+uint32_t GfxCoreHelperHw<GfxFamily>::getDeviceTimestampWidth() const {
+    if (debugManager.flags.OverrideTimestampWidth.get() != -1) {
+        return debugManager.flags.OverrideTimestampWidth.get();
+    }
+    return 0u;
+}
+
+template <typename Family>
+uint32_t GfxCoreHelperHw<Family>::getInternalCopyEngineIndex(const HardwareInfo &hwInfo) const {
+    if (debugManager.flags.ForceBCSForInternalCopyEngine.get() != -1) {
+        return debugManager.flags.ForceBCSForInternalCopyEngine.get();
+    }
+
+    constexpr uint32_t defaultInternalCopyEngineIndex = 3u;
+    auto highestAvailableIndex = getMostSignificantSetBitIndex(hwInfo.featureTable.ftrBcsInfo.to_ullong());
+    return std::min(defaultInternalCopyEngineIndex, highestAvailableIndex);
 }
 
 } // namespace NEO

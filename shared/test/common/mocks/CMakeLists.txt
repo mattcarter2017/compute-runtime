@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020-2024 Intel Corporation
+# Copyright (C) 2020-2025 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -36,6 +36,7 @@ set(NEO_CORE_tests_mocks
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_compiler_cache.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_compiler_interface_spirv.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_compiler_interface_spirv.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_compiler_product_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_compilers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_compilers.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_cpu_page_fault_manager.h
@@ -52,7 +53,6 @@ set(NEO_CORE_tests_mocks
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_elf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_execution_environment.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_execution_environment.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/mock_experimental_command_buffer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_partition.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_partition.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm.h
@@ -65,7 +65,9 @@ set(NEO_CORE_tests_mocks
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_resource_info.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_graphics_allocation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_host_ptr_manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/mock_igc_path.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_core_helper.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_kmd_notify_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_product_helper.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_release_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_internal_allocation_storage.h
@@ -89,9 +91,11 @@ set(NEO_CORE_tests_mocks
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_sip.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_submissions_aggregator.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_svm_manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_sync_buffer_handler.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_tbx_csr.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_timestamp_container.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_timestamp_packet.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_usm_memory_reuse_cleaner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_usm_memory_pool.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm_residency_controller.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ult_device_factory.cpp
@@ -113,6 +117,7 @@ else()
        ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_ioctl_helper.h
        ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_os_time_linux.h
        ${CMAKE_CURRENT_SOURCE_DIR}/linux/debug_mock_drm_xe.h
+       ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_os_context_linux.h
   )
 endif()
 if(WIN32 OR NOT DISABLE_WDDM_LINUX)
@@ -144,6 +149,8 @@ if(TESTS_XEHP_AND_LATER)
        ${CMAKE_CURRENT_SOURCE_DIR}/mock_scratch_space_controller_xehp_and_later.h
   )
 endif()
+
+add_subdirectories()
 
 add_library(neo_shared_mocks OBJECT EXCLUDE_FROM_ALL ${NEO_CORE_tests_mocks})
 

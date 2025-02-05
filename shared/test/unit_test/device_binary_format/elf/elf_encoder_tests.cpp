@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2022 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -499,4 +499,77 @@ TEST(ElfEncoder, WhenGetSectionHeaderIndexIsCalledThenCorrectSectionIdxIsReturne
 
     auto &sec1 = elfEncoder64.appendSection(SHT_PROGBITS, "", {});
     EXPECT_EQ(1U, elfEncoder64.getSectionHeaderIndex(sec1));
+}
+
+TEST(ElfEncoder, givenEmptyArrayWhenSetInitialStringTabIsUsedThenResetsStringTabToEmpty) {
+    ElfEncoder<EI_CLASS_64> elfEncoder;
+    elfEncoder.setInitialStringsTab({});
+    EXPECT_EQ(0U, elfEncoder.appendSectionName({}));
+}
+
+TEST(ElfEncoder, givenUnterminatedArrayWhenSetInitialStringTabIsUsedThenTerminateUnderlyingArray) {
+    ElfEncoder<EI_CLASS_64> elfEncoder;
+    char data[2] = {'\0', 's'};
+    elfEncoder.setInitialStringsTab(ArrayRef<const uint8_t>::fromAny(data, sizeof(data)));
+    EXPECT_EQ(1U, elfEncoder.appendSectionName("s"));
+}
+
+TEST(ElfEncoder, givenArrayWhenSetInitialStringTabIsUsedThenIncorporateItToInternalStringTab) {
+    ElfEncoder<EI_CLASS_64> elfEncoder;
+    char data[] = "\0string0\0string1";
+    elfEncoder.setInitialStringsTab(ArrayRef<const uint8_t>::fromAny(data, sizeof(data)));
+    EXPECT_EQ(1U, elfEncoder.appendSectionName("string0"));
+    EXPECT_EQ(9U, elfEncoder.appendSectionName("string1"));
+}
+
+TEST(EncodeElfNoteSection, givenZeroNotesToEncodeThenReturnsEmptyDataVector) {
+    auto encoded = NEO::Elf::encodeNoteSectionData({});
+    EXPECT_TRUE(encoded.empty());
+}
+
+TEST(EncodeElfNoteSection, givenValidNotesToEncodeThenReturnsProperlyEncodedData) {
+    std::string unalignedDescName = "note"
+                                    "Type";
+    std::string unalignedDesc = "some"
+                                " Des"
+                                "c ";
+    uint32_t unalignedDescNoteType = 3;
+
+    std::string unalignedNameName = "note"
+                                    "Ty";
+    std::string unalignedNameDesc = "so"
+                                    "me";
+    uint32_t unalignedNameNoteType = 5;
+
+    std::string alignedDescName = "some"
+                                  "Note";
+    std::string alignedDesc = "some"
+                              "Desc";
+    uint32_t alignedDescNoteType = 7;
+
+    NEO::Elf::NoteToEncode notes[] = {{unalignedDescName, unalignedDesc, unalignedDescNoteType},
+                                      {unalignedNameName, unalignedNameDesc, unalignedNameNoteType},
+                                      {alignedDescName, alignedDesc, alignedDescNoteType}};
+
+    size_t expectedSize = 0;
+    for (const auto &note : notes) {
+        expectedSize += sizeof(NEO::Elf::ElfNoteSection);
+        expectedSize += note.name.size();
+        expectedSize += note.desc.size();
+        expectedSize = alignUp(expectedSize, 4);
+    }
+
+    auto encoded = NEO::Elf::encodeNoteSectionData({notes, 3});
+    ASSERT_EQ(expectedSize, encoded.size());
+
+    uint8_t *pos = encoded.data();
+    for (int i = 0; i < 3; ++i) {
+        auto header = reinterpret_cast<NEO::Elf::ElfNoteSection *>(pos);
+        EXPECT_EQ(notes[i].type, header->type);
+        EXPECT_EQ(notes[i].name.size(), header->nameSize);
+        EXPECT_EQ(notes[i].desc.size(), header->descSize);
+        EXPECT_EQ(notes[i].name, NEO::ConstStringRef(reinterpret_cast<const char *>((header + 1)), notes[i].name.size()));
+        EXPECT_EQ(notes[i].desc, NEO::ConstStringRef(reinterpret_cast<const char *>((header + 1)) + notes[i].name.size(), notes[i].desc.size()));
+        pos = alignUp(pos + sizeof(NEO::Elf::ElfNoteSection) + notes[i].name.size() + notes[i].desc.size(), 4);
+    }
 }

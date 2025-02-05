@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -180,8 +180,12 @@ enum SurfaceFormat : unsigned short {
     GFX3DSTATE_SURFACEFORMAT_PLANAR_420_8 = 0x1A5,
     GFX3DSTATE_SURFACEFORMAT_PLANAR_420_16 = 0x1a6,
     GFX3DSTATE_SURFACEFORMAT_PACKED_422_16 = 0x1a7,
-    GFX3DSTATE_SURFACEFORMAT_R10G10B10A2_SINT = 0x1b6,
+    GFX3DSTATE_SURFACEFORMAT_R16G16B16_UINT = 0x1b0,
+    GFX3DSTATE_SURFACEFORMAT_R16G16B16_SINT = 0x1b1,
     GFX3DSTATE_SURFACEFORMAT_R10G10B10A2_SNORM = 0x1b3,
+    GFX3DSTATE_SURFACEFORMAT_R10G10B10A2_SINT = 0x1b6,
+    GFX3DSTATE_SURFACEFORMAT_R8G8B8_UINT = 0x1c8,
+    GFX3DSTATE_SURFACEFORMAT_R8G8B8_SINT = 0x1c9,
     GFX3DSTATE_SURFACEFORMAT_RAW = 0x1FF,
     NUM_GFX3DSTATE_SURFACEFORMATS
 };
@@ -226,6 +230,17 @@ struct ImageDescriptor {
     bool fromParent;
 };
 
+enum class ImageTilingMode {
+    tiledAuto = 0,
+    tiledW,
+    tiledX,
+    tiledY,
+    tiledYf,
+    tiledYs,
+    tiled4,
+    tiled64,
+};
+
 struct ImageInfo {
     ImageDescriptor imgDesc;
     const SurfaceFormatInfo *surfaceFormat;
@@ -242,6 +257,8 @@ struct ImageInfo {
     uint32_t mipCount;
     bool linearStorage;
     bool useLocalMemory;
+    bool isDisplayable;
+    ImageTilingMode forceTiling;
 };
 
 struct ImageImplicitArgs {

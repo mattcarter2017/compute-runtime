@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,12 +11,11 @@ namespace NEO {
 template <typename GfxFamily>
 size_t DebuggerL0Hw<GfxFamily>::getSbaTrackingCommandsSize(size_t trackedAddressCount) {
     if (singleAddressSpaceSbaTracking) {
-        NEO::EncodeDummyBlitWaArgs waArgs{false};
         constexpr uint32_t aluCmdSize = sizeof(typename GfxFamily::MI_MATH) + sizeof(typename GfxFamily::MI_MATH_ALU_INST_INLINE) * RegisterConstants::numAluInstForReadModifyWrite;
-        return 2 * (EncodeMiArbCheck<GfxFamily>::getCommandSizeWithWa(waArgs) + sizeof(typename GfxFamily::MI_BATCH_BUFFER_START)) +
+        return 2 * (EncodeMiArbCheck<GfxFamily>::getCommandSize() + sizeof(typename GfxFamily::MI_BATCH_BUFFER_START)) +
                trackedAddressCount * (sizeof(typename GfxFamily::MI_LOAD_REGISTER_IMM) + aluCmdSize + 2 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM) +
                                       3 * sizeof(typename GfxFamily::MI_STORE_DATA_IMM) +
-                                      EncodeMiArbCheck<GfxFamily>::getCommandSizeWithWa(waArgs) +
+                                      EncodeMiArbCheck<GfxFamily>::getCommandSize() +
                                       sizeof(typename GfxFamily::MI_BATCH_BUFFER_START));
     }
     return trackedAddressCount * NEO::EncodeStoreMemory<GfxFamily>::getStoreDataImmSize();
@@ -27,8 +26,6 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
     using MI_STORE_DATA_IMM = typename GfxFamily::MI_STORE_DATA_IMM;
     using MI_STORE_REGISTER_MEM = typename GfxFamily::MI_STORE_REGISTER_MEM;
     using MI_BATCH_BUFFER_START = typename GfxFamily::MI_BATCH_BUFFER_START;
-    using MI_MATH_ALU_INST_INLINE = typename GfxFamily::MI_MATH_ALU_INST_INLINE;
-    using MI_NOOP = typename GfxFamily::MI_NOOP;
 
     const auto offsetToAddress = offsetof(MI_STORE_DATA_IMM, TheStructure.RawData[1]);
     const auto offsetToData = offsetof(MI_STORE_DATA_IMM, TheStructure.Common.DataDword0);
@@ -59,9 +56,8 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
     const auto cmdStreamCpuBase = reinterpret_cast<uint64_t>(cmdStream.getCpuBase());
 
     auto bbLevel = useFirstLevelBB ? MI_BATCH_BUFFER_START::SECOND_LEVEL_BATCH_BUFFER_FIRST_LEVEL_BATCH : MI_BATCH_BUFFER_START::SECOND_LEVEL_BATCH_BUFFER_SECOND_LEVEL_BATCH;
-    EncodeDummyBlitWaArgs waArgs{false};
     if (fieldOffsetAndValue.size()) {
-        EncodeMiArbCheck<GfxFamily>::programWithWa(cmdStream, true, waArgs);
+        EncodeMiArbCheck<GfxFamily>::program(cmdStream, true);
 
         // Jump to SDI command that is modified
         auto newBuffer = cmdStream.getSpaceForCmd<MI_BATCH_BUFFER_START>();
@@ -77,9 +73,9 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
     for (const auto &pair : fieldOffsetAndValue) {
 
         // Store SBA field offset to R0
-        NEO::EncodeSetMMIO<GfxFamily>::encodeIMM(cmdStream, RegisterOffsets::csGprR0, static_cast<uint32_t>(pair.first), true);
+        NEO::EncodeSetMMIO<GfxFamily>::encodeIMM(cmdStream, RegisterOffsets::csGprR0, static_cast<uint32_t>(pair.first), true, false);
         // Add GPR0 to GPR15, store result in GPR1
-        NEO::EncodeMath<GfxFamily>::addition(cmdStream, AluRegisters::gpr0, AluRegisters::gpr15, AluRegisters::gpr1);
+        NEO::EncodeMath<GfxFamily>::addition(cmdStream, AluRegisters::gpr0, static_cast<AluRegisters>(DebuggerAluRegisters::gpr15), AluRegisters::gpr1);
 
         // Cmds to store dest address - from GPR
         auto miStoreRegMemLow = cmdStream.getSpaceForCmd<MI_STORE_REGISTER_MEM>();
@@ -89,7 +85,7 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
         auto miStoreDataSettingSbaBufferAddress = cmdStream.getSpaceForCmd<MI_STORE_DATA_IMM>();
         auto miStoreDataSettingSbaBufferAddress2 = cmdStream.getSpaceForCmd<MI_STORE_DATA_IMM>();
 
-        EncodeMiArbCheck<GfxFamily>::programWithWa(cmdStream, true, waArgs);
+        EncodeMiArbCheck<GfxFamily>::program(cmdStream, true);
 
         // Jump to SDI command that is modified
         auto newBuffer = cmdStream.getSpaceForCmd<MI_BATCH_BUFFER_START>();
@@ -104,8 +100,8 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
         const auto gmmHelper = device->getGmmHelper();
         const auto gpuVaOfDataDWORD1 = gmmHelper->decanonize(gpuVaOfData + 4);
 
-        NEO::EncodeStoreMMIO<GfxFamily>::encode(miStoreRegMemLow, RegisterOffsets::csGprR1, gpuVaOfAddress, false);
-        NEO::EncodeStoreMMIO<GfxFamily>::encode(miStoreRegMemHigh, RegisterOffsets::csGprR1 + 4, gpuVaOfAddress + 4, false);
+        NEO::EncodeStoreMMIO<GfxFamily>::encode(miStoreRegMemLow, RegisterOffsets::csGprR1, gpuVaOfAddress, false, false);
+        NEO::EncodeStoreMMIO<GfxFamily>::encode(miStoreRegMemHigh, RegisterOffsets::csGprR1 + 4, gpuVaOfAddress + 4, false, false);
 
         MI_STORE_DATA_IMM setSbaBufferAddress = GfxFamily::cmdInitStoreDataImm;
         gpuVaOfData = gmmHelper->decanonize(gpuVaOfData);
@@ -150,7 +146,7 @@ void DebuggerL0Hw<GfxFamily>::programSbaTrackingCommandsSingleAddressSpace(NEO::
         bbCmd.setSecondLevelBatchBuffer(bbLevel);
         *previousBuffer = bbCmd;
 
-        EncodeMiArbCheck<GfxFamily>::programWithWa(cmdStream, false, waArgs);
+        EncodeMiArbCheck<GfxFamily>::program(cmdStream, false);
     }
 }
 

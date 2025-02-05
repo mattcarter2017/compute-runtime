@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018-2023 Intel Corporation
+# Copyright (C) 2018-2024 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -9,6 +9,7 @@ set(CLOC_SEGFAULT_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/segfault_helper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${NEO_SHARED_DIRECTORY}/helpers/abort.cpp
+    ${NEO_SHARED_DIRECTORY}/os_interface/os_library.cpp
     ${NEO_SHARED_DIRECTORY}/os_interface/os_library.h
     ${NEO_SHARED_TEST_DIRECTORY}/common/libult/signal_utils.h
     ${NEO_SHARED_TEST_DIRECTORY}/common/helpers/debug_helpers.cpp
@@ -21,6 +22,7 @@ if(WIN32)
        ${NEO_SHARED_DIRECTORY}/os_interface/windows/os_library_win.cpp
        ${NEO_SHARED_DIRECTORY}/os_interface/windows/os_library_win.h
        ${NEO_SHARED_TEST_DIRECTORY}/common/os_interface/windows/signal_utils.cpp
+       ${NEO_SHARED_TEST_DIRECTORY}/common/os_interface/windows/sys_calls.cpp
        ${OCLOC_DIRECTORY}/source/utilities/windows/safety_guard_windows.h
        ${OCLOC_DIRECTORY}/source/utilities/windows/seh_exception.cpp
        ${OCLOC_DIRECTORY}/source/utilities/windows/seh_exception.h
@@ -59,6 +61,7 @@ endif()
 
 get_property(CLOC_FOLDER TARGET ocloc PROPERTY FOLDER)
 set_property(TARGET ocloc_segfault_test PROPERTY FOLDER ${CLOC_FOLDER})
+set_property(TARGET ocloc_segfault_test PROPERTY ENABLE_EXPORTS TRUE)
 
 target_include_directories(ocloc_segfault_test BEFORE PRIVATE ${CLOC_SEGFAULT_TEST_INCLUDES})
 create_project_source_tree(ocloc_segfault_test)

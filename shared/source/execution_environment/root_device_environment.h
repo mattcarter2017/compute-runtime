@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -76,13 +76,15 @@ struct RootDeviceEnvironment : NonCopyableClass {
     BuiltIns *getBuiltIns();
     BindlessHeapsHelper *getBindlessHeapsHelper() const;
     AssertHandler *getAssertHandler(Device *neoDevice);
-    void createBindlessHeapsHelper(MemoryManager *memoryManager, bool availableDevices, uint32_t rootDeviceIndex, DeviceBitfield deviceBitfield);
+    void createBindlessHeapsHelper(Device *rootDevice, bool availableDevices);
     void limitNumberOfCcs(uint32_t numberOfCcs);
     bool isNumberOfCcsLimited() const;
     void setRcsExposure();
     void initProductHelper();
     void initHelpers();
     void initGfxCoreHelper();
+    void initializeGfxCoreHelperFromHwInfo();
+    void initializeGfxCoreHelperFromProductHelper();
     void initApiGfxCoreHelper();
     void initCompilerProductHelper();
     void initReleaseHelper();
@@ -93,13 +95,13 @@ struct RootDeviceEnvironment : NonCopyableClass {
     HelperType &getHelper() const;
     const ProductHelper &getProductHelper() const;
     GraphicsAllocation *getDummyAllocation() const;
+    void releaseDummyAllocation();
 
     std::unique_ptr<SipKernel> sipKernels[static_cast<uint32_t>(SipKernelType::count)];
     std::unique_ptr<GmmHelper> gmmHelper;
     std::unique_ptr<OSInterface> osInterface;
     std::unique_ptr<MemoryOperationsHandler> memoryOperationsInterface;
     std::unique_ptr<AubCenter> aubCenter;
-    std::unique_ptr<BindlessHeapsHelper> bindlessHeapsHelper;
     std::unique_ptr<OSTime> osTime;
 
     std::unique_ptr<CompilerInterface> compilerInterface;
@@ -112,6 +114,7 @@ struct RootDeviceEnvironment : NonCopyableClass {
     std::unique_ptr<CompilerProductHelper> compilerProductHelper;
     std::unique_ptr<ReleaseHelper> releaseHelper;
     std::unique_ptr<AILConfiguration> ailConfiguration;
+    std::unique_ptr<BindlessHeapsHelper> bindlessHeapsHelper;
 
     std::unique_ptr<AssertHandler> assertHandler;
 

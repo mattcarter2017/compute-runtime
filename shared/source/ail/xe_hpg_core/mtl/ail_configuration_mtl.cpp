@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,23 +14,27 @@
 #include <map>
 #include <vector>
 
+constexpr static auto gfxProduct = IGFX_METEORLAKE;
+
+#include "shared/source/ail/ail_configuration_tgllp_and_later.inl"
+
 namespace NEO {
 
 extern std::map<std::string_view, std::vector<AILEnumeration>> applicationMapMTL;
 
-static EnableAIL<IGFX_METEORLAKE> enableAILMTL;
+static EnableAIL<gfxProduct> enableAILMTL;
 
 constexpr std::array<std::string_view, 3> applicationsLegacyValidationPathMtl = {
     "blender", "bforartists", "cycles"};
 
 template <>
-void AILConfigurationHw<IGFX_METEORLAKE>::applyExt(RuntimeCapabilityTable &runtimeCapabilityTable) {
+void AILConfigurationHw<gfxProduct>::applyExt(HardwareInfo &hwInfo) {
     auto search = applicationMapMTL.find(processName);
     if (search != applicationMapMTL.end()) {
         for (size_t i = 0; i < search->second.size(); ++i) {
             switch (search->second[i]) {
             case AILEnumeration::disableDirectSubmission:
-                runtimeCapabilityTable.directSubmissionEngines.data[aub_stream::ENGINE_CCS].engineSupported = false;
+                hwInfo.capabilityTable.directSubmissionEngines.data[aub_stream::ENGINE_CCS].engineSupported = false;
             default:
                 break;
             }
@@ -39,19 +43,31 @@ void AILConfigurationHw<IGFX_METEORLAKE>::applyExt(RuntimeCapabilityTable &runti
 }
 
 template <>
-bool AILConfigurationHw<IGFX_METEORLAKE>::isContextSyncFlagRequired() {
+bool AILConfigurationHw<gfxProduct>::isContextSyncFlagRequired() {
     auto iterator = applicationsContextSyncFlag.find(processName);
     return iterator != applicationsContextSyncFlag.end();
 }
 
 template <>
-bool AILConfigurationHw<IGFX_METEORLAKE>::useLegacyValidationLogic() {
+bool AILConfigurationHw<gfxProduct>::useLegacyValidationLogic() {
     auto it = std::find_if(applicationsLegacyValidationPathMtl.begin(), applicationsLegacyValidationPathMtl.end(), [this](const auto &appName) {
         return this->processName == appName;
     });
     return it != applicationsLegacyValidationPathMtl.end() ? true : false;
 }
 
-template class AILConfigurationHw<IGFX_METEORLAKE>;
+template <>
+bool AILConfigurationHw<gfxProduct>::isBufferPoolEnabled() {
+    auto iterator = applicationsBufferPoolDisabled.find(processName);
+    return iterator == applicationsBufferPoolDisabled.end();
+}
+
+template <>
+bool AILConfigurationHw<gfxProduct>::limitAmountOfDeviceMemoryForRecycling() {
+    auto iterator = applicationsDeviceUSMRecyclingLimited.find(processName);
+    return iterator != applicationsDeviceUSMRecyclingLimited.end();
+}
+
+template class AILConfigurationHw<gfxProduct>;
 
 } // namespace NEO

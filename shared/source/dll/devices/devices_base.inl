@@ -1,9 +1,40 @@
 /*
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
+
+#if SUPPORT_XE3_CORE
+#ifdef SUPPORT_PTL
+DEVICE(0xB080, PtlHwConfig)
+DEVICE(0xB081, PtlHwConfig)
+DEVICE(0xB082, PtlHwConfig)
+DEVICE(0xB083, PtlHwConfig)
+DEVICE(0xB08F, PtlHwConfig)
+DEVICE(0xB090, PtlHwConfig)
+DEVICE(0xB0A0, PtlHwConfig)
+DEVICE(0xB0B0, PtlHwConfig)
+#endif
+#endif
+
+#if SUPPORT_XE2_HPG_CORE
+#ifdef SUPPORT_BMG
+DEVICE(0xE202, BmgHwConfig)
+NAMEDDEVICE(0xE20B, BmgHwConfig, "Intel(R) Arc(TM) B580 Graphics")
+NAMEDDEVICE(0xE20C, BmgHwConfig, "Intel(R) Arc(TM) B570 Graphics")
+DEVICE(0xE20D, BmgHwConfig)
+DEVICE(0xE210, BmgHwConfig)
+DEVICE(0xE212, BmgHwConfig)
+DEVICE(0xE215, BmgHwConfig)
+DEVICE(0xE216, BmgHwConfig)
+#endif
+#ifdef SUPPORT_LNL
+NAMEDDEVICE(0x6420, LnlHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0x64A0, LnlHwConfig, "Intel(R) Arc(TM) Graphics")
+NAMEDDEVICE(0x64B0, LnlHwConfig, "Intel(R) Graphics")
+#endif
+#endif
 
 #if SUPPORT_XE_HPC_CORE
 #ifdef SUPPORT_PVC
@@ -44,31 +75,34 @@ DEVICE(0x56A3, Dg2HwConfig)
 DEVICE(0x56A4, Dg2HwConfig)
 NAMEDDEVICE(0x56B0, Dg2HwConfig, "Intel(R) Arc(TM) Pro A30M Graphics")
 NAMEDDEVICE(0x56B1, Dg2HwConfig, "Intel(R) Arc(TM) Pro A40/A50 Graphics")
-DEVICE(0x56B2, Dg2HwConfig)
-DEVICE(0x56B3, Dg2HwConfig)
-DEVICE(0x56BA, Dg2HwConfig)
-DEVICE(0x56BB, Dg2HwConfig)
-DEVICE(0x56BC, Dg2HwConfig)
-DEVICE(0x56BD, Dg2HwConfig)
+NAMEDDEVICE(0x56B2, Dg2HwConfig, "Intel(R) Arc(TM) Pro A60M Graphics")
+NAMEDDEVICE(0x56B3, Dg2HwConfig, "Intel(R) Arc(TM) Pro A60 Graphics")
+NAMEDDEVICE(0x56BA, Dg2HwConfig, "Intel(R) Arc(TM) A380E Graphics")
+NAMEDDEVICE(0x56BB, Dg2HwConfig, "Intel(R) Arc(TM) A310E Graphics")
+NAMEDDEVICE(0x56BC, Dg2HwConfig, "Intel(R) Arc(TM) A370E Graphics")
+NAMEDDEVICE(0x56BD, Dg2HwConfig, "Intel(R) Arc(TM) A350E Graphics")
+NAMEDDEVICE(0x56BE, Dg2HwConfig, "Intel(R) Arc(TM) A750E Graphics")
+NAMEDDEVICE(0x56BF, Dg2HwConfig, "Intel(R) Arc(TM) A580E Graphics")
 NAMEDDEVICE(0x56A0, Dg2HwConfig, "Intel(R) Arc(TM) A770 Graphics")
 NAMEDDEVICE(0x56A1, Dg2HwConfig, "Intel(R) Arc(TM) A750 Graphics")
 NAMEDDEVICE(0x56A2, Dg2HwConfig, "Intel(R) Arc(TM) A580 Graphics")
 NAMEDDEVICE(0x56A5, Dg2HwConfig, "Intel(R) Arc(TM) A380 Graphics")
-NAMEDDEVICE(0x56A6, Dg2HwConfig, "Intel(R) Arc(TM) A310 Graphics")
+NAMEDDEVICE(0x56A6, Dg2HwConfig, "Intel(R) Arc(TM) A310 LP Graphics")
+NAMEDDEVICE(0x56AF, Dg2HwConfig, "Intel(R) Arc(TM) A760A Graphics")
 NAMEDDEVICE(0x56C0, Dg2HwConfig, "Intel(R) Data Center GPU Flex 170")
 NAMEDDEVICE(0x56C1, Dg2HwConfig, "Intel(R) Data Center GPU Flex 140")
+NAMEDDEVICE(0x56C2, Dg2HwConfig, "Intel(R) Data Center GPU Flex 170V")
 #endif
 #ifdef SUPPORT_MTL
-DEVICE(0x7D40, MtlHwConfig)
+NAMEDDEVICE(0x7D40, MtlHwConfig, "Intel(R) Graphics")
 NAMEDDEVICE(0x7D55, MtlHwConfig, "Intel(R) Arc(TM) Graphics")
 NAMEDDEVICE(0x7DD5, MtlHwConfig, "Intel(R) Graphics")
-DEVICE(0x7D45, MtlHwConfig)
-DEVICE(0x7D60, MtlHwConfig)
+NAMEDDEVICE(0x7D45, MtlHwConfig, "Intel(R) Graphics")
 #endif
 #ifdef SUPPORT_ARL
-DEVICE(0x7D67, ArlHwConfig)
-DEVICE(0x7D51, ArlHwConfig)
-DEVICE(0x7DD1, ArlHwConfig)
+NAMEDDEVICE(0x7D67, ArlHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0x7D51, ArlHwConfig, "Intel(R) Arc(TM) Graphics")
+NAMEDDEVICE(0x7DD1, ArlHwConfig, "Intel(R) Graphics")
 DEVICE(0x7D41, ArlHwConfig)
 #endif
 #endif
@@ -76,7 +110,6 @@ DEVICE(0x7D41, ArlHwConfig)
 #ifdef SUPPORT_GEN12LP
 
 #ifdef SUPPORT_TGLLP
-DEVICE(0xFF20, TgllpHw1x6x16)
 NAMEDDEVICE(0x9A49, TgllpHw1x6x16, "Intel(R) Iris(R) Xe Graphics")
 NAMEDDEVICE(0x9A40, TgllpHw1x6x16, "Intel(R) Iris(R) Xe Graphics")
 DEVICE(0x9A59, TgllpHw1x6x16)
@@ -91,6 +124,7 @@ NAMEDDEVICE(0x4905, Dg1HwConfig, "Intel(R) Iris(R) Xe MAX Graphics")
 DEVICE(0x4906, Dg1HwConfig)
 NAMEDDEVICE(0x4907, Dg1HwConfig, "Intel(R) Server GPU SG-18M")
 NAMEDDEVICE(0x4908, Dg1HwConfig, "Intel(R) Iris(R) Xe Graphics")
+NAMEDDEVICE(0x4909, Dg1HwConfig, "Intel(R) Iris(R) Xe MAX 100 Graphics")
 #endif
 
 #ifdef SUPPORT_RKL
@@ -107,6 +141,7 @@ NAMEDDEVICE(0x4680, AdlsHwConfig, "Intel(R) UHD Graphics 770")
 NAMEDDEVICE(0x4682, AdlsHwConfig, "Intel(R) UHD Graphics 730")
 NAMEDDEVICE(0x4688, AdlsHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x468A, AdlsHwConfig, "Intel(R) UHD Graphics")
+NAMEDDEVICE(0x468B, AdlsHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x4690, AdlsHwConfig, "Intel(R) UHD Graphics 770")
 NAMEDDEVICE(0x4692, AdlsHwConfig, "Intel(R) UHD Graphics 730")
 NAMEDDEVICE(0x4693, AdlsHwConfig, "Intel(R) UHD Graphics 710")
@@ -116,6 +151,7 @@ NAMEDDEVICE(0xA782, AdlsHwConfig, "Intel(R) UHD Graphics 730")
 DEVICE(0xA783, AdlsHwConfig)
 NAMEDDEVICE(0xA788, AdlsHwConfig, "Intel(R) UHD Graphics")
 DEVICE(0xA789, AdlsHwConfig)
+NAMEDDEVICE(0xA78A, AdlsHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0xA78B, AdlsHwConfig, "Intel(R) UHD Graphics")
 #endif
 
@@ -123,13 +159,14 @@ NAMEDDEVICE(0xA78B, AdlsHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x46D0, AdlnHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x46D1, AdlnHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x46D2, AdlnHwConfig, "Intel(R) UHD Graphics")
+NAMEDDEVICE(0x46D3, AdlnHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0x46D4, AdlnHwConfig, "Intel(R) Graphics")
 #endif
 
 #ifdef SUPPORT_ADLP
 DEVICE(0x46A0, AdlpHwConfig)
 DEVICE(0x46B0, AdlpHwConfig)
 DEVICE(0x46A1, AdlpHwConfig)
-DEVICE(0x46A2, AdlpHwConfig)
 NAMEDDEVICE(0x46A3, AdlpHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x46A6, AdlpHwConfig, "Intel(R) Iris(R) Xe Graphics")
 NAMEDDEVICE(0x46A8, AdlpHwConfig, "Intel(R) Iris(R) Xe Graphics")
@@ -138,11 +175,9 @@ NAMEDDEVICE(0x462A, AdlpHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x4626, AdlpHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0x4628, AdlpHwConfig, "Intel(R) UHD Graphics")
 DEVICE(0x46B1, AdlpHwConfig)
-DEVICE(0x46B2, AdlpHwConfig)
 NAMEDDEVICE(0x46B3, AdlpHwConfig, "Intel(R) UHD Graphics")
 DEVICE(0x46C0, AdlpHwConfig)
 DEVICE(0x46C1, AdlpHwConfig)
-DEVICE(0x46C2, AdlpHwConfig)
 NAMEDDEVICE(0x46C3, AdlpHwConfig, "Intel(R) UHD Graphics")
 // RPL-P
 NAMEDDEVICE(0xA7A0, AdlpHwConfig, "Intel(R) Iris(R) Xe Graphics")
@@ -151,177 +186,9 @@ NAMEDDEVICE(0xA7A8, AdlpHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0xA7A1, AdlpHwConfig, "Intel(R) Iris(R) Xe Graphics")
 NAMEDDEVICE(0xA721, AdlpHwConfig, "Intel(R) UHD Graphics")
 NAMEDDEVICE(0xA7A9, AdlpHwConfig, "Intel(R) UHD Graphics")
+NAMEDDEVICE(0xA7AA, AdlpHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0xA7AB, AdlpHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0xA7AC, AdlpHwConfig, "Intel(R) Graphics")
+NAMEDDEVICE(0xA7AD, AdlpHwConfig, "Intel(R) Graphics")
 #endif
-#endif
-
-#ifdef SUPPORT_GEN11
-
-#ifdef SUPPORT_ICLLP
-DEVICE(0xFF05, IcllpHw1x4x8)
-NAMEDDEVICE(0x8A56, IcllpHw1x4x8, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x8A58, IcllpHw1x4x8, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x8A5C, IcllpHw1x6x8, "Intel(R) Iris(R) Plus Graphics")
-NAMEDDEVICE(0x8A5A, IcllpHw1x6x8, "Intel(R) Iris(R) Plus Graphics")
-DEVICE(0x8A50, IcllpHw1x8x8)
-NAMEDDEVICE(0x8A52, IcllpHw1x8x8, "Intel(R) Iris(R) Plus Graphics")
-NAMEDDEVICE(0x8A51, IcllpHw1x8x8, "Intel(R) Iris(R) Plus Graphics")
-#endif
-
-#ifdef SUPPORT_LKF
-NAMEDDEVICE(0x9840, LkfHw1x8x8, "Intel(R) UHD Graphics")
-#endif
-
-#ifdef SUPPORT_EHL
-DEVICE(0x4500, EhlHwConfig)
-DEVICE(0x4541, EhlHwConfig)
-DEVICE(0x4551, EhlHwConfig)
-NAMEDDEVICE(0x4571, EhlHwConfig, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x4555, EhlHwConfig, "Intel(R) UHD Graphics")
-DEVICE(0x4E51, EhlHwConfig)
-NAMEDDEVICE(0x4E61, EhlHwConfig, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x4E71, EhlHwConfig, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x4E55, EhlHwConfig, "Intel(R) UHD Graphics")
-#endif
-#endif
-
-#ifdef SUPPORT_GEN9
-
-#ifdef SUPPORT_SKL
-NAMEDDEVICE(0x1902, SklHw1x2x6, "Intel(R) HD Graphics 510")
-NAMEDDEVICE(0x190B, SklHw1x2x6, "Intel(R) HD Graphics 510")
-DEVICE(0x190A, SklHw1x2x6)
-NAMEDDEVICE(0x1906, SklHw1x2x6, "Intel(R) HD Graphics 510")
-DEVICE(0x190E, SklHw1x2x6)
-DEVICE(0x1917, SklHw1x3x6)
-DEVICE(0x1913, SklHw1x3x6)
-DEVICE(0X1915, SklHw1x3x6)
-NAMEDDEVICE(0x1912, SklHw1x3x8, "Intel(R) HD Graphics 530")
-NAMEDDEVICE(0x191B, SklHw1x3x8, "Intel(R) HD Graphics 530")
-DEVICE(0x191A, SklHw1x3x8)
-NAMEDDEVICE(0x1916, SklHw1x3x8, "Intel(R) HD Graphics 520")
-NAMEDDEVICE(0x191E, SklHw1x3x8, "Intel(R) HD Graphics 515")
-NAMEDDEVICE(0x191D, SklHw1x3x8, "Intel(R) HD Graphics P530")
-NAMEDDEVICE(0x1921, SklHw1x3x8, "Intel(R) HD Graphics 520")
-DEVICE(0x9905, SklHw1x3x8)
-NAMEDDEVICE(0x192B, SklHw2x3x8, "Intel(R) Iris(R) Graphics 555")
-NAMEDDEVICE(0x192D, SklHw2x3x8, "Intel(R) Iris(R) Graphics P555")
-DEVICE(0x192A, SklHw2x3x8)
-NAMEDDEVICE(0x1923, SklHw2x3x8, "Intel(R) HD Graphics 535")
-NAMEDDEVICE(0x1926, SklHw2x3x8, "Intel(R) Iris(R) Graphics 540")
-NAMEDDEVICE(0x1927, SklHw2x3x8, "Intel(R) Iris(R) Graphics 550")
-DEVICE(0x1932, SklHw3x3x8)
-NAMEDDEVICE(0x193B, SklHw3x3x8, "Intel(R) Iris(R) Pro Graphics 580")
-NAMEDDEVICE(0x193A, SklHw3x3x8, "Intel(R) Iris(R) Pro Graphics P580")
-NAMEDDEVICE(0x193D, SklHw3x3x8, "Intel(R) Iris(R) Pro Graphics P580")
-#endif
-
-#ifdef SUPPORT_KBL
-NAMEDDEVICE(0x5902, KblHw1x2x6, "Intel(R) HD Graphics 610")
-NAMEDDEVICE(0x590B, KblHw1x2x6, "Intel(R) HD Graphics 610")
-DEVICE(0x590A, KblHw1x2x6)
-NAMEDDEVICE(0x5906, KblHw1x2x6, "Intel(R) HD Graphics 610")
-DEVICE(0x590E, KblHw1x3x6)
-DEVICE(0x5908, KblHw1x2x6)
-DEVICE(0x5913, KblHw1x3x6)
-DEVICE(0x5915, KblHw1x2x6)
-NAMEDDEVICE(0x5912, KblHw1x3x8, "Intel(R) HD Graphics 630")
-NAMEDDEVICE(0x591B, KblHw1x3x8, "Intel(R) HD Graphics 630")
-NAMEDDEVICE(0x5917, KblHw1x3x8, "Intel(R) UHD Graphics 620")
-DEVICE(0x591A, KblHw1x3x8)
-NAMEDDEVICE(0x5916, KblHw1x3x8, "Intel(R) HD Graphics 620")
-NAMEDDEVICE(0x591E, KblHw1x3x8, "Intel(R) HD Graphics 615")
-NAMEDDEVICE(0x591D, KblHw1x3x8, "Intel(R) HD Graphics P630")
-NAMEDDEVICE(0x591C, KblHw1x3x8, "Intel(R) UHD Graphics 615")
-NAMEDDEVICE(0x5921, KblHw1x3x8, "Intel(R) HD Graphics 620")
-NAMEDDEVICE(0x5926, KblHw2x3x8, "Intel(R) Iris(R) Plus Graphics 640")
-NAMEDDEVICE(0x5927, KblHw2x3x8, "Intel(R) Iris(R) Plus Graphics 650")
-DEVICE(0x592B, KblHw2x3x8)
-DEVICE(0x592A, KblHw2x3x8)
-DEVICE(0x5923, KblHw2x3x8)
-DEVICE(0x5932, KblHw3x3x8)
-DEVICE(0x593B, KblHw3x3x8)
-DEVICE(0x593A, KblHw3x3x8)
-DEVICE(0x593D, KblHw3x3x8)
-#endif
-
-#ifdef SUPPORT_CFL
-NAMEDDEVICE(0x3E90, CflHw1x2x6, "Intel(R) UHD Graphics 610")
-NAMEDDEVICE(0x3E93, CflHw1x2x6, "Intel(R) UHD Graphics 610")
-DEVICE(0x3EA4, CflHw1x2x6)
-NAMEDDEVICE(0x3E99, CflHw1x2x6, "Intel(R) UHD Graphics 610")
-NAMEDDEVICE(0x3EA1, CflHw1x2x6, "Intel(R) UHD Graphics 610")
-NAMEDDEVICE(0x3E92, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-NAMEDDEVICE(0x3E9B, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-NAMEDDEVICE(0x3E94, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-NAMEDDEVICE(0x3E91, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-NAMEDDEVICE(0x3E96, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-NAMEDDEVICE(0x3E9A, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-DEVICE(0x3EA3, CflHw1x3x8)
-NAMEDDEVICE(0x3EA9, CflHw1x3x8, "Intel(R) UHD Graphics 620")
-NAMEDDEVICE(0x3EA0, CflHw1x3x8, "Intel(R) UHD Graphics 620")
-NAMEDDEVICE(0x3E98, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-DEVICE(0x3E95, CflHw2x3x8)
-NAMEDDEVICE(0x3EA6, CflHw2x3x8, "Intel(R) Iris(R) Plus Graphics 645")
-DEVICE(0x3EA7, CflHw2x3x8)
-NAMEDDEVICE(0x3EA8, CflHw2x3x8, "Intel(R) Iris(R) Plus Graphics 655")
-NAMEDDEVICE(0x3EA5, CflHw2x3x8, "Intel(R) Iris(R) Plus Graphics 655")
-DEVICE(0x3EA2, CflHw2x3x8)
-NAMEDDEVICE(0x9B21, CflHw1x2x6, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x9BAA, CflHw1x2x6, "Intel(R) UHD Graphics")
-DEVICE(0x9BAB, CflHw1x2x6)
-NAMEDDEVICE(0x9BAC, CflHw1x2x6, "Intel(R) UHD Graphics")
-DEVICE(0x9BA0, CflHw1x2x6)
-DEVICE(0x9BA5, CflHw1x2x6)
-NAMEDDEVICE(0x9BA8, CflHw1x2x6, "Intel(R) UHD Graphics 610")
-NAMEDDEVICE(0x9BA4, CflHw1x2x6, "Intel(R) UHD Graphics")
-DEVICE(0x9BA2, CflHw1x2x6)
-NAMEDDEVICE(0x9B41, CflHw1x3x8, "Intel(R) UHD Graphics")
-NAMEDDEVICE(0x9BCA, CflHw1x3x8, "Intel(R) UHD Graphics")
-DEVICE(0x9BCB, CflHw1x3x8)
-NAMEDDEVICE(0x9BCC, CflHw1x3x8, "Intel(R) UHD Graphics")
-DEVICE(0x9BC0, CflHw1x3x8)
-NAMEDDEVICE(0x9BC5, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-NAMEDDEVICE(0x9BC8, CflHw1x3x8, "Intel(R) UHD Graphics 630")
-NAMEDDEVICE(0x9BC4, CflHw1x3x8, "Intel(R) UHD Graphics")
-DEVICE(0x9BC2, CflHw1x3x8)
-NAMEDDEVICE(0x9BC6, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-NAMEDDEVICE(0x9BE6, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-NAMEDDEVICE(0x9BF6, CflHw1x3x8, "Intel(R) UHD Graphics P630")
-#endif
-
-#ifdef SUPPORT_GLK
-NAMEDDEVICE(0x3184, GlkHw1x3x6, "Intel(R) UHD Graphics 605")
-NAMEDDEVICE(0x3185, GlkHw1x2x6, "Intel(R) UHD Graphics 600")
-#endif
-
-#ifdef SUPPORT_BXT
-DEVICE(0x9906, BxtHw1x3x6)
-DEVICE(0x9907, BxtHw1x3x6)
-DEVICE(0x0A84, BxtHw1x3x6)
-NAMEDDEVICE(0x5A84, BxtHw1x3x6, "Intel(R) HD Graphics 505")
-NAMEDDEVICE(0x5A85, BxtHw1x2x6, "Intel(R) HD Graphics 500")
-DEVICE(0x1A85, BxtHw1x2x6)
-DEVICE(0x1A84, BxtHw1x3x6)
-DEVICE(0x9908, BxtHw1x3x6)
-#endif
-#endif
-
-#ifdef SUPPORT_GEN8
-
-DEVICE(0x1602, BdwHw1x2x6)
-DEVICE(0x160A, BdwHw1x2x6)
-DEVICE(0x1606, BdwHw1x2x6)
-NAMEDDEVICE(0x160E, BdwHw1x2x6, "Intel(R) HD Graphics")
-DEVICE(0x160D, BdwHw1x2x6)
-NAMEDDEVICE(0x1612, BdwHw1x3x8, "Intel(R) HD Graphics 5600")
-NAMEDDEVICE(0x161A, BdwHw1x3x8, "Intel(R) HD Graphics P5700")
-NAMEDDEVICE(0x1616, BdwHw1x3x8, "Intel(R) HD Graphics 5500")
-NAMEDDEVICE(0x161E, BdwHw1x3x8, "Intel(R) HD Graphics 5300")
-DEVICE(0x161D, BdwHw1x3x8)
-DEVICE(0x1622, BdwHw2x3x8)
-NAMEDDEVICE(0x162A, BdwHw2x3x8, "Intel(R) Iris(TM) Pro Graphics P6300")
-NAMEDDEVICE(0x1626, BdwHw2x3x8, "Intel(R) HD Graphics 6000")
-DEVICE(0x162B, BdwHw2x3x8)
-DEVICE(0x162E, BdwHw2x3x8)
-DEVICE(0x162D, BdwHw2x3x8)
 #endif

@@ -6,11 +6,13 @@
  */
 
 #include "shared/source/execution_environment/root_device_environment.h"
-#include "shared/source/kernel/kernel_descriptor.h"
+#include "shared/source/helpers/definitions/indirect_detection_versions.h"
+#include "shared/source/os_interface/product_helper_xe_hpg_and_xe_hpc.inl"
 
 #include "aubstream/product_family.h"
 
 namespace NEO {
+
 template <>
 bool ProductHelperHw<gfxProduct>::isMaxThreadsForWorkgroupWARequired(const HardwareInfo &hwInfo) const {
     return PVC::isXl(hwInfo);
@@ -81,11 +83,6 @@ bool ProductHelperHw<gfxProduct>::isSystolicModeConfigurable(const HardwareInfo 
 template <>
 bool ProductHelperHw<gfxProduct>::isGlobalFenceInCommandStreamRequired(const HardwareInfo &hwInfo) const {
     return !PVC::isXlA0(hwInfo);
-}
-
-template <>
-bool ProductHelperHw<gfxProduct>::isAdjustProgrammableIdPreferredSlmSizeRequired(const HardwareInfo &hwInfo) const {
-    return PVC::isXlA0(hwInfo);
 }
 
 template <>
@@ -202,11 +199,13 @@ bool ProductHelperHw<gfxProduct>::isStatefulAddressingModeSupported() const {
 }
 
 template <>
-bool ProductHelperHw<gfxProduct>::isDetectIndirectAccessInKernelSupported(const KernelDescriptor &kernelDescriptor, const bool isPrecompiled, const uint32_t kernelIndirectDetectionVersion) const {
-    const bool isZebin = kernelDescriptor.kernelAttributes.binaryFormat == DeviceBinaryFormat::zebin;
-    const bool isCMKernelHeuristic = kernelDescriptor.kernelAttributes.simdSize == 1;
-    const bool indirectDetectionValid = !isPrecompiled;
-    return isZebin && indirectDetectionValid && !isCMKernelHeuristic;
+uint32_t ProductHelperHw<gfxProduct>::getRequiredDetectIndirectVersion() const {
+    return IndirectDetectionVersions::requiredDetectIndirectVersionPVC;
+}
+
+template <>
+uint32_t ProductHelperHw<gfxProduct>::getRequiredDetectIndirectVersionVC() const {
+    return IndirectDetectionVersions::requiredDetectIndirectVersionPVCVectorCompiler;
 }
 
 template <>
@@ -217,7 +216,7 @@ std::optional<aub_stream::ProductFamily> ProductHelperHw<gfxProduct>::getAubStre
 template <>
 uint32_t ProductHelperHw<gfxProduct>::getNumberOfPartsInTileForConcurrentKernel(uint32_t ccsCount) const {
     if (ccsCount == 1) {
-        return 2;
+        return 1;
     } else if (ccsCount == 2) {
         return 4;
     }
@@ -228,6 +227,16 @@ template <>
 bool ProductHelperHw<gfxProduct>::isSkippingStatefulInformationRequired(const KernelDescriptor &kernelDescriptor) const {
     bool isGeneratedByNgen = !kernelDescriptor.kernelMetadata.isGeneratedByIgc;
     return isGeneratedByNgen;
+}
+
+template <>
+bool ProductHelperHw<gfxProduct>::supportReadOnlyAllocations() const {
+    return true;
+}
+
+template <>
+std::optional<bool> ProductHelperHw<gfxProduct>::isCoherentAllocation(uint64_t patIndex) const {
+    return std::nullopt;
 }
 
 } // namespace NEO

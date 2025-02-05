@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,12 +32,13 @@ struct BuffersWithClMemCacheClosTests : public DrmMemoryManagerLocalMemoryPrelim
         auto memoryInfo = new MockExtendedMemoryInfo(*mock);
 
         mock->memoryInfo.reset(memoryInfo);
-        mock->cacheInfo.reset(new MockCacheInfo(*mock, 1024, 2, 32));
+        mock->l3CacheInfo.reset(new MockCacheInfo(*mock->getIoctlHelper(), 1024, 2, 32));
 
         auto &multiTileArchInfo = executionEnvironment->rootDeviceEnvironments[rootDeviceIndex]->getMutableHardwareInfo()->gtSystemInfo.MultiTileArchInfo;
         multiTileArchInfo.TileCount = (memoryInfo->getDrmRegionInfos().size() - 1);
         multiTileArchInfo.IsValid = (multiTileArchInfo.TileCount > 0);
 
+        mock->engineInfoQueried = false;
         mock->queryEngineInfo();
 
         clDevice = std::make_unique<MockClDevice>(device.get());
@@ -96,8 +97,8 @@ XE_HPC_CORETEST_F(BuffersWithClMemCacheClosTests, givenDrmBuffersWhenTheyAreCrea
     cl_mem_alloc_flags_intel allocflags = 0;
     MemoryProperties memoryProperties = ClMemoryPropertiesHelper::createMemoryProperties(flags, flagsIntel, allocflags, device.get());
 
-    auto &gfxCoreHelper = device->getGfxCoreHelper();
-    auto numCacheRegions = gfxCoreHelper.getNumCacheRegions();
+    auto &productHelper = device->getProductHelper();
+    auto numCacheRegions = productHelper.getNumCacheRegions();
     EXPECT_EQ(3u, numCacheRegions);
 
     for (uint32_t cacheRegion = 0; cacheRegion < numCacheRegions; cacheRegion++) {

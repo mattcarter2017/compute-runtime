@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,141 +7,25 @@
 
 #include "shared/source/command_container/command_encoder.h"
 #include "shared/source/command_container/command_encoder.inl"
+#include "shared/source/command_container/command_encoder_from_gen12lp_to_xe2_hpg.inl"
+#include "shared/source/command_container/command_encoder_from_xe_hpg_core_to_xe2_hpg.inl"
+#include "shared/source/command_container/command_encoder_from_xe_hpg_core_to_xe3_core.inl"
+#include "shared/source/command_container/command_encoder_pre_xe2_hpg_core.inl"
+#include "shared/source/command_container/command_encoder_tgllp_and_later.inl"
+#include "shared/source/command_container/command_encoder_xe_hpc_core_and_later.inl"
+#include "shared/source/command_container/command_encoder_xe_hpg_core_and_xe_hpc.inl"
 #include "shared/source/command_container/command_encoder_xehp_and_later.inl"
-#include "shared/source/command_container/encode_compute_mode_tgllp_and_later.inl"
 #include "shared/source/command_stream/stream_properties.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/kernel/grf_config.h"
 #include "shared/source/release_helper/release_helper.h"
-#include "shared/source/utilities/lookup_array.h"
 #include "shared/source/xe_hpc_core/hw_cmds_xe_hpc_core_base.h"
 
 using Family = NEO::XeHpcCoreFamily;
 
-#include "shared/source/command_container/command_encoder_tgllp_and_later.inl"
-#include "shared/source/command_container/command_encoder_xe_hpc_core_and_later.inl"
-#include "shared/source/command_container/command_encoder_xe_hpg_core_and_later.inl"
-#include "shared/source/command_container/image_surface_state/compression_params_tgllp_and_later.inl"
-#include "shared/source/command_container/image_surface_state/compression_params_xehp_and_later.inl"
+#include "shared/source/command_container/command_encoder_heap_addressing.inl"
 
 namespace NEO {
-
-template <>
-template <typename WalkerType, typename InterfaceDescriptorType>
-void EncodeDispatchKernel<Family>::adjustInterfaceDescriptorData(InterfaceDescriptorType &interfaceDescriptor, const Device &device, const HardwareInfo &hwInfo, const uint32_t threadGroupCount, const uint32_t numGrf, WalkerType &walkerCmd) {
-    const auto &productHelper = device.getProductHelper();
-
-    if (productHelper.isDisableOverdispatchAvailable(hwInfo)) {
-        interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
-        bool adjustTGDispatchSize = true;
-        if (debugManager.flags.AdjustThreadGroupDispatchSize.get() != -1) {
-            adjustTGDispatchSize = !!debugManager.flags.AdjustThreadGroupDispatchSize.get();
-        }
-        // apply v2 algorithm only for parts where MaxSubSlicesSupported is equal to SubSliceCount
-        auto algorithmVersion = hwInfo.gtSystemInfo.MaxSubSlicesSupported == hwInfo.gtSystemInfo.SubSliceCount ? 2 : 1;
-        if (debugManager.flags.ForceThreadGroupDispatchSizeAlgorithm.get() != -1) {
-            algorithmVersion = debugManager.flags.ForceThreadGroupDispatchSizeAlgorithm.get();
-        }
-
-        if (algorithmVersion == 2) {
-            auto threadsPerXeCore = hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.MaxSubSlicesSupported;
-            if (numGrf == 256) {
-                threadsPerXeCore /= 2;
-            }
-            auto tgDispatchSizeSelected = 8;
-            uint32_t numberOfThreadsInThreadGroup = interfaceDescriptor.getNumberOfThreadsInGpgpuThreadGroup();
-
-            if (walkerCmd.getThreadGroupIdXDimension() > 1 && (walkerCmd.getThreadGroupIdYDimension() > 1 || walkerCmd.getThreadGroupIdZDimension() > 1)) {
-                while (walkerCmd.getThreadGroupIdXDimension() % tgDispatchSizeSelected != 0) {
-                    tgDispatchSizeSelected /= 2;
-                }
-            } else if (walkerCmd.getThreadGroupIdYDimension() > 1 && walkerCmd.getThreadGroupIdZDimension() > 1) {
-                while (walkerCmd.getThreadGroupIdYDimension() % tgDispatchSizeSelected != 0) {
-                    tgDispatchSizeSelected /= 2;
-                }
-            }
-
-            auto workgroupCount = walkerCmd.getThreadGroupIdXDimension() * walkerCmd.getThreadGroupIdYDimension() * walkerCmd.getThreadGroupIdZDimension();
-            auto tileCount = ImplicitScalingHelper::isImplicitScalingEnabled(device.getDeviceBitfield(), true) ? device.getNumSubDevices() : 1u;
-
-            // make sure we fit all xe core
-            while (workgroupCount / tgDispatchSizeSelected < hwInfo.gtSystemInfo.MaxSubSlicesSupported * tileCount && tgDispatchSizeSelected > 1) {
-                tgDispatchSizeSelected /= 2;
-            }
-
-            auto threadCountPerGrouping = tgDispatchSizeSelected * numberOfThreadsInThreadGroup;
-            // make sure we do not use more threads then present on each xe core
-            while (threadCountPerGrouping > threadsPerXeCore && tgDispatchSizeSelected > 1) {
-                tgDispatchSizeSelected /= 2;
-                threadCountPerGrouping /= 2;
-            }
-
-            if (tgDispatchSizeSelected == 8) {
-                interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_8);
-            } else if (tgDispatchSizeSelected == 1) {
-                interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
-            } else if (tgDispatchSizeSelected == 2) {
-                interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_2);
-            } else {
-                interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_4);
-            }
-        } else {
-            if (adjustTGDispatchSize) {
-                UNRECOVERABLE_IF(numGrf == 0u);
-                constexpr uint32_t maxThreadsInTGForTGDispatchSize8 = 16u;
-                constexpr uint32_t maxThreadsInTGForTGDispatchSize4 = 32u;
-                auto &gfxCoreHelper = device.getGfxCoreHelper();
-                uint32_t availableThreadCount = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, numGrf);
-                if (ImplicitScalingHelper::isImplicitScalingEnabled(device.getDeviceBitfield(), true)) {
-                    const uint32_t tilesCount = device.getNumSubDevices();
-                    availableThreadCount *= tilesCount;
-                }
-                uint32_t numberOfThreadsInThreadGroup = interfaceDescriptor.getNumberOfThreadsInGpgpuThreadGroup();
-                uint32_t dispatchedTotalThreadCount = numberOfThreadsInThreadGroup * threadGroupCount;
-                UNRECOVERABLE_IF(numberOfThreadsInThreadGroup == 0u);
-                auto tgDispatchSizeSelected = 1u;
-
-                if (dispatchedTotalThreadCount <= availableThreadCount) {
-                    tgDispatchSizeSelected = 1;
-                } else if (numberOfThreadsInThreadGroup <= maxThreadsInTGForTGDispatchSize8) {
-                    tgDispatchSizeSelected = 8;
-                } else if (numberOfThreadsInThreadGroup <= maxThreadsInTGForTGDispatchSize4) {
-                    tgDispatchSizeSelected = 4;
-                } else {
-                    tgDispatchSizeSelected = 2;
-                }
-                if (walkerCmd.getThreadGroupIdXDimension() > 1 && (walkerCmd.getThreadGroupIdYDimension() > 1 || walkerCmd.getThreadGroupIdZDimension() > 1)) {
-                    while (walkerCmd.getThreadGroupIdXDimension() % tgDispatchSizeSelected != 0) {
-                        tgDispatchSizeSelected /= 2;
-                    }
-                } else if (walkerCmd.getThreadGroupIdYDimension() > 1 && walkerCmd.getThreadGroupIdZDimension() > 1) {
-                    while (walkerCmd.getThreadGroupIdYDimension() % tgDispatchSizeSelected != 0) {
-                        tgDispatchSizeSelected /= 2;
-                    }
-                }
-                if (tgDispatchSizeSelected == 8) {
-                    interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_8);
-                } else if (tgDispatchSizeSelected == 1) {
-                    interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
-                } else if (tgDispatchSizeSelected == 2) {
-                    interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_2);
-                } else {
-                    interfaceDescriptor.setThreadGroupDispatchSize(INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_4);
-                }
-            }
-        }
-    }
-
-    if (debugManager.flags.ForceThreadGroupDispatchSize.get() != -1) {
-        interfaceDescriptor.setThreadGroupDispatchSize(static_cast<INTERFACE_DESCRIPTOR_DATA::THREAD_GROUP_DISPATCH_SIZE>(
-            debugManager.flags.ForceThreadGroupDispatchSize.get()));
-    }
-}
-
-template <>
-inline void EncodeAtomic<Family>::setMiAtomicAddress(MI_ATOMIC &atomic, uint64_t writeAddress) {
-    atomic.setMemoryAddress(writeAddress);
-}
 
 template <>
 void EncodeComputeMode<Family>::programComputeModeCommand(LinearStream &csr, StateComputeModeProperties &properties, const RootDeviceEnvironment &rootDeviceEnvironment) {
@@ -161,16 +45,16 @@ void EncodeComputeMode<Family>::programComputeModeCommand(LinearStream &csr, Sta
     if (properties.threadArbitrationPolicy.isDirty) {
         switch (properties.threadArbitrationPolicy.value) {
         case ThreadArbitrationPolicy::RoundRobin:
-            stateComputeMode.setEuThreadSchedulingModeOverride(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_ROUND_ROBIN);
+            stateComputeMode.setEuThreadSchedulingMode(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_ROUND_ROBIN);
             break;
         case ThreadArbitrationPolicy::AgeBased:
-            stateComputeMode.setEuThreadSchedulingModeOverride(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_OLDEST_FIRST);
+            stateComputeMode.setEuThreadSchedulingMode(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_OLDEST_FIRST);
             break;
         case ThreadArbitrationPolicy::RoundRobinAfterDependency:
-            stateComputeMode.setEuThreadSchedulingModeOverride(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_STALL_BASED_ROUND_ROBIN);
+            stateComputeMode.setEuThreadSchedulingMode(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_STALL_BASED_ROUND_ROBIN);
             break;
         default:
-            stateComputeMode.setEuThreadSchedulingModeOverride(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE_OVERRIDE::EU_THREAD_SCHEDULING_MODE_OVERRIDE_HW_DEFAULT);
+            stateComputeMode.setEuThreadSchedulingMode(STATE_COMPUTE_MODE::EU_THREAD_SCHEDULING_MODE::EU_THREAD_SCHEDULING_MODE_HW_DEFAULT);
         }
         maskBits |= Family::stateComputeModeEuThreadSchedulingModeOverrideMask;
     }
@@ -253,109 +137,6 @@ inline void EncodeMiFlushDW<Family>::adjust(MI_FLUSH_DW *miFlushDwCmd, const Pro
 }
 
 template <>
-template <>
-void EncodeDispatchKernel<Family>::programBarrierEnable(INTERFACE_DESCRIPTOR_DATA &interfaceDescriptor,
-                                                        uint32_t value,
-                                                        const HardwareInfo &hwInfo) {
-    using BARRIERS = INTERFACE_DESCRIPTOR_DATA::NUMBER_OF_BARRIERS;
-    static const LookupArray<uint32_t, BARRIERS, 8> barrierLookupArray({{{0, BARRIERS::NUMBER_OF_BARRIERS_NONE},
-                                                                         {1, BARRIERS::NUMBER_OF_BARRIERS_B1},
-                                                                         {2, BARRIERS::NUMBER_OF_BARRIERS_B2},
-                                                                         {4, BARRIERS::NUMBER_OF_BARRIERS_B4},
-                                                                         {8, BARRIERS::NUMBER_OF_BARRIERS_B8},
-                                                                         {16, BARRIERS::NUMBER_OF_BARRIERS_B16},
-                                                                         {24, BARRIERS::NUMBER_OF_BARRIERS_B24},
-                                                                         {32, BARRIERS::NUMBER_OF_BARRIERS_B32}}});
-    BARRIERS numBarriers = barrierLookupArray.lookUp(value);
-    interfaceDescriptor.setNumberOfBarriers(numBarriers);
-}
-
-template <>
-template <typename WalkerType>
-void EncodeDispatchKernel<Family>::encodeAdditionalWalkerFields(const RootDeviceEnvironment &rootDeviceEnvironment, WalkerType &walkerCmd, const EncodeWalkerArgs &walkerArgs) {
-    const auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
-    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
-    auto programGlobalFenceAsPostSyncOperationInComputeWalker = productHelper.isGlobalFenceInCommandStreamRequired(hwInfo) &&
-                                                                walkerArgs.requiredSystemFence;
-    int32_t overrideProgramSystemMemoryFence = debugManager.flags.ProgramGlobalFenceAsPostSyncOperationInComputeWalker.get();
-    if (overrideProgramSystemMemoryFence != -1) {
-        programGlobalFenceAsPostSyncOperationInComputeWalker = !!overrideProgramSystemMemoryFence;
-    }
-    auto &postSyncData = walkerCmd.getPostSync();
-    postSyncData.setSystemMemoryFenceRequest(programGlobalFenceAsPostSyncOperationInComputeWalker);
-
-    int32_t forceL3PrefetchForComputeWalker = debugManager.flags.ForceL3PrefetchForComputeWalker.get();
-    if (forceL3PrefetchForComputeWalker != -1) {
-        walkerCmd.setL3PrefetchDisable(!forceL3PrefetchForComputeWalker);
-    }
-
-    int32_t overrideDispatchAllWalkerEnableInComputeWalker = debugManager.flags.ComputeDispatchAllWalkerEnableInComputeWalker.get();
-    if (overrideDispatchAllWalkerEnableInComputeWalker != -1) {
-        walkerCmd.setComputeDispatchAllWalkerEnable(overrideDispatchAllWalkerEnableInComputeWalker);
-    }
-}
-
-template <>
-template <typename InterfaceDescriptorType>
-void EncodeDispatchKernel<Family>::appendAdditionalIDDFields(InterfaceDescriptorType *pInterfaceDescriptor, const RootDeviceEnvironment &rootDeviceEnvironment, const uint32_t threadsPerThreadGroup, uint32_t slmTotalSize, SlmPolicy slmPolicy) {
-    using PREFERRED_SLM_ALLOCATION_SIZE = typename InterfaceDescriptorType::PREFERRED_SLM_ALLOCATION_SIZE;
-    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
-    const uint32_t threadsPerDssCount = hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.DualSubSliceCount;
-    const uint32_t workGroupCountPerDss = static_cast<uint32_t>(Math::divideAndRoundUp(threadsPerDssCount, threadsPerThreadGroup));
-
-    auto &gfxCoreHelper = rootDeviceEnvironment.getHelper<GfxCoreHelper>();
-
-    const uint32_t workgroupSlmSize = gfxCoreHelper.alignSlmSize(slmTotalSize);
-
-    uint32_t slmSize = 0u;
-
-    switch (slmPolicy) {
-    case SlmPolicy::slmPolicyLargeData:
-        slmSize = workgroupSlmSize;
-        break;
-    case SlmPolicy::slmPolicyLargeSlm:
-    default:
-        slmSize = workgroupSlmSize * workGroupCountPerDss;
-        break;
-    }
-
-    struct SizeToPreferredSlmValue {
-        uint32_t upperLimit;
-        PREFERRED_SLM_ALLOCATION_SIZE valueToProgram;
-    };
-    const std::array<SizeToPreferredSlmValue, 6> ranges = {{
-        // upper limit, retVal
-        {0, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_0K},
-        {16 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K},
-        {32 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_32K},
-        {64 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_64K},
-        {96 * MemoryConstants::kiloByte, PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_96K},
-    }};
-
-    auto programmableIdPreferredSlmSize = PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_128K;
-    for (auto &range : ranges) {
-        if (slmSize <= range.upperLimit) {
-            programmableIdPreferredSlmSize = range.valueToProgram;
-            break;
-        }
-    }
-
-    const auto &productHelper = rootDeviceEnvironment.getHelper<ProductHelper>();
-
-    if ((slmSize == 0) && (productHelper.isAdjustProgrammableIdPreferredSlmSizeRequired(hwInfo))) {
-        programmableIdPreferredSlmSize = PREFERRED_SLM_ALLOCATION_SIZE::PREFERRED_SLM_ALLOCATION_SIZE_16K;
-    }
-
-    pInterfaceDescriptor->setPreferredSlmAllocationSize(programmableIdPreferredSlmSize);
-
-    if (debugManager.flags.OverridePreferredSlmAllocationSizePerDss.get() != -1) {
-        auto toProgram =
-            static_cast<PREFERRED_SLM_ALLOCATION_SIZE>(debugManager.flags.OverridePreferredSlmAllocationSizePerDss.get());
-        pInterfaceDescriptor->setPreferredSlmAllocationSize(toProgram);
-    }
-}
-
-template <>
 void EncodeDispatchKernel<Family>::adjustBindingTablePrefetch(INTERFACE_DESCRIPTOR_DATA &interfaceDescriptor, uint32_t samplerCount, uint32_t bindingTableEntryCount) {
     auto enablePrefetch = EncodeSurfaceState<Family>::doBindingTablePrefetch();
 
@@ -365,6 +146,19 @@ void EncodeDispatchKernel<Family>::adjustBindingTablePrefetch(INTERFACE_DESCRIPT
         interfaceDescriptor.setBindingTableEntryCount(0u);
     }
 }
+
+template <>
+template <typename WalkerType, typename InterfaceDescriptorType>
+void EncodeDispatchKernel<Family>::encodeComputeDispatchAllWalker(WalkerType &walkerCmd, const InterfaceDescriptorType *idd, const RootDeviceEnvironment &rootDeviceEnvironment, const EncodeWalkerArgs &walkerArgs) {
+    int32_t overrideDispatchAllWalkerEnableInComputeWalker = debugManager.flags.ComputeDispatchAllWalkerEnableInComputeWalker.get();
+    if (overrideDispatchAllWalkerEnableInComputeWalker != -1) {
+        walkerCmd.setComputeDispatchAllWalkerEnable(overrideDispatchAllWalkerEnableInComputeWalker);
+    }
+}
+
+template <>
+template <typename WalkerType>
+void EncodeDispatchKernel<Family>::adjustWalkOrder(WalkerType &walkerCmd, uint32_t requiredWorkGroupOrder, const RootDeviceEnvironment &rootDeviceEnvironment) {}
 
 } // namespace NEO
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,6 +24,14 @@ bool OSInterface::isDebugAttachAvailable() const {
 
 bool OSInterface::isLockablePointer(bool isLockable) const {
     return isLockable;
+}
+
+bool OSInterface::isSizeWithinThresholdForStaging(size_t size, bool isIGPU) const {
+    return true;
+}
+
+uint32_t OSInterface::getAggregatedProcessCount() const {
+    return 0;
 }
 
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,7 +12,6 @@
 namespace L0 {
 namespace ult {
 
-uint32_t mockDiagHandleCount = 2;
 const std::string mockQuiescentGpuFile("quiesce_gpu");
 const std::string mockinvalidateLmemFile("invalidate_lmem_mmaps");
 const std::vector<std::string> mockSupportedDiagTypes = {"MOCKSUITE1", "MOCKSUITE2"};
@@ -38,7 +37,7 @@ struct MockDiagnosticsFwInterface : public FirmwareUtil {
     void setFwInitRetVal(ze_result_t val) {
         mockFwInitResult = val;
     }
-    ze_result_t getFirstDevice(igsc_device_info *info) override {
+    ze_result_t getFirstDevice(IgscDeviceInfo *info) override {
         return ZE_RESULT_SUCCESS;
     }
     ze_result_t fwSupportedDiagTests(std::vector<std::string> &supportedDiagTests) override {

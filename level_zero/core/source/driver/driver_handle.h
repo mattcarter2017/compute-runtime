@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,12 +7,17 @@
 
 #pragma once
 
+#include "level_zero/core/source/helpers/api_handle_helper.h"
 #include <level_zero/ze_api.h>
 #include <level_zero/zes_api.h>
 
 #include <memory>
+#include <string>
 #include <vector>
+
 struct _ze_driver_handle_t {
+    const uint64_t objMagic = objMagicValue;
+    static const zel_handle_type_t handleType = ZEL_HANDLE_DRIVER;
     virtual ~_ze_driver_handle_t() = default;
 };
 
@@ -78,7 +83,7 @@ struct DriverHandle : BaseDriver {
     virtual ze_result_t createRTASParallelOperation(ze_rtas_parallel_operation_exp_handle_t *phParallelOperation) = 0;
     virtual ze_result_t formatRTASCompatibilityCheck(ze_rtas_format_exp_t rtasFormatA, ze_rtas_format_exp_t rtasFormatB) = 0;
 
-    virtual int setErrorDescription(const char *fmt, ...) = 0;
+    virtual int setErrorDescription(const std::string &str) = 0;
     virtual ze_result_t getErrorDescription(const char **ppString) = 0;
     virtual ze_result_t clearErrorDescription() = 0;
 

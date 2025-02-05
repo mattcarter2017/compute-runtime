@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,6 +10,7 @@
 #include "shared/source/command_stream/command_stream_receiver.h"
 #include "shared/source/gmm_helper/gmm.h"
 #include "shared/source/helpers/aligned_memory.h"
+#include "shared/source/helpers/hw_info.h"
 #include "shared/source/helpers/surface_format_info.h"
 #include "shared/source/memory_manager/deferred_deleter.h"
 #include "shared/source/memory_manager/gfx_partition.h"
@@ -21,6 +22,9 @@
 #include <cstring>
 
 namespace NEO {
+
+const unsigned int MockMemoryManager::moduleId = 123u;
+const unsigned int MockMemoryManager::serverType = 456u;
 
 MockMemoryManager::MockMemoryManager(bool enableLocalMemory, ExecutionEnvironment &executionEnvironment) : MemoryManagerCreate(false, enableLocalMemory, executionEnvironment) {
     hostPtrManager.reset(new MockHostPtrManager);
@@ -90,7 +94,7 @@ GraphicsAllocation *MockMemoryManager::allocateGraphicsMemoryWithProperties(cons
     validateAllocateProperties(properties);
     lastAllocationProperties.reset(new AllocationProperties(properties));
     if (returnFakeAllocation) {
-        return new GraphicsAllocation(properties.rootDeviceIndex, properties.allocationType, const_cast<void *>(ptr), dummyAddress, properties.size, 0, MemoryPool::system4KBPages, maxOsContextCount);
+        return new GraphicsAllocation(properties.rootDeviceIndex, 1u /*num gmms*/, properties.allocationType, const_cast<void *>(ptr), dummyAddress, properties.size, 0, MemoryPool::system4KBPages, maxOsContextCount);
     }
     if (isMockHostMemoryManager) {
         allocateGraphicsMemoryWithPropertiesCount++;
@@ -131,18 +135,26 @@ GraphicsAllocation *MockMemoryManager::allocatePhysicalLocalDeviceMemory(const A
     return OsAgnosticMemoryManager::allocatePhysicalLocalDeviceMemory(allocationData, status);
 }
 
+GraphicsAllocation *MockMemoryManager::allocatePhysicalHostMemory(const AllocationData &allocationData, AllocationStatus &status) {
+    return OsAgnosticMemoryManager::allocatePhysicalHostMemory(allocationData, status);
+}
+
 GraphicsAllocation *MockMemoryManager::allocateGraphicsMemory64kb(const AllocationData &allocationData) {
     allocation64kbPageCreated = true;
     preferCompressedFlagPassed = forceCompressed ? true : allocationData.flags.preferCompressed;
 
     auto allocation = OsAgnosticMemoryManager::allocateGraphicsMemory64kb(allocationData);
     if (allocation) {
-        allocation->getDefaultGmm()->isCompressionEnabled = preferCompressedFlagPassed;
+        allocation->getDefaultGmm()->setCompressionEnabled(preferCompressedFlagPassed);
     }
     return allocation;
 }
 
 GraphicsAllocation *MockMemoryManager::allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) {
+    if (returnMockGAFromDevicePool) {
+        status = AllocationStatus::Success;
+        return mockGa;
+    }
     if (failInDevicePool) {
         status = AllocationStatus::RetryInNonDevicePool;
         return nullptr;
@@ -168,6 +180,9 @@ GraphicsAllocation *MockMemoryManager::allocateGraphicsMemoryInDevicePool(const 
 }
 
 GraphicsAllocation *MockMemoryManager::allocateGraphicsMemoryWithAlignment(const AllocationData &allocationData) {
+    if (returnMockGAFromHostPool) {
+        return mockGa;
+    }
     if (failInAllocateWithSizeAndAlignment) {
         return nullptr;
     }
@@ -193,7 +208,7 @@ GraphicsAllocation *MockMemoryManager::allocate32BitGraphicsMemoryImpl(const All
 }
 
 void MockMemoryManager::forceLimitedRangeAllocator(uint32_t rootDeviceIndex, uint64_t range) {
-    getGfxPartition(rootDeviceIndex)->init(range, 0, 0, gfxPartitions.size(), false, 0u);
+    getGfxPartition(rootDeviceIndex)->init(range, 0, 0, gfxPartitions.size(), false, 0u, range + 1);
 }
 
 bool MockMemoryManager::hasPageFaultsEnabled(const Device &neoDevice) {
@@ -217,27 +232,13 @@ GraphicsAllocation *MockMemoryManager::createGraphicsAllocationFromExistingStora
     return allocation;
 }
 
-GraphicsAllocation *MockMemoryManager::createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
-    if (handle != invalidSharedHandle) {
-        auto allocation = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle(handle, properties, requireSpecificBitness, isHostIpcAllocation, reuseSharedAllocation, mapPointer);
-        this->capturedSharedHandle = handle;
+GraphicsAllocation *MockMemoryManager::createGraphicsAllocationFromSharedHandle(const OsHandleData &osHandleData, const AllocationProperties &properties, bool requireSpecificBitness, bool isHostIpcAllocation, bool reuseSharedAllocation, void *mapPointer) {
+    if (osHandleData.handle != invalidSharedHandle) {
+        auto allocation = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle(osHandleData, properties, requireSpecificBitness, isHostIpcAllocation, reuseSharedAllocation, mapPointer);
+        this->capturedSharedHandle = osHandleData.handle;
         return allocation;
     } else {
-        this->capturedSharedHandle = handle;
-        return nullptr;
-    }
-}
-
-GraphicsAllocation *MockMemoryManager::createGraphicsAllocationFromNTHandle(void *handle, uint32_t rootDeviceIndex, AllocationType allocType) {
-    if (toOsHandle(handle) != invalidSharedHandle) {
-        auto graphicsAllocation = createMemoryAllocation(NEO::AllocationType::sharedBuffer, nullptr, reinterpret_cast<void *>(1), 1,
-                                                         4096u, toOsHandle(handle), MemoryPool::systemCpuInaccessible, rootDeviceIndex,
-                                                         false, false, false);
-        graphicsAllocation->setSharedHandle(toOsHandle(handle));
-        this->capturedSharedHandle = toOsHandle(handle);
-        return graphicsAllocation;
-    } else {
-        this->capturedSharedHandle = toOsHandle(handle);
+        this->capturedSharedHandle = osHandleData.handle;
         return nullptr;
     }
 }
@@ -247,6 +248,25 @@ bool MockMemoryManager::copyMemoryToAllocationBanks(GraphicsAllocation *graphics
     copyMemoryToAllocationBanksParamsPassed.push_back({graphicsAllocation, destinationOffset, memoryToCopy, sizeToCopy, handleMask});
     return OsAgnosticMemoryManager::copyMemoryToAllocationBanks(graphicsAllocation, destinationOffset, memoryToCopy, sizeToCopy, handleMask);
 };
+
+bool MockMemoryManager::reInitDeviceSpecificGfxPartition(uint32_t rootDeviceIndex) {
+    if (gfxPartitions.at(rootDeviceIndex) == nullptr) {
+        // 4 x sizeof(Heap32) + 2 x sizeof(Standard/Standard64k)
+        size_t reservedCpuAddressRangeSize = static_cast<size_t>((4 * 4 + 2 * 4)) * static_cast<size_t>(MemoryConstants::gigaByte);
+        gfxPartitions.at(rootDeviceIndex) = std::make_unique<GfxPartition>(reservedCpuAddressRange);
+
+        auto gpuAddressSpace = executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->getHardwareInfo()->capabilityTable.gpuAddressSpace;
+        auto gfxTop = gpuAddressSpace + 1;
+        if (getGfxPartition(rootDeviceIndex)->init(gpuAddressSpace, reservedCpuAddressRangeSize, rootDeviceIndex, gfxPartitions.size(), heapAssigners[rootDeviceIndex]->apiAllowExternalHeapForSshAndDsh, OsAgnosticMemoryManager::getSystemSharedMemory(rootDeviceIndex), gfxTop)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MockMemoryManager::releaseDeviceSpecificGfxPartition(uint32_t rootDeviceIndex) {
+    gfxPartitions.at(rootDeviceIndex).reset();
+}
 
 void *MockAllocSysMemAgnosticMemoryManager::allocateSystemMemory(size_t size, size_t alignment) {
     constexpr size_t minAlignment = 16;
@@ -277,6 +297,23 @@ OsContext *MockMemoryManagerOsAgnosticContext::createAndRegisterOsContext(Comman
     auto osContext = new OsContext(commandStreamReceiver->getRootDeviceIndex(), 0, engineDescriptor);
     osContext->incRefInternal();
     allRegisteredEngines[commandStreamReceiver->getRootDeviceIndex()].emplace_back(commandStreamReceiver, osContext);
+    return osContext;
+}
+
+OsContext *MockMemoryManagerOsAgnosticContext::createAndRegisterSecondaryOsContext(const OsContext *primaryContext, CommandStreamReceiver *commandStreamReceiver,
+                                                                                   const EngineDescriptor &engineDescriptor) {
+    auto rootDeviceIndex = commandStreamReceiver->getRootDeviceIndex();
+
+    auto osContext = new OsContext(rootDeviceIndex, 0, engineDescriptor);
+    osContext->incRefInternal();
+
+    osContext->setPrimaryContext(primaryContext);
+
+    UNRECOVERABLE_IF(rootDeviceIndex != osContext->getRootDeviceIndex());
+
+    secondaryEngines[rootDeviceIndex].emplace_back(commandStreamReceiver, osContext);
+    allRegisteredEngines[rootDeviceIndex].emplace_back(commandStreamReceiver, osContext);
+
     return osContext;
 }
 

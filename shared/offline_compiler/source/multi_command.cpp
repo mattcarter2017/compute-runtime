@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -45,7 +45,7 @@ int MultiCommand::singleBuild(const std::vector<std::string> &args) {
     if (retVal == OCLOC_SUCCESS) {
         outputFile << getCurrentDirectoryOwn(outDirForBuilds) + outFileName;
     } else {
-        outputFile << "Unsuccesful build";
+        outputFile << "Unsuccessful build";
     }
     outputFile << '\n';
 
@@ -131,7 +131,8 @@ int MultiCommand::initialize(const std::vector<std::string> &args) {
     runBuilds(args[0]);
 
     if (outputFileList != "") {
-        argHelper->saveOutput(outputFileList, outputFile);
+        auto outputFileString = outputFile.str();
+        argHelper->saveOutput(outputFileList, outputFileString.c_str(), outputFileString.length() + 1);
     }
     return showResults();
 }
@@ -166,7 +167,7 @@ Usage: ocloc multi <file_name>
                 '-file <filename> -device <device_type> [compile_options]'.
                 See 'ocloc compile --help' for available compile_options.
                 Results of subsequent compilations will be dumped into 
-                a directory with name indentical file_name's base name.
+                a directory with name identical file_name's base name.
 
   -output_file_list             Name of optional file containing 
                                 paths to outputs .bin files

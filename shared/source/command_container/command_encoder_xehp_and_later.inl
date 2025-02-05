@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,12 +11,15 @@
 #include "shared/source/command_stream/command_stream_receiver.h"
 #include "shared/source/command_stream/linear_stream.h"
 #include "shared/source/command_stream/preemption.h"
+#include "shared/source/command_stream/scratch_space_controller.h"
 #include "shared/source/command_stream/stream_properties.h"
 #include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/gmm_helper/client_context/gmm_client_context.h"
+#include "shared/source/gmm_helper/resource_info.h"
 #include "shared/source/helpers/basic_math.h"
 #include "shared/source/helpers/cache_policy.h"
+#include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/constants.h"
 #include "shared/source/helpers/gfx_core_helper.h"
 #include "shared/source/helpers/hw_walk_order.h"
@@ -30,27 +33,21 @@
 #include "shared/source/kernel/implicit_args_helper.h"
 #include "shared/source/kernel/kernel_descriptor.h"
 #include "shared/source/os_interface/product_helper.h"
+#include "shared/source/release_helper/release_helper.h"
+
+#include "encode_surface_state_args.h"
 
 #include <algorithm>
 #include <type_traits>
 
 namespace NEO {
-constexpr size_t timestampDestinationAddressAlignment = 16;
-constexpr size_t immWriteDestinationAddressAlignment = 8;
-
-template <typename Family>
-template <typename InterfaceDescriptorType>
-void EncodeDispatchKernel<Family>::setGrfInfo(InterfaceDescriptorType *pInterfaceDescriptor, uint32_t numGrf,
-                                              const size_t &sizeCrossThreadData, const size_t &sizePerThreadData,
-                                              const RootDeviceEnvironment &rootDeviceEnvironment) {
-}
 
 template <typename Family>
 template <typename WalkerType>
 void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDispatchKernelArgs &args) {
-    using SHARED_LOCAL_MEMORY_SIZE = typename WalkerType::InterfaceDescriptorType::SHARED_LOCAL_MEMORY_SIZE;
     using STATE_BASE_ADDRESS = typename Family::STATE_BASE_ADDRESS;
-    using POSTSYNC_DATA = std::remove_reference_t<std::invoke_result_t<decltype(&WalkerType::getPostSync), WalkerType &>>;
+
+    UNRECOVERABLE_IF(args.makeCommandView && (args.cpuWalkerBuffer == nullptr || args.cpuPayloadBuffer == nullptr));
 
     constexpr bool heaplessModeEnabled = Family::template isHeaplessMode<WalkerType>();
     const HardwareInfo &hwInfo = args.device->getHardwareInfo();
@@ -64,17 +61,20 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
 
     LinearStream *listCmdBufferStream = container.getCommandStream();
 
-    auto threadDims = static_cast<const uint32_t *>(args.threadGroupDimensions);
-    const Vec3<size_t> threadStartVec{0, 0, 0};
-    Vec3<size_t> threadDimsVec{0, 0, 0};
+    auto threadGroupDims = static_cast<const uint32_t *>(args.threadGroupDimensions);
+    uint32_t threadDimsVec[3] = {0, 0, 0};
     if (!args.isIndirect) {
-        threadDimsVec = {threadDims[0], threadDims[1], threadDims[2]};
+        threadDimsVec[0] = threadGroupDims[0];
+        threadDimsVec[1] = threadGroupDims[1];
+        threadDimsVec[2] = threadGroupDims[2];
     }
 
-    bool systolicModeRequired = kernelDescriptor.kernelAttributes.flags.usesSystolicPipelineSelectMode;
-    if (container.systolicModeSupportRef() && (container.lastPipelineSelectModeRequiredRef() != systolicModeRequired)) {
-        container.lastPipelineSelectModeRequiredRef() = systolicModeRequired;
-        EncodeComputeMode<Family>::adjustPipelineSelect(container, kernelDescriptor);
+    if (!args.makeCommandView) {
+        bool systolicModeRequired = kernelDescriptor.kernelAttributes.flags.usesSystolicPipelineSelectMode;
+        if (container.systolicModeSupportRef() && (container.lastPipelineSelectModeRequiredRef() != systolicModeRequired)) {
+            container.lastPipelineSelectModeRequiredRef() = systolicModeRequired;
+            EncodeComputeMode<Family>::adjustPipelineSelect(container, kernelDescriptor);
+        }
     }
 
     WalkerType walkerCmd = Family::template getInitGpuWalker<WalkerType>();
@@ -85,24 +85,22 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
 
     bool localIdsGenerationByRuntime = args.dispatchInterface->requiresGenerationOfLocalIdsByRuntime();
     auto requiredWorkgroupOrder = args.dispatchInterface->getRequiredWorkgroupOrder();
-    bool inlineDataProgramming = EncodeDispatchKernel<Family>::inlineDataProgrammingRequired(kernelDescriptor);
-    {
-        auto alloc = args.dispatchInterface->getIsaAllocation();
-        UNRECOVERABLE_IF(nullptr == alloc);
 
+    {
+        auto isaAllocation = args.dispatchInterface->getIsaAllocation();
+        UNRECOVERABLE_IF(nullptr == isaAllocation);
+
+        uint64_t kernelStartPointer = args.dispatchInterface->getIsaOffsetInParentAllocation();
         if constexpr (heaplessModeEnabled) {
-            auto address = alloc->getGpuAddress() + args.dispatchInterface->getIsaOffsetInParentAllocation();
-            if (!localIdsGenerationByRuntime) {
-                address += kernelDescriptor.entryPoints.skipPerThreadDataLoad;
-            }
-            idd.setKernelStartPointer(address);
+            kernelStartPointer += isaAllocation->getGpuAddress();
         } else {
-            auto offset = alloc->getGpuAddressToPatch() + args.dispatchInterface->getIsaOffsetInParentAllocation();
-            if (!localIdsGenerationByRuntime) {
-                offset += kernelDescriptor.entryPoints.skipPerThreadDataLoad;
-            }
-            idd.setKernelStartPointer(offset);
+            kernelStartPointer += isaAllocation->getGpuAddressToPatch();
         }
+
+        if (!localIdsGenerationByRuntime) {
+            kernelStartPointer += kernelDescriptor.entryPoints.skipPerThreadDataLoad;
+        }
+        idd.setKernelStartPointer(kernelStartPointer);
     }
     if (args.dispatchInterface->getKernelDescriptor().kernelAttributes.flags.usesAssert && args.device->getL0Debugger() != nullptr) {
         idd.setSoftwareExceptionEnable(1);
@@ -112,12 +110,12 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
     idd.setNumberOfThreadsInGpgpuThreadGroup(threadsPerThreadGroup);
 
     EncodeDispatchKernel<Family>::programBarrierEnable(idd,
-                                                       kernelDescriptor.kernelAttributes.barrierCount,
+                                                       kernelDescriptor,
                                                        hwInfo);
 
-    auto &gfxCoreHelper = args.device->getGfxCoreHelper();
-    auto slmSize = static_cast<uint32_t>(
-        gfxCoreHelper.computeSlmValues(hwInfo, args.dispatchInterface->getSlmTotalSize()));
+    EncodeDispatchKernel<Family>::encodeEuSchedulingPolicy(&idd, kernelDescriptor, args.defaultPipelinedThreadArbitrationPolicy);
+
+    auto slmSize = EncodeDispatchKernel<Family>::computeSlmValues(hwInfo, args.dispatchInterface->getSlmTotalSize());
 
     if (debugManager.flags.OverrideSlmAllocationSize.get() != -1) {
         slmSize = static_cast<uint32_t>(debugManager.flags.OverrideSlmAllocationSize.get());
@@ -133,7 +131,7 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
         sshProgrammingRequired = false;
     }
 
-    if (sshProgrammingRequired) {
+    if (sshProgrammingRequired && !args.makeCommandView) {
         bool isBindlessKernel = NEO::KernelDescriptor::isBindlessAddressingKernel(kernelDescriptor);
         if (isBindlessKernel) {
             bool globalBindlessSsh = args.device->getBindlessHeapsHelper() != nullptr;
@@ -143,7 +141,7 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
                 auto ssh = args.surfaceStateHeap;
                 if (ssh == nullptr) {
                     container.prepareBindfulSsh();
-                    ssh = container.getHeapWithRequiredSizeAndAlignment(HeapType::surfaceState, sshHeapSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+                    ssh = container.getHeapWithRequiredSizeAndAlignment(HeapType::surfaceState, sshHeapSize, NEO::EncodeDispatchKernel<Family>::getDefaultSshAlignment());
                 }
 
                 uint64_t bindlessSshBaseOffset = ptrDiff(ssh->getSpace(0), ssh->getCpuBase());
@@ -151,17 +149,7 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
                     bindlessSshBaseOffset += ptrDiff(ssh->getGraphicsAllocation()->getGpuAddress(), ssh->getGraphicsAllocation()->getGpuBaseAddress());
                 }
 
-                if constexpr (heaplessModeEnabled == false) {
-                    if (bindingTableStateCount > 0u) {
-                        auto bindingTablePointer = static_cast<uint32_t>(EncodeSurfaceState<Family>::pushBindingTableAndSurfaceStates(
-                            *ssh,
-                            args.dispatchInterface->getSurfaceStateHeapData(),
-                            args.dispatchInterface->getSurfaceStateHeapDataSize(), bindingTableStateCount,
-                            kernelDescriptor.payloadMappings.bindingTable.tableOffset));
-
-                        idd.setBindingTablePointer(bindingTablePointer);
-                    }
-                }
+                DEBUG_BREAK_IF(bindingTableStateCount > 0u);
 
                 if (bindingTableStateCount == 0) {
                     // Allocate space for new ssh data
@@ -173,11 +161,11 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
 
         } else {
             if constexpr (heaplessModeEnabled == false) {
-                container.prepareBindfulSsh();
                 if (bindingTableStateCount > 0u) {
                     auto ssh = args.surfaceStateHeap;
                     if (ssh == nullptr) {
-                        ssh = container.getHeapWithRequiredSizeAndAlignment(HeapType::surfaceState, args.dispatchInterface->getSurfaceStateHeapDataSize(), BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+                        container.prepareBindfulSsh();
+                        ssh = container.getHeapWithRequiredSizeAndAlignment(HeapType::surfaceState, args.dispatchInterface->getSurfaceStateHeapDataSize(), NEO::EncodeDispatchKernel<Family>::getDefaultSshAlignment());
                     }
                     auto bindingTablePointer = static_cast<uint32_t>(EncodeSurfaceState<Family>::pushBindingTableAndSurfaceStates(
                         *ssh,
@@ -191,31 +179,47 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
         }
     }
 
-    PreemptionHelper::programInterfaceDescriptorDataPreemption<Family>(&idd, args.preemptionMode);
+    auto preemptionMode = args.device->getDebugger() ? PreemptionMode::ThreadGroup : args.preemptionMode;
+    PreemptionHelper::programInterfaceDescriptorDataPreemption<Family>(&idd, preemptionMode);
 
     uint32_t samplerCount = 0;
 
-    if constexpr (Family::supportsSampler && heaplessModeEnabled == false) {
-        if (args.device->getDeviceInfo().imageSupport) {
-
-            uint32_t samplerStateOffset = 0;
+    if constexpr (Family::supportsSampler) {
+        if (args.device->getDeviceInfo().imageSupport && !args.makeCommandView) {
 
             if (kernelDescriptor.payloadMappings.samplerTable.numSamplers > 0) {
                 auto dsHeap = args.dynamicStateHeap;
                 if (dsHeap == nullptr) {
                     dsHeap = container.getIndirectHeap(HeapType::dynamicState);
+                    auto dshSizeRequired = NEO::EncodeDispatchKernel<Family>::getSizeRequiredDsh(kernelDescriptor, container.getNumIddPerBlock());
+                    if (dsHeap->getAvailableSpace() <= dshSizeRequired) {
+                        dsHeap = container.getHeapWithRequiredSizeAndAlignment(HeapType::dynamicState, dsHeap->getMaxAvailableSpace(), NEO::EncodeDispatchKernel<Family>::getDefaultDshAlignment());
+                    }
                 }
                 UNRECOVERABLE_IF(!dsHeap);
 
+                auto bindlessHeapsHelper = args.device->getBindlessHeapsHelper();
                 samplerCount = kernelDescriptor.payloadMappings.samplerTable.numSamplers;
-                samplerStateOffset = EncodeStates<Family>::copySamplerState(
+                uint64_t samplerStateOffset = EncodeStates<Family>::copySamplerState(
                     dsHeap, kernelDescriptor.payloadMappings.samplerTable.tableOffset,
-                    kernelDescriptor.payloadMappings.samplerTable.numSamplers, kernelDescriptor.payloadMappings.samplerTable.borderColor,
+                    kernelDescriptor.payloadMappings.samplerTable.numSamplers,
+                    kernelDescriptor.payloadMappings.samplerTable.borderColor,
                     args.dispatchInterface->getDynamicStateHeapData(),
-                    args.device->getBindlessHeapsHelper(), rootDeviceEnvironment);
-            }
+                    bindlessHeapsHelper, rootDeviceEnvironment);
 
-            idd.setSamplerStatePointer(samplerStateOffset);
+                if (bindlessHeapsHelper && !bindlessHeapsHelper->isGlobalDshSupported()) {
+                    // add offset of graphics allocation base address relative to heap base address
+                    samplerStateOffset += static_cast<uint32_t>(ptrDiff(dsHeap->getGpuBase(), bindlessHeapsHelper->getGlobalHeapsBase()));
+                }
+                if (heaplessModeEnabled && bindlessHeapsHelper) {
+                    samplerStateOffset += bindlessHeapsHelper->getGlobalHeapsBase();
+                }
+
+                args.dispatchInterface->patchSamplerBindlessOffsetsInCrossThreadData(samplerStateOffset);
+                if constexpr (!heaplessModeEnabled) {
+                    idd.setSamplerStatePointer(static_cast<uint32_t>(samplerStateOffset));
+                }
+            }
         }
     }
 
@@ -228,50 +232,58 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
     auto crossThreadData = args.dispatchInterface->getCrossThreadData();
 
     uint32_t inlineDataProgrammingOffset = 0u;
-
+    bool inlineDataProgramming = EncodeDispatchKernel<Family>::inlineDataProgrammingRequired(kernelDescriptor);
     if (inlineDataProgramming) {
         inlineDataProgrammingOffset = std::min(inlineDataSize, sizeCrossThreadData);
         auto dest = reinterpret_cast<char *>(walkerCmd.getInlineDataPointer());
-        memcpy_s(dest, inlineDataProgrammingOffset, crossThreadData, inlineDataProgrammingOffset);
+        memcpy_s(dest, inlineDataSize, crossThreadData, inlineDataProgrammingOffset);
         sizeCrossThreadData -= inlineDataProgrammingOffset;
         crossThreadData = ptrOffset(crossThreadData, inlineDataProgrammingOffset);
         inlineDataProgramming = inlineDataProgrammingOffset != 0;
     }
 
+    auto scratchAddressForImmediatePatching = EncodeDispatchKernel<Family>::getScratchAddressForImmediatePatching<heaplessModeEnabled>(container, args);
     uint32_t sizeThreadData = sizePerThreadDataForWholeGroup + sizeCrossThreadData;
-    uint32_t sizeForImplicitArgsPatching = NEO::ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, !localIdsGenerationByRuntime, gfxCoreHelper);
-    uint32_t iohRequiredSize = sizeThreadData + sizeForImplicitArgsPatching;
+    uint32_t sizeForImplicitArgsPatching = NEO::ImplicitArgsHelper::getSizeForImplicitArgsPatching(pImplicitArgs, kernelDescriptor, !localIdsGenerationByRuntime, rootDeviceEnvironment);
+    uint32_t sizeForImplicitArgsStruct = NEO::ImplicitArgsHelper::getSizeForImplicitArgsStruct(pImplicitArgs, kernelDescriptor, true, rootDeviceEnvironment);
+    uint32_t iohRequiredSize = sizeThreadData + sizeForImplicitArgsPatching + args.reserveExtraPayloadSpace;
     {
-        auto heap = container.getIndirectHeap(HeapType::indirectObject);
-        UNRECOVERABLE_IF(!heap);
-        heap->align(DefaultWalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
         void *ptr = nullptr;
-        if (args.isKernelDispatchedFromImmediateCmdList) {
-            ptr = container.getHeapWithRequiredSizeAndAlignment(HeapType::indirectObject, iohRequiredSize, DefaultWalkerType::INDIRECTDATASTARTADDRESS_ALIGN_SIZE)->getSpace(iohRequiredSize);
-        } else {
-            ptr = container.getHeapSpaceAllowGrow(HeapType::indirectObject, iohRequiredSize);
-        }
-        UNRECOVERABLE_IF(!ptr);
-        offsetThreadData = (is64bit ? heap->getHeapGpuStartOffset() : heap->getHeapGpuBase()) + static_cast<uint64_t>(heap->getUsed() - sizeThreadData);
+        if (!args.makeCommandView) {
+            auto heap = container.getIndirectHeap(HeapType::indirectObject);
+            UNRECOVERABLE_IF(!heap);
+            heap->align(Family::cacheLineSize);
 
-        if (pImplicitArgs) {
-            offsetThreadData -= ImplicitArgs::getSize();
-            pImplicitArgs->localIdTablePtr = heap->getGraphicsAllocation()->getGpuAddress() + heap->getUsed() - iohRequiredSize;
-            ptr = NEO::ImplicitArgsHelper::patchImplicitArgs(ptr, *pImplicitArgs, kernelDescriptor, std::make_pair(localIdsGenerationByRuntime, requiredWorkgroupOrder), gfxCoreHelper);
+            if (args.isKernelDispatchedFromImmediateCmdList) {
+                ptr = container.getHeapWithRequiredSizeAndAlignment(HeapType::indirectObject, iohRequiredSize, Family::indirectDataAlignment)->getSpace(iohRequiredSize);
+            } else {
+                ptr = container.getHeapSpaceAllowGrow(HeapType::indirectObject, iohRequiredSize);
+            }
+
+            offsetThreadData = (is64bit ? heap->getHeapGpuStartOffset() : heap->getHeapGpuBase()) + static_cast<uint64_t>(heap->getUsed() - sizeThreadData - args.reserveExtraPayloadSpace);
+            if (pImplicitArgs) {
+                offsetThreadData -= sizeForImplicitArgsStruct;
+                pImplicitArgs->localIdTablePtr = heap->getGraphicsAllocation()->getGpuAddress() + heap->getUsed() - iohRequiredSize;
+                EncodeDispatchKernel<Family>::patchScratchAddressInImplicitArgs<heaplessModeEnabled>(*pImplicitArgs, scratchAddressForImmediatePatching, args.immediateScratchAddressPatching);
+
+                ptr = NEO::ImplicitArgsHelper::patchImplicitArgs(ptr, *pImplicitArgs, kernelDescriptor, std::make_pair(localIdsGenerationByRuntime, requiredWorkgroupOrder), rootDeviceEnvironment, &args.outImplicitArgsPtr);
+            }
+
+            if (args.isIndirect) {
+                auto gpuPtr = heap->getGraphicsAllocation()->getGpuAddress() + static_cast<uint64_t>(heap->getUsed() - sizeThreadData - inlineDataProgrammingOffset);
+                uint64_t implicitArgsGpuPtr = 0u;
+                if (pImplicitArgs) {
+                    implicitArgsGpuPtr = gpuPtr + inlineDataProgrammingOffset - sizeForImplicitArgsStruct;
+                }
+                EncodeIndirectParams<Family>::encode(container, gpuPtr, args.dispatchInterface, implicitArgsGpuPtr);
+            }
+        } else {
+            ptr = args.cpuPayloadBuffer;
         }
 
         if (sizeCrossThreadData > 0) {
             memcpy_s(ptr, sizeCrossThreadData,
                      crossThreadData, sizeCrossThreadData);
-        }
-
-        if (args.isIndirect) {
-            auto gpuPtr = heap->getGraphicsAllocation()->getGpuAddress() + static_cast<uint64_t>(heap->getUsed() - sizeThreadData - inlineDataProgrammingOffset);
-            uint64_t implicitArgsGpuPtr = 0u;
-            if (pImplicitArgs) {
-                implicitArgsGpuPtr = gpuPtr + inlineDataProgrammingOffset - ImplicitArgs::getSize();
-            }
-            EncodeIndirectParams<Family>::encode(container, gpuPtr, args.dispatchInterface, implicitArgsGpuPtr);
         }
 
         auto perThreadDataPtr = args.dispatchInterface->getPerThreadData();
@@ -282,62 +294,70 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
         }
     }
 
-    if (container.isAnyHeapDirty() ||
-        args.requiresUncachedMocs) {
+    if (args.isHeaplessStateInitEnabled == false && !args.makeCommandView) {
+        if (container.isAnyHeapDirty() ||
+            args.requiresUncachedMocs) {
 
-        PipeControlArgs syncArgs;
-        syncArgs.dcFlushEnable = args.dcFlushEnable;
-        MemorySynchronizationCommands<Family>::addSingleBarrier(*container.getCommandStream(), syncArgs);
-        STATE_BASE_ADDRESS sbaCmd;
-        auto gmmHelper = container.getDevice()->getGmmHelper();
-        uint32_t statelessMocsIndex =
-            args.requiresUncachedMocs ? (gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED) >> 1) : (gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER) >> 1);
-        auto l1CachePolicy = container.l1CachePolicyDataRef()->getL1CacheValue(false);
-        auto l1CachePolicyDebuggerActive = container.l1CachePolicyDataRef()->getL1CacheValue(true);
+            PipeControlArgs syncArgs;
+            syncArgs.dcFlushEnable = args.dcFlushEnable;
+            MemorySynchronizationCommands<Family>::addSingleBarrier(*container.getCommandStream(), syncArgs);
+            STATE_BASE_ADDRESS sbaCmd;
+            auto gmmHelper = container.getDevice()->getGmmHelper();
+            uint32_t statelessMocsIndex =
+                args.requiresUncachedMocs ? (gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED) >> 1) : (gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER) >> 1);
+            auto l1CachePolicy = container.l1CachePolicyDataRef()->getL1CacheValue(false);
+            auto l1CachePolicyDebuggerActive = container.l1CachePolicyDataRef()->getL1CacheValue(true);
 
-        EncodeStateBaseAddressArgs<Family> encodeStateBaseAddressArgs = {
-            &container,                  // container
-            sbaCmd,                      // sbaCmd
-            nullptr,                     // sbaProperties
-            statelessMocsIndex,          // statelessMocsIndex
-            l1CachePolicy,               // l1CachePolicy
-            l1CachePolicyDebuggerActive, // l1CachePolicyDebuggerActive
-            args.useGlobalAtomics,       // useGlobalAtomics
-            args.partitionCount > 1,     // multiOsContextCapable
-            args.isRcs,                  // isRcs
-            container.doubleSbaWaRef(),  // doubleSbaWa
-            heaplessModeEnabled,         // heaplessModeEnabled
-        };
-        EncodeStateBaseAddress<Family>::encode(encodeStateBaseAddressArgs);
-        container.setDirtyStateForAllHeaps(false);
+            EncodeStateBaseAddressArgs<Family> encodeStateBaseAddressArgs = {
+                &container,                  // container
+                sbaCmd,                      // sbaCmd
+                nullptr,                     // sbaProperties
+                statelessMocsIndex,          // statelessMocsIndex
+                l1CachePolicy,               // l1CachePolicy
+                l1CachePolicyDebuggerActive, // l1CachePolicyDebuggerActive
+                args.partitionCount > 1,     // multiOsContextCapable
+                args.isRcs,                  // isRcs
+                container.doubleSbaWaRef(),  // doubleSbaWa
+                heaplessModeEnabled          // heaplessModeEnabled
+            };
+            EncodeStateBaseAddress<Family>::encode(encodeStateBaseAddressArgs);
+            container.setDirtyStateForAllHeaps(false);
+
+            bool sbaTrackingEnabled = NEO::Debugger::isDebugEnabled(args.isInternal) && args.device->getL0Debugger();
+            NEO::EncodeStateBaseAddress<Family>::setSbaTrackingForL0DebuggerIfEnabled(sbaTrackingEnabled,
+                                                                                      *args.device,
+                                                                                      *container.getCommandStream(),
+                                                                                      sbaCmd, container.isUsingPrimaryBuffer());
+        }
     }
 
-    if (NEO::PauseOnGpuProperties::pauseModeAllowed(NEO::debugManager.flags.PauseOnEnqueue.get(), args.device->debugExecutionCounter.load(), NEO::PauseOnGpuProperties::PauseMode::BeforeWorkload)) {
-        void *commandBuffer = listCmdBufferStream->getSpace(MemorySynchronizationCommands<Family>::getSizeForBarrierWithPostSyncOperation(args.device->getRootDeviceEnvironment(), false));
-        args.additionalCommands->push_back(commandBuffer);
+    if (!args.makeCommandView) {
+        if (NEO::PauseOnGpuProperties::pauseModeAllowed(NEO::debugManager.flags.PauseOnEnqueue.get(), args.device->debugExecutionCounter.load(), NEO::PauseOnGpuProperties::PauseMode::BeforeWorkload)) {
+            void *commandBuffer = listCmdBufferStream->getSpace(MemorySynchronizationCommands<Family>::getSizeForBarrierWithPostSyncOperation(rootDeviceEnvironment, false));
+            args.additionalCommands->push_back(commandBuffer);
 
-        EncodeSemaphore<Family>::applyMiSemaphoreWaitCommand(*listCmdBufferStream, *args.additionalCommands);
+            EncodeSemaphore<Family>::applyMiSemaphoreWaitCommand(*listCmdBufferStream, *args.additionalCommands);
+        }
     }
 
-    if constexpr (heaplessModeEnabled) {
-        auto inlineDataPointer = reinterpret_cast<char *>(walkerCmd.getInlineDataPointer());
-        auto indirectDataPointerAddress = kernelDescriptor.payloadMappings.implicitArgs.indirectDataPointerAddress;
-        auto heap = container.getIndirectHeap(HeapType::indirectObject);
-        auto address = heap->getHeapGpuBase() + offsetThreadData;
-        std::memcpy(inlineDataPointer + indirectDataPointerAddress.offset, &address, indirectDataPointerAddress.pointerSize);
+    uint8_t *inlineData = reinterpret_cast<uint8_t *>(walkerCmd.getInlineDataPointer());
+    EncodeDispatchKernel<Family>::programInlineDataHeapless<heaplessModeEnabled>(inlineData, args, container, offsetThreadData, scratchAddressForImmediatePatching);
 
-    } else {
-        walkerCmd.setIndirectDataStartAddress(static_cast<uint32_t>(offsetThreadData));
-        walkerCmd.setIndirectDataLength(sizeThreadData);
+    if constexpr (heaplessModeEnabled == false) {
+        if (!args.makeCommandView) {
+            walkerCmd.setIndirectDataStartAddress(static_cast<uint32_t>(offsetThreadData));
+            walkerCmd.setIndirectDataLength(sizeThreadData);
+        }
     }
+    container.getIndirectHeap(HeapType::indirectObject)->align(NEO::EncodeDispatchKernel<Family>::getDefaultIOHAlignment());
 
     EncodeDispatchKernel<Family>::encodeThreadData(walkerCmd,
                                                    nullptr,
-                                                   threadDims,
+                                                   threadGroupDims,
                                                    args.dispatchInterface->getGroupSize(),
                                                    kernelDescriptor.kernelAttributes.simdSize,
                                                    kernelDescriptor.kernelAttributes.numLocalIdChannels,
-                                                   args.dispatchInterface->getNumThreadsPerThreadGroup(),
+                                                   threadsPerThreadGroup,
                                                    args.dispatchInterface->getThreadExecutionMask(),
                                                    localIdsGenerationByRuntime,
                                                    inlineDataProgramming,
@@ -346,9 +366,11 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
                                                    rootDeviceEnvironment);
 
     if (args.inOrderExecInfo) {
-        EncodeDispatchKernel<Family>::setupPostSyncForInOrderExec<WalkerType>(walkerCmd, args);
+        EncodeDispatchKernel<Family>::setupPostSyncForInOrderExec(walkerCmd, args);
     } else if (args.eventAddress) {
-        EncodeDispatchKernel<Family>::setupPostSyncForRegularEvent<WalkerType>(walkerCmd, args);
+        EncodeDispatchKernel<Family>::setupPostSyncForRegularEvent(walkerCmd, args);
+    } else {
+        EncodeDispatchKernel<Family>::forceComputeWalkerPostSyncFlushWithWrite(walkerCmd);
     }
 
     if (debugManager.flags.ForceComputeWalkerPostSyncFlush.get() == 1) {
@@ -360,9 +382,9 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
     walkerCmd.setPredicateEnable(args.isPredicate);
 
     auto threadGroupCount = walkerCmd.getThreadGroupIdXDimension() * walkerCmd.getThreadGroupIdYDimension() * walkerCmd.getThreadGroupIdZDimension();
-    EncodeDispatchKernel<Family>::adjustInterfaceDescriptorData(idd, *args.device, hwInfo, threadGroupCount, kernelDescriptor.kernelAttributes.numGrfRequired, walkerCmd);
+    EncodeDispatchKernel<Family>::encodeThreadGroupDispatch(idd, *args.device, hwInfo, threadDimsVec, threadGroupCount, kernelDescriptor.kernelAttributes.numGrfRequired, threadsPerThreadGroup, walkerCmd);
     if (debugManager.flags.PrintKernelDispatchParameters.get()) {
-        fprintf(stdout, "kernel, %s, numGrf, %d, simdSize, %d, tilesCount, %d, implicitScaling, %s, threadGroupCount, %d, numberOfThreadsInGpgpuThreadGroup, %d, threadGroupDimensions, %d, %d, %d, threadGroupDispatchSize enum, %d\n",
+        fprintf(stdout, "kernel, %s, grfCount, %d, simdSize, %d, tilesCount, %d, implicitScaling, %s, threadGroupCount, %d, numberOfThreadsInGpgpuThreadGroup, %d, threadGroupDimensions, %d, %d, %d, threadGroupDispatchSize enum, %d\n",
                 kernelDescriptor.kernelMetadata.kernelName.c_str(),
                 kernelDescriptor.kernelAttributes.numGrfRequired,
                 kernelDescriptor.kernelAttributes.simdSize,
@@ -376,62 +398,92 @@ void EncodeDispatchKernel<Family>::encode(CommandContainer &container, EncodeDis
                 idd.getThreadGroupDispatchSize());
     }
 
-    EncodeDispatchKernel<Family>::appendAdditionalIDDFields(&idd, rootDeviceEnvironment, threadsPerThreadGroup,
-                                                            args.dispatchInterface->getSlmTotalSize(),
-                                                            args.dispatchInterface->getSlmPolicy());
+    EncodeDispatchKernel<Family>::setupPreferredSlmSize(&idd, rootDeviceEnvironment, threadsPerThreadGroup,
+                                                        args.dispatchInterface->getSlmTotalSize(),
+                                                        args.dispatchInterface->getSlmPolicy());
+
+    auto kernelExecutionType = args.isCooperative ? KernelExecutionType::concurrent : KernelExecutionType::defaultType;
 
     EncodeWalkerArgs walkerArgs{
-        args.isCooperative ? KernelExecutionType::concurrent : KernelExecutionType::defaultType,
-        args.requiresSystemMemoryFence(),
-        kernelDescriptor,
-        args.requiredDispatchWalkOrder,
-        args.additionalSizeParam,
-        args.device->getDeviceInfo().maxFrontEndThreads};
+        .kernelExecutionType = kernelExecutionType,
+        .requiredDispatchWalkOrder = args.requiredDispatchWalkOrder,
+        .localRegionSize = args.localRegionSize,
+        .maxFrontEndThreads = args.device->getDeviceInfo().maxFrontEndThreads,
+        .requiredSystemFence = args.requiresSystemMemoryFence(),
+        .hasSample = kernelDescriptor.kernelAttributes.flags.hasSample};
+
     EncodeDispatchKernel<Family>::encodeAdditionalWalkerFields(rootDeviceEnvironment, walkerCmd, walkerArgs);
+    EncodeDispatchKernel<Family>::encodeWalkerPostSyncFields(walkerCmd, walkerArgs);
+    EncodeDispatchKernel<Family>::encodeComputeDispatchAllWalker(walkerCmd, &idd, rootDeviceEnvironment, walkerArgs);
 
-    PreemptionHelper::applyPreemptionWaCmdsBegin<Family>(listCmdBufferStream, *args.device);
+    EncodeDispatchKernel<Family>::overrideDefaultValues(walkerCmd, idd);
 
+    uint32_t workgroupSize = args.dispatchInterface->getGroupSize()[0] * args.dispatchInterface->getGroupSize()[1] * args.dispatchInterface->getGroupSize()[2];
+    bool isRequiredDispatchWorkGroupOrder = args.requiredDispatchWalkOrder != NEO::RequiredDispatchWalkOrder::none;
     if (args.partitionCount > 1 && !args.isInternal) {
         const uint64_t workPartitionAllocationGpuVa = args.device->getDefaultEngine().commandStreamReceiver->getWorkPartitionAllocationGpuAddress();
 
+        ImplicitScalingDispatchCommandArgs implicitScalingArgs{
+            workPartitionAllocationGpuVa,                                                            // workPartitionAllocationGpuVa
+            args.device,                                                                             // device
+            &args.outWalkerPtr,                                                                      // outWalkerPtr
+            args.requiredPartitionDim,                                                               // requiredPartitionDim
+            args.partitionCount,                                                                     // partitionCount
+            workgroupSize,                                                                           // workgroupSize
+            threadGroupCount,                                                                        // threadGroupCount
+            args.maxWgCountPerTile,                                                                  // maxWgCountPerTile
+            !(container.getFlushTaskUsedForImmediate() || container.isUsingPrimaryBuffer()),         // useSecondaryBatchBuffer
+            !args.isKernelDispatchedFromImmediateCmdList,                                            // apiSelfCleanup
+            args.dcFlushEnable,                                                                      // dcFlush
+            EncodeDispatchKernel<Family>::singleTileExecImplicitScalingRequired(args.isCooperative), // forceExecutionOnSingleTile
+            args.makeCommandView,                                                                    // blockDispatchToCommandBuffer
+            isRequiredDispatchWorkGroupOrder};                                                       // isRequiredDispatchWorkGroupOrder
+
         ImplicitScalingDispatch<Family>::dispatchCommands(*listCmdBufferStream,
                                                           walkerCmd,
-                                                          &args.outWalkerPtr,
                                                           args.device->getDeviceBitfield(),
-                                                          args.requiredPartitionDim,
-                                                          args.partitionCount,
-                                                          !(container.getFlushTaskUsedForImmediate() || container.isUsingPrimaryBuffer()),
-                                                          !args.isKernelDispatchedFromImmediateCmdList,
-                                                          args.dcFlushEnable,
-                                                          gfxCoreHelper.singleTileExecImplicitScalingRequired(args.isCooperative),
-                                                          workPartitionAllocationGpuVa,
-                                                          hwInfo);
+                                                          implicitScalingArgs);
+        args.partitionCount = implicitScalingArgs.partitionCount;
     } else {
         args.partitionCount = 1;
-        auto buffer = listCmdBufferStream->getSpaceForCmd<WalkerType>();
-        args.outWalkerPtr = buffer;
-        *buffer = walkerCmd;
+        EncodeDispatchKernel<Family>::setWalkerRegionSettings(walkerCmd, *args.device, args.partitionCount, workgroupSize, threadGroupCount, args.maxWgCountPerTile, isRequiredDispatchWorkGroupOrder);
+
+        if (!args.makeCommandView) {
+            auto buffer = listCmdBufferStream->getSpaceForCmd<WalkerType>();
+            args.outWalkerPtr = buffer;
+            *buffer = walkerCmd;
+        }
     }
 
-    PreemptionHelper::applyPreemptionWaCmdsEnd<Family>(listCmdBufferStream, *args.device);
+    if (args.cpuWalkerBuffer) {
+        *reinterpret_cast<WalkerType *>(args.cpuWalkerBuffer) = walkerCmd;
+    }
 
-    if (NEO::PauseOnGpuProperties::pauseModeAllowed(NEO::debugManager.flags.PauseOnEnqueue.get(), args.device->debugExecutionCounter.load(), NEO::PauseOnGpuProperties::PauseMode::AfterWorkload)) {
-        void *commandBuffer = listCmdBufferStream->getSpace(MemorySynchronizationCommands<Family>::getSizeForBarrierWithPostSyncOperation(rootDeviceEnvironment, false));
-        args.additionalCommands->push_back(commandBuffer);
+    if (!args.makeCommandView) {
 
-        EncodeSemaphore<Family>::applyMiSemaphoreWaitCommand(*listCmdBufferStream, *args.additionalCommands);
+        if (NEO::PauseOnGpuProperties::pauseModeAllowed(NEO::debugManager.flags.PauseOnEnqueue.get(), args.device->debugExecutionCounter.load(), NEO::PauseOnGpuProperties::PauseMode::AfterWorkload)) {
+            void *commandBuffer = listCmdBufferStream->getSpace(MemorySynchronizationCommands<Family>::getSizeForBarrierWithPostSyncOperation(rootDeviceEnvironment, false));
+            args.additionalCommands->push_back(commandBuffer);
+
+            EncodeSemaphore<Family>::applyMiSemaphoreWaitCommand(*listCmdBufferStream, *args.additionalCommands);
+        }
     }
 }
 
 template <typename Family>
 template <typename WalkerType>
 void EncodeDispatchKernel<Family>::setupPostSyncForRegularEvent(WalkerType &walkerCmd, const EncodeDispatchKernelArgs &args) {
-    using POSTSYNC_DATA = std::remove_reference_t<std::invoke_result_t<decltype(&WalkerType::getPostSync), WalkerType &>>;
+    using POSTSYNC_DATA = decltype(Family::template getPostSyncType<WalkerType>());
 
     auto &postSync = walkerCmd.getPostSync();
 
     postSync.setDataportPipelineFlush(true);
     postSync.setDataportSubsliceCacheFlush(true);
+
+    if (NEO::debugManager.flags.ForcePostSyncL1Flush.get() != -1) {
+        postSync.setDataportPipelineFlush(!!NEO::debugManager.flags.ForcePostSyncL1Flush.get());
+        postSync.setDataportSubsliceCacheFlush(!!NEO::debugManager.flags.ForcePostSyncL1Flush.get());
+    }
 
     auto operationType = POSTSYNC_DATA::OPERATION_WRITE_IMMEDIATE_DATA;
     uint64_t gpuVa = args.eventAddress;
@@ -448,28 +500,6 @@ void EncodeDispatchKernel<Family>::setupPostSyncForRegularEvent(WalkerType &walk
 
     postSync.setOperation(operationType);
     postSync.setImmediateData(immData);
-    postSync.setDestinationAddress(gpuVa);
-
-    EncodeDispatchKernel<Family>::setupPostSyncMocs(walkerCmd, args.device->getRootDeviceEnvironment(), args.dcFlushEnable);
-    EncodeDispatchKernel<Family>::adjustTimestampPacket(walkerCmd, args);
-}
-
-template <typename Family>
-template <typename WalkerType>
-void EncodeDispatchKernel<Family>::setupPostSyncForInOrderExec(WalkerType &walkerCmd, const EncodeDispatchKernelArgs &args) {
-    using POSTSYNC_DATA = std::remove_reference_t<std::invoke_result_t<decltype(&WalkerType::getPostSync), WalkerType &>>;
-
-    auto &postSync = walkerCmd.getPostSync();
-
-    postSync.setDataportPipelineFlush(true);
-    postSync.setDataportSubsliceCacheFlush(true);
-
-    uint64_t gpuVa = args.inOrderExecInfo->getBaseDeviceAddress() + args.inOrderExecInfo->getAllocationOffset();
-
-    UNRECOVERABLE_IF(!(isAligned<immWriteDestinationAddressAlignment>(gpuVa)));
-
-    postSync.setOperation(POSTSYNC_DATA::OPERATION_WRITE_IMMEDIATE_DATA);
-    postSync.setImmediateData(args.inOrderCounterValue);
     postSync.setDestinationAddress(gpuVa);
 
     EncodeDispatchKernel<Family>::setupPostSyncMocs(walkerCmd, args.device->getRootDeviceEnvironment(), args.dcFlushEnable);
@@ -534,7 +564,7 @@ bool EncodeDispatchKernel<Family>::isRuntimeLocalIdsGenerationRequired(uint32_t 
                 if (walkOrder[0] == HwWalkOrderHelper::compatibleDimensionOrders[index][0] &&
                     walkOrder[1] == HwWalkOrderHelper::compatibleDimensionOrders[index][1]) {
                     break;
-                };
+                }
                 index++;
             }
             DEBUG_BREAK_IF(index >= HwWalkOrderHelper::walkOrderPossibilties);
@@ -666,6 +696,8 @@ void EncodeStateBaseAddress<Family>::encode(EncodeStateBaseAddressArgs<Family> &
 
     if (device.getBindlessHeapsHelper()) {
         bindlessSurfStateBase = device.getBindlessHeapsHelper()->getGlobalHeapsBase();
+        globalHeapsBase = device.getBindlessHeapsHelper()->getGlobalHeapsBase();
+        useGlobalSshAndDsh = true;
     }
 
     StateBaseAddressHelperArgs<Family> stateBaseAddressHelperArgs = {
@@ -689,7 +721,6 @@ void EncodeStateBaseAddress<Family>::encode(EncodeStateBaseAddressArgs<Family> &
         setGeneralStateBaseAddress,                         // setGeneralStateBaseAddress
         useGlobalSshAndDsh,                                 // useGlobalHeapsBaseAddress
         args.multiOsContextCapable,                         // isMultiOsContextCapable
-        args.useGlobalAtomics,                              // useGlobalAtomics
         false,                                              // areMultipleSubDevicesInContext
         false,                                              // overrideSurfaceStateBaseAddress
         isDebuggerActive,                                   // isDebuggerActive
@@ -733,30 +764,7 @@ size_t EncodeStateBaseAddress<Family>::getRequiredSizeForStateBaseAddress(Device
 }
 
 template <typename Family>
-void EncodeComputeMode<Family>::adjustPipelineSelect(CommandContainer &container, const NEO::KernelDescriptor &kernelDescriptor) {
-
-    PipelineSelectArgs pipelineSelectArgs;
-    pipelineSelectArgs.systolicPipelineSelectMode = kernelDescriptor.kernelAttributes.flags.usesSystolicPipelineSelectMode;
-    pipelineSelectArgs.systolicPipelineSelectSupport = container.systolicModeSupportRef();
-
-    PreambleHelper<Family>::programPipelineSelect(container.getCommandStream(),
-                                                  pipelineSelectArgs,
-                                                  container.getDevice()->getRootDeviceEnvironment());
-}
-
-template <typename Family>
 inline void EncodeMediaInterfaceDescriptorLoad<Family>::encode(CommandContainer &container, IndirectHeap *childDsh) {
-}
-
-template <typename Family>
-void EncodeMiFlushDW<Family>::adjust(MI_FLUSH_DW *miFlushDwCmd, const ProductHelper &productHelper) {
-    miFlushDwCmd->setFlushCcs(1);
-    miFlushDwCmd->setFlushLlc(1);
-}
-
-template <typename Family>
-bool EncodeSurfaceState<Family>::isBindingTablePrefetchPreferred() {
-    return false;
 }
 
 template <typename Family>
@@ -802,11 +810,6 @@ void EncodeSurfaceState<Family>::encodeExtraBufferParams(EncodeSurfaceStateArgs 
 }
 
 template <typename Family>
-inline void EncodeSurfaceState<Family>::setCoherencyType(R_SURFACE_STATE *surfaceState, COHERENCY_TYPE coherencyType) {
-    surfaceState->setCoherencyType(R_SURFACE_STATE::COHERENCY_TYPE_GPU_COHERENT);
-}
-
-template <typename Family>
 void EncodeSemaphore<Family>::programMiSemaphoreWait(MI_SEMAPHORE_WAIT *cmd,
                                                      uint64_t compareAddress,
                                                      uint64_t compareData,
@@ -814,7 +817,8 @@ void EncodeSemaphore<Family>::programMiSemaphoreWait(MI_SEMAPHORE_WAIT *cmd,
                                                      bool registerPollMode,
                                                      bool waitMode,
                                                      bool useQwordData,
-                                                     bool indirect) {
+                                                     bool indirect,
+                                                     bool switchOnUnsuccessful) {
     MI_SEMAPHORE_WAIT localCmd = Family::cmdInitMiSemaphoreWait;
     localCmd.setCompareOperation(compareMode);
     localCmd.setSemaphoreDataDword(static_cast<uint32_t>(compareData));
@@ -823,7 +827,7 @@ void EncodeSemaphore<Family>::programMiSemaphoreWait(MI_SEMAPHORE_WAIT *cmd,
     localCmd.setRegisterPollMode(registerPollMode ? MI_SEMAPHORE_WAIT::REGISTER_POLL_MODE::REGISTER_POLL_MODE_REGISTER_POLL : MI_SEMAPHORE_WAIT::REGISTER_POLL_MODE::REGISTER_POLL_MODE_MEMORY_POLL);
     localCmd.setIndirectSemaphoreDataDword(indirect);
 
-    EncodeSemaphore<Family>::appendSemaphoreCommand(localCmd, compareData, indirect, useQwordData);
+    EncodeSemaphore<Family>::appendSemaphoreCommand(localCmd, compareData, indirect, useQwordData, switchOnUnsuccessful);
 
     *cmd = localCmd;
 }
@@ -866,16 +870,6 @@ inline void EncodeWA<Family>::addPipeControlPriorToNonPipelinedStateCommand(Line
 }
 
 template <typename Family>
-void EncodeWA<Family>::adjustCompressionFormatForPlanarImage(uint32_t &compressionFormat, int plane) {
-    static_assert(sizeof(plane) == sizeof(GMM_YUV_PLANE_ENUM));
-    if (plane == GMM_PLANE_Y) {
-        compressionFormat &= 0xf;
-    } else if ((plane == GMM_PLANE_U) || (plane == GMM_PLANE_V)) {
-        compressionFormat |= 0x10;
-    }
-}
-
-template <typename Family>
 inline void EncodeStoreMemory<Family>::programStoreDataImm(MI_STORE_DATA_IMM *cmdBuffer,
                                                            uint64_t gpuAddress,
                                                            uint32_t dataDword0,
@@ -893,6 +887,7 @@ inline void EncodeStoreMemory<Family>::programStoreDataImm(MI_STORE_DATA_IMM *cm
         storeDataImmediate.setDwordLength(MI_STORE_DATA_IMM::DWORD_LENGTH::DWORD_LENGTH_STORE_DWORD);
     }
     storeDataImmediate.setWorkloadPartitionIdOffsetEnable(workloadPartitionOffset);
+    EncodeStoreMemory<Family>::encodeForceCompletionCheck(storeDataImmediate);
     *cmdBuffer = storeDataImmediate;
 }
 
@@ -903,12 +898,142 @@ inline void EncodeStoreMMIO<Family>::appendFlags(MI_STORE_REGISTER_MEM *storeReg
 }
 
 template <typename Family>
-template <typename WalkerType>
-void EncodeDispatchKernel<Family>::adjustWalkOrder(WalkerType &walkerCmd, uint32_t requiredWorkGroupOrder, const RootDeviceEnvironment &rootDeviceEnvironment) {}
-
-template <typename Family>
 size_t EncodeDispatchKernel<Family>::additionalSizeRequiredDsh(uint32_t iddCount) {
     return 0u;
+}
+
+template <typename Family>
+inline size_t EncodeDispatchKernel<Family>::getInlineDataOffset(EncodeDispatchKernelArgs &args) {
+    using DefaultWalkerType = typename Family::DefaultWalkerType;
+    return offsetof(DefaultWalkerType, TheStructure.Common.InlineData);
+}
+
+template <typename Family>
+template <typename WalkerType>
+void EncodeDispatchKernel<Family>::forceComputeWalkerPostSyncFlushWithWrite(WalkerType &walkerCmd) {
+    using POSTSYNC_DATA = decltype(Family::template getPostSyncType<WalkerType>());
+    using OperationType = typename POSTSYNC_DATA::OPERATION;
+
+    if (debugManager.flags.ForceComputeWalkerPostSyncFlushWithWrite.get() != -1) {
+        auto &postSync = walkerCmd.getPostSync();
+        postSync.setDataportPipelineFlush(true);
+        postSync.setDataportSubsliceCacheFlush(true);
+        postSync.setDestinationAddress(static_cast<uint64_t>(debugManager.flags.ForceComputeWalkerPostSyncFlushWithWrite.get()));
+        postSync.setOperation(OperationType::OPERATION_WRITE_IMMEDIATE_DATA);
+        postSync.setImmediateData(0u);
+    }
+}
+
+template <typename Family>
+uint32_t EncodeDispatchKernel<Family>::alignSlmSize(uint32_t slmSize) {
+    const uint32_t alignedSlmSizes[] = {
+        0u,
+        1u * MemoryConstants::kiloByte,
+        2u * MemoryConstants::kiloByte,
+        4u * MemoryConstants::kiloByte,
+        8u * MemoryConstants::kiloByte,
+        16u * MemoryConstants::kiloByte,
+        24u * MemoryConstants::kiloByte,
+        32u * MemoryConstants::kiloByte,
+        48u * MemoryConstants::kiloByte,
+        64u * MemoryConstants::kiloByte,
+        96u * MemoryConstants::kiloByte,
+        128u * MemoryConstants::kiloByte,
+    };
+
+    for (auto &alignedSlmSize : alignedSlmSizes) {
+        if (slmSize <= alignedSlmSize) {
+            return alignedSlmSize;
+        }
+    }
+
+    UNRECOVERABLE_IF(true);
+    return 0;
+}
+
+template <typename Family>
+uint32_t EncodeDispatchKernel<Family>::computeSlmValues(const HardwareInfo &hwInfo, uint32_t slmSize) {
+    using SHARED_LOCAL_MEMORY_SIZE = typename Family::INTERFACE_DESCRIPTOR_DATA::SHARED_LOCAL_MEMORY_SIZE;
+
+    if (slmSize == 0u) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_0K;
+    }
+
+    UNRECOVERABLE_IF(slmSize > 128u * MemoryConstants::kiloByte);
+
+    if (slmSize > 96u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_128K;
+    }
+    if (slmSize > 64u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_96K;
+    }
+    if (slmSize > 48u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_64K;
+    }
+    if (slmSize > 32u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_48K;
+    }
+    if (slmSize > 24u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_32K;
+    }
+    if (slmSize > 16u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_24K;
+    }
+    if (slmSize > 8u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_16K;
+    }
+    if (slmSize > 4u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_8K;
+    }
+    if (slmSize > 2u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_4K;
+    }
+    if (slmSize > 1u * MemoryConstants::kiloByte) {
+        return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_2K;
+    }
+    return SHARED_LOCAL_MEMORY_SIZE::SHARED_LOCAL_MEMORY_SIZE_SLM_ENCODES_1K;
+}
+
+template <typename Family>
+template <typename InterfaceDescriptorType>
+void EncodeDispatchKernel<Family>::setupPreferredSlmSize(InterfaceDescriptorType *pInterfaceDescriptor, const RootDeviceEnvironment &rootDeviceEnvironment, const uint32_t threadsPerThreadGroup, uint32_t slmTotalSize, SlmPolicy slmPolicy) {
+    using PREFERRED_SLM_ALLOCATION_SIZE = typename InterfaceDescriptorType::PREFERRED_SLM_ALLOCATION_SIZE;
+    auto &hwInfo = *rootDeviceEnvironment.getHardwareInfo();
+    const uint32_t threadsPerDssCount = EncodeDispatchKernel<Family>::getThreadCountPerSubslice(hwInfo);
+    const uint32_t workGroupCountPerDss = static_cast<uint32_t>(Math::divideAndRoundUp(threadsPerDssCount, threadsPerThreadGroup));
+
+    slmTotalSize = EncodeDispatchKernel<Family>::alignPreferredSlmSize(slmTotalSize);
+
+    uint32_t slmSize = 0u;
+
+    switch (slmPolicy) {
+    case SlmPolicy::slmPolicyLargeData:
+        slmSize = slmTotalSize;
+        break;
+    case SlmPolicy::slmPolicyLargeSlm:
+    default:
+        slmSize = slmTotalSize * workGroupCountPerDss;
+        break;
+    }
+
+    constexpr bool isHeapless = Family::template isInterfaceDescriptorHeaplessMode<InterfaceDescriptorType>();
+
+    auto releaseHelper = rootDeviceEnvironment.getReleaseHelper();
+    const auto &sizeToPreferredSlmValueArray = releaseHelper->getSizeToPreferredSlmValue(isHeapless);
+
+    uint32_t programmableIdPreferredSlmSize = 0;
+    for (auto &range : sizeToPreferredSlmValueArray) {
+        if (slmSize <= range.upperLimit) {
+            programmableIdPreferredSlmSize = range.valueToProgram;
+            break;
+        }
+    }
+
+    if (debugManager.flags.OverridePreferredSlmAllocationSizePerDss.get() != -1) {
+        programmableIdPreferredSlmSize = static_cast<uint32_t>(debugManager.flags.OverridePreferredSlmAllocationSizePerDss.get());
+    }
+
+    pInterfaceDescriptor->setPreferredSlmAllocationSize(static_cast<PREFERRED_SLM_ALLOCATION_SIZE>(programmableIdPreferredSlmSize));
 }
 
 template <typename Family>
@@ -917,10 +1042,160 @@ size_t EncodeStates<Family>::getSshHeapSize() {
 }
 
 template <typename Family>
-void InOrderPatchCommandHelpers::PatchCmd<Family>::patchComputeWalker(uint64_t appendCounterValue) {
-    auto walkerCmd = reinterpret_cast<typename Family::COMPUTE_WALKER *>(cmd1);
-    auto &postSync = walkerCmd->getPostSync();
-    postSync.setImmediateData(baseCounterValue + appendCounterValue);
+template <typename WalkerType, typename InterfaceDescriptorType>
+void EncodeDispatchKernel<Family>::overrideDefaultValues(WalkerType &walkerCmd, InterfaceDescriptorType &interfaceDescriptor) {
+    int32_t forceL3PrefetchForComputeWalker = debugManager.flags.ForceL3PrefetchForComputeWalker.get();
+    if (forceL3PrefetchForComputeWalker != -1) {
+        walkerCmd.setL3PrefetchDisable(!forceL3PrefetchForComputeWalker);
+    }
+}
+
+template <typename Family>
+template <typename WalkerType, typename InterfaceDescriptorType>
+void EncodeDispatchKernel<Family>::encodeThreadGroupDispatch(InterfaceDescriptorType &interfaceDescriptor, const Device &device, const HardwareInfo &hwInfo,
+                                                             const uint32_t *threadGroupDimensions, const uint32_t threadGroupCount, const uint32_t grfCount, const uint32_t threadsPerThreadGroup, WalkerType &walkerCmd) {
+    const auto &productHelper = device.getProductHelper();
+
+    if (productHelper.isDisableOverdispatchAvailable(hwInfo)) {
+        interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
+
+        bool adjustTGDispatchSize = true;
+        if (debugManager.flags.AdjustThreadGroupDispatchSize.get() != -1) {
+            adjustTGDispatchSize = !!debugManager.flags.AdjustThreadGroupDispatchSize.get();
+        }
+        // apply v2 algorithm only for parts where MaxSubSlicesSupported is equal to SubSliceCount
+        auto algorithmVersion = hwInfo.gtSystemInfo.MaxSubSlicesSupported == hwInfo.gtSystemInfo.SubSliceCount ? 2 : 1;
+        if (debugManager.flags.ForceThreadGroupDispatchSizeAlgorithm.get() != -1) {
+            algorithmVersion = debugManager.flags.ForceThreadGroupDispatchSizeAlgorithm.get();
+        }
+
+        auto tileCount = ImplicitScalingHelper::isImplicitScalingEnabled(device.getDeviceBitfield(), true) ? device.getNumSubDevices() : 1u;
+
+        if (algorithmVersion == 2) {
+            auto threadsPerXeCore = hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.MaxSubSlicesSupported;
+            if (grfCount == 256) {
+                threadsPerXeCore /= 2;
+            }
+            auto tgDispatchSizeSelected = 8;
+
+            if (threadGroupDimensions[0] > 1 && (threadGroupDimensions[1] > 1 || threadGroupDimensions[2] > 1)) {
+                while (threadGroupDimensions[0] % tgDispatchSizeSelected != 0) {
+                    tgDispatchSizeSelected /= 2;
+                }
+            } else if (threadGroupDimensions[1] > 1 && threadGroupDimensions[2] > 1) {
+                while (threadGroupDimensions[1] % tgDispatchSizeSelected != 0) {
+                    tgDispatchSizeSelected /= 2;
+                }
+            }
+
+            // make sure we fit all xe core
+            while (threadGroupCount / tgDispatchSizeSelected < hwInfo.gtSystemInfo.MaxSubSlicesSupported * tileCount && tgDispatchSizeSelected > 1) {
+                tgDispatchSizeSelected /= 2;
+            }
+
+            auto threadCountPerGrouping = tgDispatchSizeSelected * threadsPerThreadGroup;
+            // make sure we do not use more threads then present on each xe core
+            while (threadCountPerGrouping > threadsPerXeCore && tgDispatchSizeSelected > 1) {
+                tgDispatchSizeSelected /= 2;
+                threadCountPerGrouping /= 2;
+            }
+
+            if (tgDispatchSizeSelected == 8) {
+                interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_8);
+            } else if (tgDispatchSizeSelected == 1) {
+                interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
+            } else if (tgDispatchSizeSelected == 2) {
+                interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_2);
+            } else {
+                interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_4);
+            }
+        } else {
+            if (adjustTGDispatchSize) {
+                UNRECOVERABLE_IF(grfCount == 0u);
+                constexpr uint32_t maxThreadsInTGForTGDispatchSize8 = 16u;
+                constexpr uint32_t maxThreadsInTGForTGDispatchSize4 = 32u;
+                auto &gfxCoreHelper = device.getGfxCoreHelper();
+                uint32_t availableThreadCount = gfxCoreHelper.calculateAvailableThreadCount(hwInfo, grfCount);
+                availableThreadCount *= tileCount;
+
+                uint32_t dispatchedTotalThreadCount = threadsPerThreadGroup * threadGroupCount;
+                UNRECOVERABLE_IF(threadsPerThreadGroup == 0u);
+                auto tgDispatchSizeSelected = 1u;
+
+                if (dispatchedTotalThreadCount <= availableThreadCount) {
+                    tgDispatchSizeSelected = 1;
+                } else if (threadsPerThreadGroup <= maxThreadsInTGForTGDispatchSize8) {
+                    tgDispatchSizeSelected = 8;
+                } else if (threadsPerThreadGroup <= maxThreadsInTGForTGDispatchSize4) {
+                    tgDispatchSizeSelected = 4;
+                } else {
+                    tgDispatchSizeSelected = 2;
+                }
+                if (threadGroupDimensions[0] > 1 && (threadGroupDimensions[1] > 1 || threadGroupDimensions[2] > 1)) {
+                    while (threadGroupDimensions[0] % tgDispatchSizeSelected != 0) {
+                        tgDispatchSizeSelected /= 2;
+                    }
+                } else if (threadGroupDimensions[1] > 1 && threadGroupDimensions[2] > 1) {
+                    while (threadGroupDimensions[1] % tgDispatchSizeSelected != 0) {
+                        tgDispatchSizeSelected /= 2;
+                    }
+                }
+                if (tgDispatchSizeSelected == 8) {
+                    interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_8);
+                } else if (tgDispatchSizeSelected == 1) {
+                    interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_1);
+                } else if (tgDispatchSizeSelected == 2) {
+                    interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_2);
+                } else {
+                    interfaceDescriptor.setThreadGroupDispatchSize(InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE_TG_SIZE_4);
+                }
+            }
+        }
+    }
+
+    if (debugManager.flags.ForceThreadGroupDispatchSize.get() != -1) {
+        interfaceDescriptor.setThreadGroupDispatchSize(static_cast<typename InterfaceDescriptorType::THREAD_GROUP_DISPATCH_SIZE>(
+            debugManager.flags.ForceThreadGroupDispatchSize.get()));
+    }
+}
+
+template <typename Family>
+template <typename WalkerType>
+void EncodeDispatchKernel<Family>::encodeWalkerPostSyncFields(WalkerType &walkerCmd, const EncodeWalkerArgs &walkerArgs) {
+    auto programGlobalFenceAsPostSyncOperationInComputeWalker = walkerArgs.requiredSystemFence;
+    int32_t overrideProgramSystemMemoryFence = debugManager.flags.ProgramGlobalFenceAsPostSyncOperationInComputeWalker.get();
+    if (overrideProgramSystemMemoryFence != -1) {
+        programGlobalFenceAsPostSyncOperationInComputeWalker = !!overrideProgramSystemMemoryFence;
+    }
+    auto &postSyncData = walkerCmd.getPostSync();
+    postSyncData.setSystemMemoryFenceRequest(programGlobalFenceAsPostSyncOperationInComputeWalker);
+}
+
+template <typename Family>
+void EncodeSurfaceState<Family>::encodeExtraCacheSettings(R_SURFACE_STATE *surfaceState, const EncodeSurfaceStateArgs &args) {
+    using L1_CACHE_CONTROL = typename R_SURFACE_STATE::L1_CACHE_CONTROL;
+    auto &productHelper = args.gmmHelper->getRootDeviceEnvironment().getHelper<ProductHelper>();
+
+    auto cachePolicy = static_cast<L1_CACHE_CONTROL>(productHelper.getL1CachePolicy(args.isDebuggerActive));
+    if (debugManager.flags.OverrideL1CacheControlInSurfaceState.get() != -1 &&
+        debugManager.flags.ForceAllResourcesUncached.get() == false) {
+        cachePolicy = static_cast<L1_CACHE_CONTROL>(debugManager.flags.OverrideL1CacheControlInSurfaceState.get());
+    }
+    surfaceState->setL1CacheControlCachePolicy(cachePolicy);
+}
+
+template <typename Family>
+void EncodeEnableRayTracing<Family>::programEnableRayTracing(LinearStream &commandStream, uint64_t backBuffer) {
+    auto cmd = Family::cmd3dStateBtd;
+    cmd.setPerDssMemoryBackedBufferSize(static_cast<typename Family::_3DSTATE_BTD::PER_DSS_MEMORY_BACKED_BUFFER_SIZE>(RayTracingHelper::getMemoryBackedFifoSizeToPatch()));
+    cmd.setMemoryBackedBufferBasePointer(backBuffer);
+    append3dStateBtd(&cmd);
+    *commandStream.getSpaceForCmd<typename Family::_3DSTATE_BTD>() = cmd;
+}
+
+template <typename Family>
+inline void EncodeWA<Family>::setAdditionalPipeControlFlagsForNonPipelineStateCommand(PipeControlArgs &args) {
+    args.unTypedDataPortCacheFlush = true;
 }
 
 } // namespace NEO

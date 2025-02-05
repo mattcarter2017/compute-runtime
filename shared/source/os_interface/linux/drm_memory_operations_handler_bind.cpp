@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,17 +26,24 @@ DrmMemoryOperationsHandlerBind::DrmMemoryOperationsHandlerBind(const RootDeviceE
 
 DrmMemoryOperationsHandlerBind::~DrmMemoryOperationsHandlerBind() = default;
 
-MemoryOperationsStatus DrmMemoryOperationsHandlerBind::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+MemoryOperationsStatus DrmMemoryOperationsHandlerBind::makeResident(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations, bool isDummyExecNeeded) {
     auto &engines = device->getAllEngines();
     MemoryOperationsStatus result = MemoryOperationsStatus::success;
     for (const auto &engine : engines) {
-        engine.commandStreamReceiver->initializeResources();
+        engine.commandStreamReceiver->initializeResources(false, device->getPreemptionMode());
         result = this->makeResidentWithinOsContext(engine.osContext, gfxAllocations, false);
         if (result != MemoryOperationsStatus::success) {
             break;
         }
     }
     return result;
+}
+
+MemoryOperationsStatus DrmMemoryOperationsHandlerBind::lock(Device *device, ArrayRef<GraphicsAllocation *> gfxAllocations) {
+    for (auto gfxAllocation = gfxAllocations.begin(); gfxAllocation != gfxAllocations.end(); gfxAllocation++) {
+        (*gfxAllocation)->setLockedMemory(true);
+    }
+    return makeResident(device, gfxAllocations, false);
 }
 
 MemoryOperationsStatus DrmMemoryOperationsHandlerBind::makeResidentWithinOsContext(OsContext *osContext, ArrayRef<GraphicsAllocation *> gfxAllocations, bool evictable) {
@@ -58,13 +65,14 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerBind::makeResidentWithinOsConte
                 bo = drmAllocation->getBO();
             }
 
-            if (!bo->bindInfo[bo->getOsContextId(osContext)][drmIterator]) {
+            if (!bo->getBindInfo()[bo->getOsContextId(osContext)][drmIterator]) {
+                bo->requireExplicitLockedMemory(drmAllocation->isLockedMemory());
+                bo->requireImmediateBinding(true);
                 int result = drmAllocation->makeBOsResident(osContext, drmIterator, nullptr, true);
                 if (result) {
                     return MemoryOperationsStatus::outOfMemory;
                 }
             }
-
             if (!evictable) {
                 drmAllocation->updateResidencyTaskCount(GraphicsAllocation::objectAlwaysResident, osContext->getContextId());
             }
@@ -77,6 +85,7 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerBind::makeResidentWithinOsConte
 MemoryOperationsStatus DrmMemoryOperationsHandlerBind::evict(Device *device, GraphicsAllocation &gfxAllocation) {
     auto &engines = device->getAllEngines();
     auto retVal = MemoryOperationsStatus::success;
+    gfxAllocation.setLockedMemory(false);
     for (const auto &engine : engines) {
         retVal = this->evictWithinOsContext(engine.osContext, gfxAllocation);
         if (retVal != MemoryOperationsStatus::success) {
@@ -103,6 +112,11 @@ int DrmMemoryOperationsHandlerBind::evictImpl(OsContext *osContext, GraphicsAllo
             if (retVal) {
                 return retVal;
             }
+            auto bo = drmAllocation->storageInfo.getNumBanks() > 1 ? drmAllocation->getBOs()[drmIterator] : drmAllocation->getBO();
+            if (drmAllocation->storageInfo.isChunked) {
+                bo = drmAllocation->getBO();
+            }
+            bo->requireImmediateBinding(false);
         }
     }
     drmAllocation->updateResidencyTaskCount(GraphicsAllocation::objectNotResident, osContext->getContextId());
@@ -185,9 +199,12 @@ MemoryOperationsStatus DrmMemoryOperationsHandlerBind::evictUnusedAllocationsImp
                         evict = false;
                         break;
                     }
-
-                    if (waitForCompletion) {
-                        const auto waitStatus = engine.commandStreamReceiver->waitForCompletionWithTimeout(WaitParams{false, false, 0}, engine.commandStreamReceiver->peekLatestFlushedTaskCount());
+                    if (allocation->isLockedMemory()) {
+                        evict = false;
+                        break;
+                    }
+                    if (waitForCompletion && engine.commandStreamReceiver->isInitialized()) {
+                        const auto waitStatus = engine.commandStreamReceiver->waitForCompletionWithTimeout(WaitParams{false, false, false, 0}, engine.commandStreamReceiver->peekLatestFlushedTaskCount());
                         if (waitStatus == WaitStatus::gpuHang) {
                             return MemoryOperationsStatus::gpuHangDetectedDuringOperation;
                         }

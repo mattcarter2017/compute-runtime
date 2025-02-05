@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,9 +13,7 @@
 #include "shared/test/common/test_macros/hw_test.h"
 
 namespace NEO {
-using IsSKL = IsProduct<IGFX_SKYLAKE>;
 using IsDG2 = IsProduct<IGFX_DG2>;
-using IsHostPtrTrackingDisabled = IsWithinGfxCore<IGFX_GEN9_CORE, IGFX_GEN11LP_CORE>;
 
 using AILTests = ::testing::Test;
 
@@ -23,32 +21,34 @@ TEST(AILTests, whenAILConfigurationCreateFunctionIsCalledWithUnknownGfxCoreThenN
     EXPECT_EQ(nullptr, AILConfiguration::create(IGFX_UNKNOWN));
 }
 
-HWTEST2_F(AILTests, givenInitilizedTemplateWhenApplyWithBlenderIsCalledThenFP64SupportIsEnabled, IsAtLeastGen12lp) {
+HWTEST2_F(AILTests, givenInitilizedTemplateWhenApplyWithBlenderIsCalledThenFP64SupportIsEnabled, MatchAny) {
     AILWhitebox<productFamily> ail;
     ail.processName = "blender";
 
-    NEO::RuntimeCapabilityTable rtTable = {};
+    HardwareInfo hwInfo = {};
+    NEO::RuntimeCapabilityTable &rtTable = hwInfo.capabilityTable;
     rtTable.ftrSupportsFP64 = false;
 
-    ail.apply(rtTable);
+    ail.apply(hwInfo);
 
     EXPECT_EQ(rtTable.ftrSupportsFP64, true);
 }
 
-HWTEST2_F(AILTests, givenInitilizedTemplateWhenApplyWithAdobePremiereProIsCalledThenPreferredPlatformNameIsSet, IsAtLeastGen9) {
+HWTEST2_F(AILTests, givenInitilizedTemplateWhenApplyWithAdobePremiereProIsCalledThenPreferredPlatformNameIsSet, MatchAny) {
     AILWhitebox<productFamily> ail;
     ail.processName = "Adobe Premiere Pro";
 
-    NEO::RuntimeCapabilityTable rtTable = {};
+    HardwareInfo hwInfo = {};
+    NEO::RuntimeCapabilityTable &rtTable = hwInfo.capabilityTable;
     rtTable.preferredPlatformName = nullptr;
 
-    ail.apply(rtTable);
+    ail.apply(hwInfo);
 
     EXPECT_NE(nullptr, rtTable.preferredPlatformName);
     EXPECT_STREQ("Intel(R) OpenCL", rtTable.preferredPlatformName);
 }
 
-HWTEST2_F(AILTests, whenCheckingIfSourcesContainKernelThenCorrectResultIsReturned, IsAtLeastGen12lp) {
+HWTEST2_F(AILTests, whenCheckingIfSourcesContainKernelThenCorrectResultIsReturned, MatchAny) {
     AILWhitebox<productFamily> ail;
 
     std::string kernelSources = R"( 
@@ -78,7 +78,7 @@ __kernel void CopyBufferToBufferMiddle(
     EXPECT_FALSE(ail.sourcesContain(kernelSources, "CopyBufferToBufferMiddleStateless"));
 }
 
-HWTEST2_F(AILTests, whenCheckingIsKernelHashCorrectThenCorrectResultIsReturned, IsAtLeastGen12lp) {
+HWTEST2_F(AILTests, whenCheckingIsKernelHashCorrectThenCorrectResultIsReturned, MatchAny) {
     AILWhitebox<productFamily> ail;
 
     std::string kernelSources = R"( 
@@ -103,7 +103,7 @@ __kernel void CopyBufferToBufferLeftLeftover(
     EXPECT_FALSE(ail.isKernelHashCorrect(kernelSources, expectedHash));
 }
 
-HWTEST2_F(AILTests, whenModifyKernelIfRequiredIsCalledThenDontChangeKernelSources, IsAtLeastGen12lp) {
+HWTEST2_F(AILTests, whenModifyKernelIfRequiredIsCalledThenDontChangeKernelSources, MatchAny) {
     AILWhitebox<productFamily> ail;
 
     std::string kernelSources = "example_kernel(){}";
@@ -114,34 +114,33 @@ HWTEST2_F(AILTests, whenModifyKernelIfRequiredIsCalledThenDontChangeKernelSource
     EXPECT_STREQ(copyKernel.c_str(), kernelSources.c_str());
 }
 
-HWTEST2_F(AILTests, givenPreGen12AndProcessNameIsResolveWhenApplyWithDavinciResolveThenHostPtrTrackingIsDisabled, IsHostPtrTrackingDisabled) {
-    AILWhitebox<productFamily> ail;
-    ail.processName = "resolve";
-
-    NEO::RuntimeCapabilityTable rtTable = {};
-    rtTable.hostPtrTrackingEnabled = true;
-
-    ail.apply(rtTable);
-
-    EXPECT_FALSE(rtTable.hostPtrTrackingEnabled);
-}
-
-HWTEST2_F(AILTests, givenPreGen12AndAndProcessNameIsNotResolveWhenApplyWithDavinciResolveThenHostPtrTrackingIsEnabled, IsHostPtrTrackingDisabled) {
-    AILWhitebox<productFamily> ail;
-    ail.processName = "usualProcessName";
-
-    NEO::RuntimeCapabilityTable rtTable = {};
-    rtTable.hostPtrTrackingEnabled = true;
-
-    ail.apply(rtTable);
-
-    EXPECT_TRUE(rtTable.hostPtrTrackingEnabled);
-}
-
-HWTEST2_F(AILTests, GivenAilWhenCheckingContextSyncFlagRequiredThenExpectFalse, IsAtLeastGen9) {
+HWTEST2_F(AILTests, givenAilWhenCheckingContextSyncFlagRequiredThenExpectFalse, MatchAny) {
     AILWhitebox<productFamily> ail;
     ail.processName = "other";
     EXPECT_FALSE(ail.isContextSyncFlagRequired());
+}
+
+HWTEST2_F(AILTests, givenAilWhenCheckingOverfetchDisableRequiredThenExpectFalse, MatchAny) {
+    AILWhitebox<productFamily> ail;
+    ail.processName = "other";
+    EXPECT_FALSE(ail.is256BPrefetchDisableRequired());
+}
+
+HWTEST2_F(AILTests, givenAilWhenCheckingDrainHostptrsRequiredThenExpectTrue, MatchAny) {
+    AILWhitebox<productFamily> ail;
+    ail.processName = "other";
+    EXPECT_TRUE(ail.drainHostptrs());
+}
+
+HWTEST2_F(AILTests, givenAilWhenCheckingIfPatchtokenFallbackIsRequiredThenExpectFalse, MatchAny) {
+    AILWhitebox<productFamily> ail;
+    ail.processName = "other";
+    EXPECT_FALSE(ail.isFallbackToPatchtokensRequired());
+}
+
+HWTEST2_F(AILTests, givenAilWhenGetMicrosecondResolutionCalledThenCorrectValueReturned, MatchAny) {
+    AILWhitebox<productFamily> ail;
+    EXPECT_EQ(ail.getMicrosecondResolution(), microsecondAdjustment);
 }
 
 } // namespace NEO

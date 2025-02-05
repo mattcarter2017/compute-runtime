@@ -1,14 +1,13 @@
 /*
- * Copyright (C) 2022-2024 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
-#include "shared/source/helpers/compiler_aot_config_bdw_and_later.inl"
+#include "shared/source/helpers/compiler_aot_config_tgllp_and_later.inl"
 #include "shared/source/helpers/compiler_product_helper.h"
 #include "shared/source/helpers/compiler_product_helper_base.inl"
-#include "shared/source/helpers/compiler_product_helper_bdw_and_later.inl"
 #include "shared/source/helpers/compiler_product_helper_enable_subgroup_local_block_io.inl"
 #include "shared/source/helpers/compiler_product_helper_tgllp_and_later.inl"
 #include "shared/source/helpers/compiler_product_helper_xe_hp_and_later.inl"
@@ -75,6 +74,14 @@ bool CompilerProductHelperHw<IGFX_PVC>::isMatrixMultiplyAccumulateSupported(cons
         return releaseHelper->isMatrixMultiplyAccumulateSupported();
     }
     return true;
+}
+
+template <>
+bool CompilerProductHelperHw<IGFX_PVC>::isMatrixMultiplyAccumulateTF32Supported(const HardwareInfo &hwInfo) const {
+    auto config = getProductConfigFromHwInfo(hwInfo);
+    if (config >= AOT::PVC_XT_B0 && config < AOT::PVC_XT_C0_VG)
+        return true;
+    return false;
 }
 
 template <>

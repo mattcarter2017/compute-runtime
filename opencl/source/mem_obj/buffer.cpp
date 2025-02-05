@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,6 +24,7 @@
 #include "shared/source/memory_manager/memory_operations_handler.h"
 #include "shared/source/memory_manager/migration_sync_data.h"
 #include "shared/source/os_interface/os_interface.h"
+#include "shared/source/utilities/cpuintrinsics.h"
 
 #include "opencl/source/cl_device/cl_device.h"
 #include "opencl/source/command_queue/command_queue.h"
@@ -105,6 +106,10 @@ cl_mem Buffer::validateInputAndCreateBuffer(cl_context context,
         return nullptr;
     }
 
+    if ((flags & CL_MEM_USE_HOST_PTR) && !!debugManager.flags.ForceZeroCopyForUseHostPtr.get()) {
+        flags |= CL_MEM_FORCE_HOST_MEMORY_INTEL;
+    }
+
     MemoryProperties memoryProperties{};
     cl_mem_alloc_flags_intel allocflags = 0;
     cl_mem_flags_intel emptyFlagsIntel = 0;
@@ -184,6 +189,8 @@ Buffer *Buffer::create(Context *context,
                   flags, 0, size, hostPtr, bufferCreateArgs, errcodeRet);
 }
 
+extern bool checkIsGpuCopyRequiredForDcFlushMitigation(AllocationType type);
+
 bool inline copyHostPointer(Buffer *buffer,
                             Device &device,
                             size_t size,
@@ -191,13 +198,14 @@ bool inline copyHostPointer(Buffer *buffer,
                             bool implicitScalingEnabled,
                             cl_int &errcodeRet) {
     auto rootDeviceIndex = device.getRootDeviceIndex();
+    auto &productHelper = device.getProductHelper();
     auto memory = buffer->getGraphicsAllocation(rootDeviceIndex);
     auto isCompressionEnabled = memory->isCompressionEnabled();
     const bool isLocalMemory = !MemoryPoolHelper::isSystemMemoryPool(memory->getMemoryPool());
-    const bool gpuCopyRequired = isCompressionEnabled || isLocalMemory;
+    const bool isGpuCopyRequiredForDcFlushMitigation = productHelper.isDcFlushMitigated() && checkIsGpuCopyRequiredForDcFlushMitigation(memory->getAllocationType());
+    const bool gpuCopyRequired = isCompressionEnabled || isLocalMemory || isGpuCopyRequiredForDcFlushMitigation;
     if (gpuCopyRequired) {
         auto &hwInfo = device.getHardwareInfo();
-        auto &productHelper = device.getProductHelper();
 
         auto &osInterface = device.getRootDeviceEnvironment().osInterface;
         bool isLockable = true;
@@ -210,18 +218,23 @@ bool inline copyHostPointer(Buffer *buffer,
                                 isCompressionEnabled == false &&
                                 productHelper.getLocalMemoryAccessMode(hwInfo) != LocalMemoryAccessMode::cpuAccessDisallowed &&
                                 isLockable;
+
         if (debugManager.flags.CopyHostPtrOnCpu.get() != -1) {
             copyOnCpuAllowed = debugManager.flags.CopyHostPtrOnCpu.get() == 1;
         }
         if (auto lockedPointer = copyOnCpuAllowed ? device.getMemoryManager()->lockResource(memory) : nullptr) {
-            memcpy_s(ptrOffset(lockedPointer, buffer->getOffset()), size, hostPtr, size);
             memory->setAubWritable(true, GraphicsAllocation::defaultBank);
             memory->setTbxWritable(true, GraphicsAllocation::defaultBank);
+            memcpy_s(ptrOffset(lockedPointer, buffer->getOffset()), size, hostPtr, size);
+            if (isGpuCopyRequiredForDcFlushMitigation) {
+                CpuIntrinsics::sfence();
+            }
             return true;
         } else {
             auto blitMemoryToAllocationResult = BlitOperationResult::unsupported;
 
-            if (productHelper.isBlitterFullySupported(hwInfo) && isLocalMemory) {
+            if (productHelper.isBlitterFullySupported(hwInfo) && (isLocalMemory || isGpuCopyRequiredForDcFlushMitigation)) {
+                device.stopDirectSubmissionForCopyEngine();
                 blitMemoryToAllocationResult = BlitHelperFunctions::blitMemoryToAllocation(device, memory, buffer->getOffset(), hostPtr, {size, 1, 1});
             }
 
@@ -470,7 +483,7 @@ Buffer *Buffer::create(Context *context,
                     allocationInfo.copyMemoryFromHostPtr = true;
                 }
             }
-        } else if (allocationInfo.allocationType == AllocationType::buffer && !compressionEnabled) {
+        } else if (!rootDeviceEnvironment.getProductHelper().isNewCoherencyModelSupported() && allocationInfo.allocationType == AllocationType::buffer && !compressionEnabled) {
             allocationInfo.allocationType = AllocationType::bufferHostMemory;
         }
 
@@ -513,7 +526,7 @@ Buffer *Buffer::create(Context *context,
 
     DBG_LOG(LogMemoryObject, __FUNCTION__, "Created Buffer: Handle: ", pBuffer, ", hostPtr: ", hostPtr, ", size: ", size,
             ", memoryStorage: ", allocationInfo.memory->getUnderlyingBuffer(),
-            ", GPU address: ", allocationInfo.memory->getGpuAddress(),
+            ", GPU address: ", std::hex, allocationInfo.memory->getGpuAddress(),
             ", memoryPool: ", getMemoryPoolString(allocationInfo.memory));
 
     for (auto &rootDeviceIndex : *pRootDeviceIndices) {
@@ -562,7 +575,7 @@ Buffer *Buffer::create(Context *context,
             auto device = context->getDevice(deviceNum);
             auto graphicsAllocation = pBuffer->getGraphicsAllocation(device->getRootDeviceIndex());
             auto rootDeviceEnvironment = pBuffer->executionEnvironment->rootDeviceEnvironments[device->getRootDeviceIndex()].get();
-            rootDeviceEnvironment->memoryOperationsInterface->makeResident(&device->getDevice(), ArrayRef<GraphicsAllocation *>(&graphicsAllocation, 1));
+            rootDeviceEnvironment->memoryOperationsInterface->makeResident(&device->getDevice(), ArrayRef<GraphicsAllocation *>(&graphicsAllocation, 1), false);
         }
     }
 
@@ -905,14 +918,13 @@ void Buffer::setSurfaceState(const Device *device,
                              GraphicsAllocation *gfxAlloc,
                              cl_mem_flags flags,
                              cl_mem_flags_intel flagsIntel,
-                             bool useGlobalAtomics,
                              bool areMultipleSubDevicesInContext) {
     auto multiGraphicsAllocation = MultiGraphicsAllocation(device->getRootDeviceIndex());
     if (gfxAlloc) {
         multiGraphicsAllocation.addAllocation(gfxAlloc);
     }
     auto buffer = Buffer::createBufferHwFromDevice(device, flags, flagsIntel, svmSize, svmPtr, svmPtr, std::move(multiGraphicsAllocation), offset, true, false, false);
-    buffer->setArgStateful(surfaceState, forceNonAuxMode, disableL3, false, false, *device, useGlobalAtomics, areMultipleSubDevicesInContext);
+    buffer->setArgStateful(surfaceState, forceNonAuxMode, disableL3, false, false, *device, areMultipleSubDevicesInContext);
     delete buffer;
 }
 

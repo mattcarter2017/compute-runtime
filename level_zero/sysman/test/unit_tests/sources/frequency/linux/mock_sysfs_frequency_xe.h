@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,7 +12,6 @@
 
 #include "level_zero/sysman/source/api/frequency/linux/sysman_os_frequency_imp.h"
 #include "level_zero/sysman/source/shared/linux/sysman_fs_access_interface.h"
-#include "level_zero/sysman/source/shared/linux/sysman_kmd_interface.h"
 
 #include "gtest/gtest.h"
 
@@ -32,8 +31,10 @@ const std::string throttleReasonPL1File("device/tile0/gt0/freq0/throttle/reason_
 const std::string throttleReasonPL2File("device/tile0/gt0/freq0/throttle/reason_pl2");
 const std::string throttleReasonPL4File("device/tile0/gt0/freq0/throttle/reason_pl4");
 const std::string throttleReasonThermalFile("device/tile0/gt0/freq0/throttle/reason_thermal");
+const std::string throttleReasonFile("device/tile0/gt0/freq0/throttle_reason");
 
 struct MockXeFrequencySysfsAccess : public L0::Sysman::SysFsAccessInterface {
+    std::string throttleReason = {};
     double mockMin = 0;
     double mockMax = 0;
     double mockRequest = 0;
@@ -56,6 +57,7 @@ struct MockXeFrequencySysfsAccess : public L0::Sysman::SysFsAccessInterface {
     ze_result_t mockReadVal32Result = ZE_RESULT_SUCCESS;
     ze_result_t mockWriteMaxResult = ZE_RESULT_SUCCESS;
     ze_result_t mockWriteMinResult = ZE_RESULT_SUCCESS;
+    ze_result_t mockReadStringResult = ZE_RESULT_SUCCESS;
     bool mockReadPL1Error = false;
     bool mockReadPL2Error = false;
     bool mockReadPL4Error = false;
@@ -200,18 +202,23 @@ struct MockXeFrequencySysfsAccess : public L0::Sysman::SysFsAccessInterface {
         return setVal(file, val);
     }
 
+    ze_result_t read(const std::string file, std::string &val) override {
+
+        if (mockReadStringResult != ZE_RESULT_SUCCESS) {
+            return mockReadStringResult;
+        }
+
+        if (file.compare(throttleReasonFile) == 0) {
+            val = throttleReason;
+        }
+
+        return ZE_RESULT_SUCCESS;
+    }
+
     MockXeFrequencySysfsAccess() = default;
     ~MockXeFrequencySysfsAccess() override = default;
 };
 
-struct MockProductHelperFreq : NEO::ProductHelperHw<IGFX_UNKNOWN> {
-    MockProductHelperFreq() = default;
-    bool isMediaFreqDomainPresent = false;
-    bool getMediaFrequencyTileIndex(const NEO::ReleaseHelper *releaseHelper, uint32_t &tileIndex) const override {
-        tileIndex = 1;
-        return isMediaFreqDomainPresent;
-    }
-};
 class PublicLinuxFrequencyImp : public L0::Sysman::LinuxFrequencyImp {
   public:
     PublicLinuxFrequencyImp(L0::Sysman::OsSysman *pOsSysman, ze_bool_t onSubdevice, uint32_t subdeviceId, zes_freq_domain_t type) : L0::Sysman::LinuxFrequencyImp(pOsSysman, onSubdevice, subdeviceId, type) {}
@@ -219,13 +226,6 @@ class PublicLinuxFrequencyImp : public L0::Sysman::LinuxFrequencyImp {
     using L0::Sysman::LinuxFrequencyImp::getMin;
     using L0::Sysman::LinuxFrequencyImp::getMinVal;
     using L0::Sysman::LinuxFrequencyImp::pSysfsAccess;
-};
-
-class MockSysmanKmdInterfaceXe : public L0::Sysman::SysmanKmdInterfaceXe {
-  public:
-    std::unique_ptr<MockXeFrequencySysfsAccess> pSysfsAccess;
-    MockSysmanKmdInterfaceXe(const PRODUCT_FAMILY productFamily) : SysmanKmdInterfaceXe(productFamily) {}
-    ~MockSysmanKmdInterfaceXe() override = default;
 };
 
 } // namespace ult

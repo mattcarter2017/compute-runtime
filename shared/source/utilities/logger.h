@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2023 Intel Corporation
+ * Copyright (C) 2019-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,11 +12,17 @@
 #include <sstream>
 #include <thread>
 
+#define CREATE_DEBUG_STRING(buffer, format, ...)                            \
+    std::unique_ptr<char[]> buffer(new char[NEO::maxErrorDescriptionSize]); \
+    snprintf(buffer.get(), NEO::maxErrorDescriptionSize, format, __VA_ARGS__)
+
 namespace NEO {
 class Kernel;
 struct MultiDispatchInfo;
 class GraphicsAllocation;
+class MemoryManager;
 
+static const int32_t maxErrorDescriptionSize = 1024;
 const char *getAllocationTypeString(GraphicsAllocation const *graphicsAllocation);
 const char *getMemoryPoolString(GraphicsAllocation const *graphicsAllocation);
 
@@ -30,12 +36,11 @@ class FileLogger {
     FileLogger &operator=(const FileLogger &) = delete;
 
     static constexpr bool enabled() {
-        return debugLevel == DebugFunctionalityLevel::full;
+        return debugLevel != DebugFunctionalityLevel::none;
     }
 
     void dumpKernel(const std::string &name, const std::string &src);
     void logApiCall(const char *function, bool enter, int32_t errorCode);
-    void logAllocation(GraphicsAllocation const *graphicsAllocation);
     size_t getInput(const size_t *input, int32_t index);
 
     MOCKABLE_VIRTUAL void writeToFile(std::string filename, const char *str, size_t length, std::ios_base::openmode mode);
@@ -129,15 +134,15 @@ class FileLogger {
 
     void logDebugString(bool enableLog, std::string_view debugString);
 
-    const char *getLogFileName() {
-        return logFileName.c_str();
-    }
+    const char *getLogFileName() { return logFileName.c_str(); }
+    std::string getLogFileNameString() { return logFileName; }
 
-    void setLogFileName(std::string filename) {
-        logFileName = std::move(filename);
-    }
+    void setLogFileName(std::string filename) { logFileName = std::move(filename); }
 
     bool peekLogApiCalls() { return logApiCalls; }
+    bool shouldLogAllocationType() { return logAllocationType; }
+    bool shouldLogAllocationToStdout() { return logAllocationStdout; }
+    bool shouldLogAllocationMemoryPool() { return logAllocationMemoryPool; }
 
   protected:
     std::mutex mutex;

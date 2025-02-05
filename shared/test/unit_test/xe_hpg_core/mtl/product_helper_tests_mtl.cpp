@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,30 +32,17 @@ MTLTEST_F(MtlProductHelper, givenMtlWithoutHwIpVersionInHwInfoWhenGettingIpVersi
     auto mtlMDeviceIds = {0x7D40, 0x7D45};
     auto mtlPDeviceIds = {0x7D55, 0X7DD5};
 
-    hwInfo.platform.usDeviceID = 0x7D60;
-    hwInfo.platform.usRevId = 0;
-
-    EXPECT_EQ(AOT::MTL_M_A0, compilerProductHelper->getHwIpVersion(hwInfo));
-
-    hwInfo.platform.usRevId = 2;
-
-    EXPECT_EQ(AOT::MTL_M_B0, compilerProductHelper->getHwIpVersion(hwInfo));
-
-    hwInfo.platform.usRevId = 0xdead;
-
-    EXPECT_EQ(compilerProductHelper->getDefaultHwIpVersion(), compilerProductHelper->getHwIpVersion(hwInfo));
-
     for (auto &deviceId : mtlMDeviceIds) {
         hwInfo.platform.usDeviceID = deviceId;
         for (auto &revision : {0, 2}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_M_A0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_U_A0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         for (auto &revision : {3, 8}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_M_B0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_U_B0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         hwInfo.platform.usRevId = 0xdead;
 
@@ -67,12 +54,12 @@ MTLTEST_F(MtlProductHelper, givenMtlWithoutHwIpVersionInHwInfoWhenGettingIpVersi
         for (auto &revision : {0, 2}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_P_A0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_H_A0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         for (auto &revision : {3, 8}) {
             hwInfo.platform.usRevId = revision;
 
-            EXPECT_EQ(AOT::MTL_P_B0, compilerProductHelper->getHwIpVersion(hwInfo));
+            EXPECT_EQ(AOT::MTL_H_B0, compilerProductHelper->getHwIpVersion(hwInfo));
         }
         hwInfo.platform.usRevId = 0xdead;
 

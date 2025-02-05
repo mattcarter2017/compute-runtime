@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -347,15 +347,6 @@ struct MockFrequencySysfsAccess : public L0::Sysman::SysFsAccessInterface {
 
     MockFrequencySysfsAccess() = default;
     ~MockFrequencySysfsAccess() override = default;
-};
-
-struct MockProductHelperFreq : NEO::ProductHelperHw<IGFX_UNKNOWN> {
-    MockProductHelperFreq() = default;
-    bool isMediaFreqDomainPresent = false;
-    bool getMediaFrequencyTileIndex(const NEO::ReleaseHelper *releaseHelper, uint32_t &tileIndex) const override {
-        tileIndex = 1;
-        return isMediaFreqDomainPresent;
-    }
 };
 
 class PublicLinuxFrequencyImp : public L0::Sysman::LinuxFrequencyImp {

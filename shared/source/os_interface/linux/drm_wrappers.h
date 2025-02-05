@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -89,10 +89,11 @@ struct DrmQueryTopologyData {
     int sliceCount = 0;
     int subSliceCount = 0;
     int euCount = 0;
+    int numL3Banks = 0;
 
-    int maxSliceCount = 0;
-    int maxSubSliceCount = 0;
-    int maxEuPerSubSlice = 0;
+    int maxSlices = 0;
+    int maxSubSlicesPerSlice = 0;
+    int maxEusPerSubSlice = 0;
 };
 
 struct MemoryClassInstance {
@@ -179,6 +180,7 @@ struct Query {
 struct GemClose {
     uint32_t handle;
     uint32_t reserved;
+    uint64_t userptr;
 };
 
 struct PrimeHandle {
@@ -191,7 +193,8 @@ struct PrimeHandle {
 template <uint32_t numEngines = 10> // 1 + max engines
 struct ContextParamEngines {
     uint64_t extensions;
-    EngineClassInstance engines[numEngines];
+    uint64_t enginesData[numEngines];
+    uint32_t numEnginesInContext;
 };
 
 template <uint32_t numEngines>
@@ -226,6 +229,7 @@ struct DrmDebuggerOpen {
 };
 
 enum class DrmIoctl {
+    allocateInterrupt,
     gemExecbuffer2,
     gemWait,
     gemUserptr,
@@ -238,6 +242,7 @@ enum class DrmIoctl {
     gemContextDestroy,
     regRead,
     getResetStats,
+    getResetStatsPrelim,
     gemContextGetparam,
     gemContextSetparam,
     query,
@@ -262,6 +267,11 @@ enum class DrmIoctl {
     gemCacheReserve,
     version,
     vmExport,
+    metadataCreate,
+    metadataDestroy,
+    perfOpen,
+    perfEnable,
+    perfDisable
 };
 
 enum class DrmParam {
@@ -290,11 +300,7 @@ enum class DrmParam {
     memoryClassSystem,
     mmapOffsetWb,
     mmapOffsetWc,
-    paramChipsetId,
-    paramRevision,
-    paramHasExecSoftpin,
     paramHasPooledEu,
-    paramHasScheduler,
     paramEuTotal,
     paramSubsliceTotal,
     paramMinEuInPool,
@@ -307,15 +313,11 @@ enum class DrmParam {
     queryComputeSlices,
     queryMemoryRegions,
     queryTopologyInfo,
-    schedulerCapPreemption,
     tilingNone,
     tilingY,
 };
 
 unsigned int getIoctlRequestValue(DrmIoctl ioctlRequest, IoctlHelper *ioctlHelper);
-int getDrmParamValue(DrmParam drmParam, IoctlHelper *ioctlHelper);
-std::string getDrmParamString(DrmParam param, IoctlHelper *ioctlHelper);
-std::string getIoctlString(DrmIoctl ioctlRequest, IoctlHelper *ioctlHelper);
 bool checkIfIoctlReinvokeRequired(int error, DrmIoctl ioctlRequest, IoctlHelper *ioctlHelper);
 
 } // namespace NEO

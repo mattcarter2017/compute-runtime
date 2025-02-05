@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "shared/test/common/libult/linux/drm_mock.h"
 
+#include "level_zero/sysman/source/api/ras/linux/ras_util/sysman_ras_util.h"
 #include "level_zero/sysman/source/sysman_const.h"
 #include "level_zero/sysman/test/unit_tests/sources/linux/mock_sysman_fixture.h"
 #include "level_zero/sysman/test/unit_tests/sources/ras/linux/mock_sysman_ras.h"
@@ -116,7 +117,7 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingZesRasGetStateExpTh
                     expectedErrCount = fatalEuErrorCount + initialUncorrectableComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS) {
-                    expectedErrCount = socFatalPsfCsc0Count + initialUncorrectableNonComputeErrors;
+                    expectedErrCount = socFatalPsfCsc0Count + socFatalIosfPciaer + initialUncorrectableNonComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     expectedErrCount = euAttention + initialProgrammingErrors;
@@ -193,13 +194,16 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingZesRasGetStateExpFo
                     expectedErrCount = fatalEuErrorCount + initialUncorrectableComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS) {
-                    expectedErrCount = socFatalPsfCsc0Count + initialUncorrectableNonComputeErrors;
+                    expectedErrCount = socFatalPsfCsc0Count + socFatalIosfPciaer + initialUncorrectableNonComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     expectedErrCount = euAttention + initialProgrammingErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverGgtt + driverRps + initialUncorrectableDriverErrors;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiEastCount + initialUncorrectableFabricErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
@@ -477,13 +481,16 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingzesRasClearStateExp
                     expectedErrCount = fatalEuErrorCount + initialUncorrectableComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS) {
-                    expectedErrCount = socFatalPsfCsc0Count + initialUncorrectableNonComputeErrors;
+                    expectedErrCount = socFatalPsfCsc0Count + socFatalIosfPciaer + initialUncorrectableNonComputeErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     expectedErrCount = euAttention + initialProgrammingErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverGgtt + driverRps + initialUncorrectableDriverErrors;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiEastCount + initialUncorrectableFabricErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
@@ -492,6 +499,7 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingzesRasClearStateExp
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_CACHE_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS));
+            EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS));
         }
     }
     correctable = true;
@@ -521,6 +529,8 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingzesRasClearStateExp
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
+                    EXPECT_EQ(rasStates[i].errorCounter, 0u);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 }
             }
@@ -671,34 +681,6 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleAndRasUtilInterfaceIsNullWhenC
     EXPECT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, pLinuxRasImp->osRasClearStateExp(ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS));
 }
 
-HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleAndRasUtilInterfaceIsNullWhenRequestingCountWithzesGetStateStateExpThenVerifyCountIsZero, isRasNotSupportedProduct) {
-    bool isSubDevice = true;
-    uint32_t subDeviceId = 0u;
-
-    auto pLinuxRasImp = std::make_unique<PublicLinuxRasImp>(pOsSysman, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId);
-    pLinuxRasImp->rasSources.clear();
-    pLinuxRasImp->rasSources.push_back(std::make_unique<L0::Sysman::LinuxRasSourceGt>(pLinuxSysmanImp, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId));
-    pLinuxRasImp->rasSources.push_back(std::make_unique<L0::Sysman::LinuxRasSourceHbm>(pLinuxSysmanImp, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId));
-
-    uint32_t count = 0;
-    EXPECT_EQ(ZE_RESULT_SUCCESS, pLinuxRasImp->osRasGetStateExp(&count, nullptr));
-    EXPECT_EQ(0u, count);
-}
-
-HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleAndRasUtilInterfaceIsNullWhenCallingzesGetStateStateExpThenVerifyGetStateExpReturnsFailure, IsNotPVC) {
-    bool isSubDevice = true;
-    uint32_t subDeviceId = 0u;
-
-    auto pLinuxRasImp = std::make_unique<PublicLinuxRasImp>(pOsSysman, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId);
-    pLinuxRasImp->rasSources.clear();
-    pLinuxRasImp->rasSources.push_back(std::make_unique<L0::Sysman::LinuxRasSourceGt>(pLinuxSysmanImp, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId));
-    pLinuxRasImp->rasSources.push_back(std::make_unique<L0::Sysman::LinuxRasSourceHbm>(pLinuxSysmanImp, ZES_RAS_ERROR_TYPE_CORRECTABLE, isSubDevice, subDeviceId));
-
-    uint32_t count = 2;
-    std::vector<zes_ras_state_exp_t> rasStates(count);
-    EXPECT_EQ(ZE_RESULT_ERROR_DEPENDENCY_UNAVAILABLE, pLinuxRasImp->osRasGetStateExp(&count, rasStates.data()));
-}
-
 HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingzesRasClearStateExpAndGetStateExpForHbmThenVerifyErrorCountersAreCleared, IsPVC) {
     pDrm->setMemoryType(NEO::DeviceBlobConstants::MemoryType::hbm2);
     pPmuInterface->mockPmuReadResult = true;
@@ -768,6 +750,13 @@ HWTEST2_F(SysmanRasExpFixture, GivenValidRasHandleWhenCallingzesRasClearStateExp
             }
         }
     }
+}
+
+TEST_F(SysmanRasExpFixture, GivenRasUtilAsNoneWhenCallingRasGetStateExpAndRasClearStateExpThenErrorAreReturned) {
+    auto pRasUtil = std::make_unique<RasUtilNone>();
+    std::vector<zes_ras_state_exp_t> rasStates(maxRasErrorCategoryExpCount);
+    EXPECT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, pRasUtil->rasGetStateExp(maxRasErrorCategoryExpCount, rasStates.data()));
+    EXPECT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, pRasUtil->rasClearStateExp(ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS));
 }
 
 struct SysmanRasExpMultiDeviceFixture : public SysmanMultiDeviceFixture {
@@ -869,13 +858,16 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingZesRasGe
                     expectedErrCount = fatalSubslice + fatalEuErrorCount + initialUncorrectableComputeErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS) {
-                    expectedErrCount = socFatalPsfCsc0Count + nonFatalGscAonParity + nonFataGscSelfmBist + initialUncorrectableNonComputeErrorsTile0;
+                    expectedErrCount = socFatalPsfCsc0Count + socFatalIosfPciaer + nonFatalGscAonParity + nonFataGscSelfmBist + initialUncorrectableNonComputeErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     expectedErrCount = euAttention + initialProgrammingErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverGgtt + driverRps + initialUncorrectableDriverErrors;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiEastCount + initialUncorrectableFabricErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
@@ -906,6 +898,9 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingZesRasGe
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverEngineOther + initialUncorrectableDriverErrorsTile1;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiWestCountTile1 + initialUncorrectableFabricErrorsTile1;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
@@ -1045,13 +1040,16 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
                     expectedErrCount = fatalSubslice + fatalEuErrorCount + initialUncorrectableComputeErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS) {
-                    expectedErrCount = socFatalPsfCsc0Count + nonFatalGscAonParity + nonFataGscSelfmBist + initialUncorrectableNonComputeErrorsTile0;
+                    expectedErrCount = socFatalPsfCsc0Count + socFatalIosfPciaer + nonFatalGscAonParity + nonFataGscSelfmBist + initialUncorrectableNonComputeErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     expectedErrCount = euAttention + initialProgrammingErrors;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverGgtt + driverRps + initialUncorrectableDriverErrors;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiEastCount + initialUncorrectableFabricErrorsTile0;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
@@ -1060,6 +1058,7 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_CACHE_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS));
+            EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS));
         } else if (handleIndex == 2u) {
             // Correctable errors for Tile 1
             for (uint32_t i = 0; i < count; i++) {
@@ -1087,6 +1086,9 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     expectedErrCount = driverMigration + driverEngineOther + initialUncorrectableDriverErrorsTile1;
                     EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    expectedErrCount = socFatalMdfiWestCountTile1 + initialUncorrectableFabricErrorsTile1;
+                    EXPECT_EQ(rasStates[i].errorCounter, expectedErrCount);
                 }
             }
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_NON_COMPUTE_ERRORS));
@@ -1094,6 +1096,7 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_CACHE_ERRORS));
             EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_COMPUTE_ERRORS));
+            EXPECT_EQ(ZE_RESULT_SUCCESS, zesRasClearStateExp(handle, ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS));
         }
         handleIndex++;
     }
@@ -1129,6 +1132,8 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
+                    EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 }
             }
         } else if (handleIndex == 2u) {
@@ -1149,6 +1154,8 @@ HWTEST2_F(SysmanRasExpMultiDeviceFixture, GivenValidRasHandleWhenCallingzesRasCl
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_PROGRAMMING_ERRORS) {
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_DRIVER_ERRORS) {
+                    EXPECT_EQ(rasStates[i].errorCounter, 0u);
+                } else if (rasStates[i].category == ZES_RAS_ERROR_CATEGORY_EXP_L3FABRIC_ERRORS) {
                     EXPECT_EQ(rasStates[i].errorCounter, 0u);
                 }
             }

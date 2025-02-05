@@ -1,11 +1,16 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "shared/test/common/helpers/variable_backup.h"
+#include "shared/test/common/os_interface/windows/mock_sys_calls.h"
+#include "shared/test/common/test_macros/hw_test.h"
+
 #include "level_zero/sysman/source/sysman_const.h"
+#include "level_zero/sysman/test/unit_tests/sources/pci/windows/mock_pci.h"
 #include "level_zero/sysman/test/unit_tests/sources/windows/mock_sysman_fixture.h"
 
 #include "mock_pci.h"
@@ -13,6 +18,21 @@
 namespace L0 {
 namespace Sysman {
 namespace ult {
+
+const std::map<std::string, std::pair<uint32_t, uint32_t>> dummyKeyOffsetMap = {
+    {{"rx_byte_count_lsb", {70, 1}},
+     {"rx_byte_count_msb", {69, 1}},
+     {"tx_byte_count_lsb", {72, 1}},
+     {"tx_byte_count_msb", {71, 1}},
+     {"rx_pkt_count_lsb", {74, 1}},
+     {"rx_pkt_count_msb", {73, 1}},
+     {"tx_pkt_count_lsb", {76, 1}},
+     {"tx_pkt_count_msb", {75, 1}},
+     {"GDDR_TELEM_CAPTURE_TIMESTAMP_UPPER", {92, 1}},
+     {"GDDR_TELEM_CAPTURE_TIMESTAMP_LOWER", {93, 1}}}};
+
+const std::wstring pmtInterfaceName = L"TEST\0";
+std::vector<wchar_t> deviceInterfacePci(pmtInterfaceName.begin(), pmtInterfaceName.end());
 
 class SysmanDevicePciFixture : public SysmanDeviceFixture {
   protected:
@@ -27,10 +47,12 @@ class SysmanDevicePciFixture : public SysmanDeviceFixture {
         pOriginalKmdSysManager = pWddmSysmanImp->pKmdSysManager;
         pWddmSysmanImp->pKmdSysManager = pKmdSysManager.get();
 
+        auto pPmt = new PublicPlatformMonitoringTech(deviceInterfacePci, pWddmSysmanImp->getSysmanProductHelper());
+        pPmt->keyOffsetMap = dummyKeyOffsetMap;
+        pWddmSysmanImp->pPmt.reset(pPmt);
+
         delete pSysmanDeviceImp->pPci;
-
         pSysmanDeviceImp->getRootDeviceEnvironment().getMutableHardwareInfo()->capabilityTable.isIntegratedDevice = false;
-
         pSysmanDeviceImp->pPci = new PciImp(pOsSysman);
 
         if (pSysmanDeviceImp->pPci) {
@@ -199,6 +221,12 @@ TEST_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingzetSysmanPciGetB
     }
 }
 
+HWTEST2_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingzesPciGetStatsThenCallReturnsUnsupported, IsAtMostDg2) {
+    zes_pci_stats_t stats;
+    ze_result_t result = zesDevicePciGetStats(pSysmanDevice->toHandle(), &stats);
+    EXPECT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, result);
+}
+
 TEST_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingzetSysmanPciGetStatsWithLocalMemoryThenVerifyzetSysmanPciGetBarsCallSucceeds) {
     setLocalMemorySupportedAndReinit(true);
 
@@ -280,6 +308,135 @@ TEST_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenGettingResizableBarEnab
     WddmPciImp *pPciImp = new WddmPciImp(pOsSysman);
     EXPECT_EQ(false, pPciImp->resizableBarEnabled(barIndex));
     delete pPciImp;
+}
+
+HWTEST2_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingGetPropertiesThenPropertiesAreSetToTrue, IsBMG) {
+    zes_pci_properties_t properties{};
+    WddmPciImp *pPciImp = new WddmPciImp(pOsSysman);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, pPciImp->getProperties(&properties));
+    EXPECT_TRUE(properties.haveBandwidthCounters);
+    EXPECT_TRUE(properties.havePacketCounters);
+    EXPECT_TRUE(properties.haveReplayCounters);
+    delete pPciImp;
+}
+
+HWTEST2_F(SysmanDevicePciFixture, GivenValidSysmanHandleWhenCallingGetPropertiesThenPropertiesAreSetToFalse, IsNotBMG) {
+    zes_pci_properties_t properties{};
+    WddmPciImp *pPciImp = new WddmPciImp(pOsSysman);
+    EXPECT_EQ(ZE_RESULT_SUCCESS, pPciImp->getProperties(&properties));
+    EXPECT_FALSE(properties.haveBandwidthCounters);
+    EXPECT_FALSE(properties.havePacketCounters);
+    EXPECT_FALSE(properties.haveReplayCounters);
+    delete pPciImp;
+}
+
+HWTEST2_F(SysmanDevicePciFixture, GivenValidDeviceHandleWhenGettingZesDevicePciGetStatsThenValidReadingIsRetrieved, IsBMG) {
+    VariableBackup<decltype(NEO::SysCalls::sysCallsCreateFile)> psysCallsCreateFile(&NEO::SysCalls::sysCallsCreateFile, [](LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) -> HANDLE {
+        return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x7));
+    });
+    VariableBackup<decltype(NEO::SysCalls::sysCallsDeviceIoControl)> psysCallsDeviceIoControl(&NEO::SysCalls::sysCallsDeviceIoControl, [](HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped) -> BOOL {
+        PmtSysman::PmtTelemetryRead *readRequest = static_cast<PmtSysman::PmtTelemetryRead *>(lpInBuffer);
+        switch (readRequest->offset) {
+        case 70:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockRxCounter;
+            return true;
+        case 72:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTxCounter;
+            return true;
+        case 74:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockRxPacketCounter;
+            return true;
+        case 76:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTxPacketCounter;
+            return true;
+        case 93:
+            *lpBytesReturned = 8;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTimestamp;
+            return true;
+        default:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 0;
+            return true;
+        }
+        return false;
+    });
+    zes_pci_stats_t stats;
+    ze_result_t result = zesDevicePciGetStats(pSysmanDevice->toHandle(), &stats);
+    ASSERT_EQ(ZE_RESULT_SUCCESS, result);
+    EXPECT_EQ(stats.rxCounter, mockRxCounter);
+    EXPECT_EQ(stats.txCounter, mockTxCounter);
+    EXPECT_EQ(stats.packetCounter, mockRxPacketCounter + mockTxPacketCounter);
+    EXPECT_EQ(stats.timestamp, mockTimestamp * milliSecsToMicroSecs);
+}
+
+HWTEST2_F(SysmanDevicePciFixture, GivenNullPmtHandleWhenGettingZesDevicePciGetStatsThenCallFails, IsBMG) {
+    pWddmSysmanImp->pPmt.reset(nullptr);
+    zes_pci_stats_t stats;
+    ze_result_t result = zesDevicePciGetStats(pSysmanDevice->toHandle(), &stats);
+    ASSERT_EQ(ZE_RESULT_ERROR_UNSUPPORTED_FEATURE, result);
+}
+
+HWTEST2_F(SysmanDevicePciFixture, GivenValidPmtHandleWhenCallingZesDevicePciGetStatsAndIoctlFailsThenCallsFails, IsBMG) {
+    static int count = 10;
+    VariableBackup<decltype(NEO::SysCalls::sysCallsCreateFile)> psysCallsCreateFile(&NEO::SysCalls::sysCallsCreateFile, [](LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) -> HANDLE {
+        return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x7));
+    });
+    VariableBackup<decltype(NEO::SysCalls::sysCallsDeviceIoControl)> psysCallsDeviceIoControl(&NEO::SysCalls::sysCallsDeviceIoControl, [](HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped) -> BOOL {
+        PmtSysman::PmtTelemetryRead *readRequest = static_cast<PmtSysman::PmtTelemetryRead *>(lpInBuffer);
+        switch (readRequest->offset) {
+        case 69:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 0;
+            return count == 1 ? false : true;
+        case 70:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockRxCounter;
+            return count == 2 ? false : true;
+        case 71:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 9;
+            return count == 3 ? false : true;
+        case 72:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTxCounter;
+            return count == 4 ? false : true;
+        case 73:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 0;
+            return count == 5 ? false : true;
+        case 74:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockRxPacketCounter;
+            return count == 6 ? false : true;
+        case 75:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 0;
+            return count == 7 ? false : true;
+        case 76:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTxPacketCounter;
+            return count == 8 ? false : true;
+        case 92:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = 0;
+            return count == 9 ? false : true;
+        case 93:
+            *lpBytesReturned = 4;
+            *static_cast<uint32_t *>(lpOutBuffer) = mockTimestamp;
+            return count == 10 ? false : true;
+        }
+        return false;
+    });
+    zes_pci_stats_t stats;
+    while (count) {
+        ze_result_t result = zesDevicePciGetStats(pSysmanDevice->toHandle(), &stats);
+        ASSERT_EQ(ZE_RESULT_ERROR_UNKNOWN, result);
+        count--;
+    }
 }
 
 } // namespace ult

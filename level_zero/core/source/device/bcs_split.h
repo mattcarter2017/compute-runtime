@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -44,8 +44,9 @@ struct BcsSplit {
         std::vector<Event *> marker;
         size_t createdFromLatestPool = 0u;
 
-        size_t obtainForSplit(Context *context, size_t maxEventCountInPool);
-        size_t allocateNew(Context *context, size_t maxEventCountInPool);
+        std::optional<size_t> obtainForSplit(Context *context, size_t maxEventCountInPool);
+        std::optional<size_t> allocateNew(Context *context, size_t maxEventCountInPool);
+        void resetEventPackage(size_t index);
 
         void releaseResources();
 
@@ -73,12 +74,18 @@ struct BcsSplit {
                                 NEO::TransferDirection direction,
                                 std::function<ze_result_t(T, K, size_t, ze_event_handle_t)> appendCall) {
         ze_result_t result = ZE_RESULT_SUCCESS;
+        const bool hasStallingCmds = !hasRelaxedOrderingDependencies;
 
-        auto markerEventIndex = this->events.obtainForSplit(Context::fromHandle(cmdList->getCmdListContext()), MemoryConstants::pageSize64k / sizeof(typename CommandListCoreFamilyImmediate<gfxCoreFamily>::GfxFamily::TimestampPacketType));
+        auto markerEventIndexRet = this->events.obtainForSplit(Context::fromHandle(cmdList->getCmdListContext()), MemoryConstants::pageSize64k / sizeof(typename CommandListCoreFamilyImmediate<gfxCoreFamily>::GfxFamily::TimestampPacketType));
+        if (!markerEventIndexRet.has_value()) {
+            return ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+
+        auto markerEventIndex = *markerEventIndexRet;
 
         auto barrierRequired = !cmdList->isInOrderExecutionEnabled() && cmdList->isBarrierRequired();
         if (barrierRequired) {
-            cmdList->appendSignalEvent(this->events.barrier[markerEventIndex]->toHandle());
+            cmdList->appendSignalEvent(this->events.barrier[markerEventIndex]->toHandle(), false);
         }
 
         auto subcopyEventIndex = markerEventIndex * this->cmdQs.size();
@@ -97,13 +104,13 @@ struct BcsSplit {
         for (size_t i = 0; i < cmdQsForSplit.size(); i++) {
             if (barrierRequired) {
                 auto barrierEventHandle = this->events.barrier[markerEventIndex]->toHandle();
-                cmdList->addEventsToCmdList(1u, &barrierEventHandle, hasRelaxedOrderingDependencies, false, true);
+                cmdList->addEventsToCmdList(1u, &barrierEventHandle, nullptr, hasRelaxedOrderingDependencies, false, true, false, false);
             }
 
-            cmdList->addEventsToCmdList(numWaitEvents, phWaitEvents, hasRelaxedOrderingDependencies, false, true);
+            cmdList->addEventsToCmdList(numWaitEvents, phWaitEvents, nullptr, hasRelaxedOrderingDependencies, false, true, false, false);
 
             if (signalEvent && i == 0u) {
-                cmdList->appendEventForProfilingAllWalkers(signalEvent, true, true);
+                cmdList->appendEventForProfilingAllWalkers(signalEvent, nullptr, nullptr, true, true, false, true);
             }
 
             auto localSize = totalSize / engineCount;
@@ -114,7 +121,7 @@ struct BcsSplit {
             result = appendCall(localDstPtr, localSrcPtr, localSize, eventHandle);
 
             if (cmdList->flushTaskSubmissionEnabled()) {
-                cmdList->executeCommandListImmediateWithFlushTaskImpl(performMigration, false, hasRelaxedOrderingDependencies, false, cmdQsForSplit[i]);
+                cmdList->executeCommandListImmediateWithFlushTaskImpl(performMigration, hasStallingCmds, hasRelaxedOrderingDependencies, false, false, cmdQsForSplit[i]);
             } else {
                 cmdList->executeCommandListImmediateImpl(performMigration, cmdQsForSplit[i]);
             }
@@ -129,16 +136,16 @@ struct BcsSplit {
             }
         }
 
-        cmdList->addEventsToCmdList(static_cast<uint32_t>(cmdQsForSplit.size()), eventHandles.data(), hasRelaxedOrderingDependencies, false, true);
+        cmdList->addEventsToCmdList(static_cast<uint32_t>(cmdQsForSplit.size()), eventHandles.data(), nullptr, hasRelaxedOrderingDependencies, false, true, false, false);
         if (signalEvent) {
-            cmdList->appendEventForProfilingAllWalkers(signalEvent, false, true);
+            cmdList->appendEventForProfilingAllWalkers(signalEvent, nullptr, nullptr, false, true, false, true);
         }
-        cmdList->appendEventForProfilingAllWalkers(this->events.marker[markerEventIndex], false, true);
+        cmdList->appendEventForProfilingAllWalkers(this->events.marker[markerEventIndex], nullptr, nullptr, false, true, false, true);
 
         if (cmdList->isInOrderExecutionEnabled()) {
-            cmdList->appendSignalInOrderDependencyCounter(signalEvent);
+            cmdList->appendSignalInOrderDependencyCounter(signalEvent, false, false);
         }
-        cmdList->handleInOrderDependencyCounter(signalEvent, false);
+        cmdList->handleInOrderDependencyCounter(signalEvent, false, false);
 
         return result;
     }

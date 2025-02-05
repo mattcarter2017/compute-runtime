@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -78,29 +78,7 @@ struct CmdServicesMemTraceVersion {
     };
     struct DeviceValues {
         enum {
-            Blc = 2,
-            Il = 5,
-            Glk = 17,
-            Skl = 12,
-            Hsw = 9,
-            Bxt = 14,
-            Sbr = 6,
-            Cnl = 15,
-            Ivb = 7,
-            Chv = 13,
-            El = 4,
-            Ctg = 3,
-            Lrb2 = 8,
-            Bwr = 0,
-            Vlv = 10,
-            Cln = 1,
-            Kbl = 16,
-            Bdw = 11,
-            Icllp = 19,
             Tgllp = 22,
-            Cfl = 24,
-            Lkf = 25,
-            Ehl = 28,
             Dg1 = 30,
             Adls = 37,
             Adlp = 34,
@@ -108,7 +86,10 @@ struct CmdServicesMemTraceVersion {
             Dg2 = 36,
             Pvc = 39,
             Mtl = 42,
+            Bmg = 43,
+            Lnl = 45,
             Arl = 46,
+            Ptl = 51,
         };
     };
     struct RecordingMethodValues {

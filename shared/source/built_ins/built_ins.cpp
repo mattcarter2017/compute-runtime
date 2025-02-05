@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,11 +9,14 @@
 
 #include "shared/source/built_ins/sip.h"
 #include "shared/source/compiler_interface/compiler_interface.h"
+#include "shared/source/debug_settings/debug_settings_manager.h"
 #include "shared/source/device/device.h"
 #include "shared/source/execution_environment/execution_environment.h"
 #include "shared/source/execution_environment/root_device_environment.h"
 #include "shared/source/helpers/aligned_memory.h"
 #include "shared/source/helpers/debug_helpers.h"
+#include "shared/source/helpers/file_io.h"
+#include "shared/source/helpers/hw_info.h"
 #include "shared/source/memory_manager/allocation_properties.h"
 #include "shared/source/memory_manager/memory_manager.h"
 #include "shared/source/os_interface/os_context.h"
@@ -44,6 +47,11 @@ const SipKernel &BuiltIns::getSipKernel(SipKernelType type, Device &device) {
         UNRECOVERABLE_IF(ret != TranslationOutput::ErrorCode::success);
         UNRECOVERABLE_IF(sipBinary.size() == 0);
 
+        if (NEO::debugManager.flags.DumpSipHeaderFile.get() != "unk") {
+            std::string name = NEO::debugManager.flags.DumpSipHeaderFile.get() + "_header.bin";
+            writeDataToFile(name.c_str(), stateSaveAreaHeader.data(), stateSaveAreaHeader.size());
+        }
+
         const auto allocType = AllocationType::kernelIsaInternal;
 
         AllocationProperties properties = {device.getRootDeviceIndex(), sipBinary.size(), allocType, device.getDeviceBitfield()};
@@ -63,6 +71,10 @@ const SipKernel &BuiltIns::getSipKernel(SipKernelType type, Device &device) {
 
         if (rootDeviceEnvironment.executionEnvironment.getDebuggingMode() == DebuggingMode::offline) {
             sipBuiltIn.first->parseBinaryForContextId();
+        }
+
+        if (type == SipKernelType::csr) {
+            rootDeviceEnvironment.getMutableHardwareInfo()->capabilityTable.requiredPreemptionSurfaceSize = sipBuiltIn.first->getStateSaveAreaSize(&device);
         }
     };
     std::call_once(sipBuiltIn.second, initializer);

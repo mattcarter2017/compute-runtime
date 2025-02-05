@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -93,9 +93,6 @@ TEST_F(EnqueueMapImageTest, GivenTiledImageWhenMappingImageThenPointerIsReused) 
 }
 
 HWTEST_F(EnqueueMapImageTest, givenAllocatedMapPtrAndMapWithDifferentOriginIsCalledThenReturnDifferentPointers) {
-    if (!defaultHwInfo->capabilityTable.supportsImages) {
-        GTEST_SKIP();
-    }
     std::unique_ptr<Image> img(Image2dHelper<Image2dDefaults>::create(context));
     auto mapFlags = CL_MAP_READ;
     const size_t origin1[3] = {0, 0, 0};
@@ -182,8 +179,8 @@ TEST_P(MipMapMapImageParamsTest, givenAllocatedMapPtrWhenMapsWithDifferentMipMap
     EXPECT_EQ(ptr2, ptrOffset(ptr1, mapOffset));
 }
 
-INSTANTIATE_TEST_CASE_P(MipMapMapImageParamsTest_givenAllocatedMapPtrAndMapWithDifferentMipMapsIsCalledThenReturnDifferentPointers,
-                        MipMapMapImageParamsTest, ::testing::Values(CL_MEM_OBJECT_IMAGE1D, CL_MEM_OBJECT_IMAGE1D_ARRAY, CL_MEM_OBJECT_IMAGE2D, CL_MEM_OBJECT_IMAGE2D_ARRAY, CL_MEM_OBJECT_IMAGE3D));
+INSTANTIATE_TEST_SUITE_P(MipMapMapImageParamsTest_givenAllocatedMapPtrAndMapWithDifferentMipMapsIsCalledThenReturnDifferentPointers,
+                         MipMapMapImageParamsTest, ::testing::Values(CL_MEM_OBJECT_IMAGE1D, CL_MEM_OBJECT_IMAGE1D_ARRAY, CL_MEM_OBJECT_IMAGE2D, CL_MEM_OBJECT_IMAGE2D_ARRAY, CL_MEM_OBJECT_IMAGE3D));
 
 template <typename GfxFamily>
 struct MockedImage : public ImageHw<GfxFamily> {
@@ -196,9 +193,6 @@ struct MockedImage : public ImageHw<GfxFamily> {
 };
 
 HWTEST_F(EnqueueMapImageTest, givenTiledImageWhenMapImageIsCalledThenStorageIsSetWithImageMutexTaken) {
-    if (!defaultHwInfo->capabilityTable.supportsImages) {
-        GTEST_SKIP();
-    }
     auto imageFormat = image->getImageFormat();
     auto imageDesc = image->getImageDesc();
     auto graphicsAllocation = image->getGraphicsAllocation(pClDevice->getRootDeviceIndex());
@@ -315,9 +309,6 @@ TEST_F(EnqueueMapImageTest, GivenCmdqAndValidArgsWhenMappingImageThenSuccessIsRe
 }
 
 HWTEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEventAndIncraseTaskCountFromWriteImage) {
-    if (!defaultHwInfo->capabilityTable.supportsImages) {
-        GTEST_SKIP();
-    }
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.EnableAsyncEventsHandler.set(false);
     cl_event mapEventReturned = nullptr;
@@ -380,7 +371,8 @@ HWTEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEv
     taskCount = commandStreamReceiver.peekTaskCount();
     EXPECT_EQ(3u, taskCount);
 
-    (*pTagMemory)++;
+    auto newTag = *pTagMemory + 1;
+    (*pTagMemory) = newTag;
     retVal = clEnqueueUnmapMemObject(
         pCmdQ,
         image,
@@ -402,9 +394,6 @@ HWTEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEv
 }
 
 HWTEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAndDontIncraseTaskCountFromWriteImage) {
-    if (!defaultHwInfo->capabilityTable.supportsImages) {
-        GTEST_SKIP();
-    }
     DebugManagerStateRestore dbgRestore;
     debugManager.flags.EnableAsyncEventsHandler.set(false);
     cl_event mapEventReturned = nullptr;
@@ -447,9 +436,6 @@ HWTEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEvent
 }
 
 HWTEST_F(EnqueueMapImageTest, GivenPtrToReturnEventWhenMappingImageThenEventIsNotNull) {
-    if (!defaultHwInfo->capabilityTable.supportsImages) {
-        GTEST_SKIP();
-    }
     cl_event eventReturned = nullptr;
     auto mapFlags = CL_MAP_READ;
     const size_t origin[3] = {0, 0, 0};
@@ -940,7 +926,7 @@ TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenRetu
                     surfaceFormat, nullptr) {
         }
 
-        void setImageArg(void *memory, bool isMediaBlockImage, uint32_t mipLevel, uint32_t rootDeviceIndex, bool useGlobalAtomics) override {}
+        void setImageArg(void *memory, bool isMediaBlockImage, uint32_t mipLevel, uint32_t rootDeviceIndex) override {}
         void setMediaImageArg(void *memory, uint32_t rootDeviceIndex) override {}
         void setMediaSurfaceRotation(void *memory) override {}
         void setSurfaceMemoryObjectControlState(void *memory, uint32_t value) override {}
@@ -1037,7 +1023,7 @@ struct EnqueueMapImageTypeTest : public CommandEnqueueFixture,
     Image *image = nullptr;
 };
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueMapImageTypeTest, GiveRequirementForPipeControlWorkaroundWhenMappingImageThenAdditionalPipeControlIsProgrammed) {
+HWCMDTEST_F(IGFX_GEN12LP_CORE, EnqueueMapImageTypeTest, GiveRequirementForPipeControlWorkaroundWhenMappingImageThenAdditionalPipeControlIsProgrammed) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
 
     // Set taskCount to 1 to call finish on map operation

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023-2024 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,17 +7,43 @@
 
 #pragma once
 
+#include "shared/source/helpers/common_types.h"
 #include "shared/source/helpers/non_copyable_or_moveable.h"
 #include "shared/source/helpers/ptr_math.h"
+#include "shared/source/memory_manager/allocation_type.h"
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace NEO {
 class GraphicsAllocation;
 class MemoryManager;
 class Device;
+class TagNodeBase;
+
+template <bool deviceAlloc>
+class DeviceAllocNodeType {
+  public:
+    using ValueT = uint64_t;
+
+    static constexpr size_t defaultAllocatorTagCount = 128;
+
+    static constexpr AllocationType getAllocationType() { return deviceAlloc ? NEO::AllocationType::gpuTimestampDeviceBuffer : NEO::AllocationType::timestampPacketTagBuffer; }
+
+    static constexpr TagNodeType getTagNodeType() { return TagNodeType::counter64b; }
+
+    static constexpr size_t getSinglePacketSize() { return sizeof(uint64_t); }
+
+    void initialize(uint64_t initValue) { data = initValue; }
+
+  protected:
+    uint64_t data = {};
+};
+
+static_assert(sizeof(uint64_t) == sizeof(DeviceAllocNodeType<true>), "This structure is consumed by GPU and has to follow specific restrictions for padding and size");
+static_assert(sizeof(uint64_t) == sizeof(DeviceAllocNodeType<false>), "This structure is consumed by GPU and has to follow specific restrictions for padding and size");
 
 class InOrderExecInfo : public NEO::NonCopyableClass {
   public:
@@ -25,15 +51,17 @@ class InOrderExecInfo : public NEO::NonCopyableClass {
 
     InOrderExecInfo() = delete;
 
-    static std::shared_ptr<InOrderExecInfo> create(NEO::Device &device, uint32_t partitionCount, bool regularCmdList, bool atomicDeviceSignalling, bool duplicatedHostStorage);
-    static std::shared_ptr<InOrderExecInfo> createFromExternalAllocation(NEO::Device &device, uint64_t deviceAddress, uint64_t *hostAddress, uint64_t counterValue);
+    static std::shared_ptr<InOrderExecInfo> create(TagNodeBase *deviceCounterNode, TagNodeBase *hostCounterNode, NEO::Device &device, uint32_t partitionCount, bool regularCmdList);
+    static std::shared_ptr<InOrderExecInfo> createFromExternalAllocation(NEO::Device &device, NEO::GraphicsAllocation *deviceAllocation, uint64_t deviceAddress, NEO::GraphicsAllocation *hostAllocation,
+                                                                         uint64_t *hostAddress, uint64_t counterValue, uint32_t devicePartitions, uint32_t hostPartitions);
 
-    InOrderExecInfo(NEO::GraphicsAllocation *deviceCounterAllocation, NEO::GraphicsAllocation *hostCounterAllocation, NEO::MemoryManager &memoryManager, uint32_t partitionCount, bool regularCmdList, bool atomicDeviceSignalling);
+    InOrderExecInfo(TagNodeBase *deviceCounterNode, TagNodeBase *hostCounterNode, NEO::Device &device, uint32_t partitionCount, bool regularCmdList, bool atomicDeviceSignalling);
 
-    NEO::GraphicsAllocation *getDeviceCounterAllocation() const { return deviceCounterAllocation; }
-    NEO::GraphicsAllocation *getHostCounterAllocation() const { return hostCounterAllocation; }
+    NEO::GraphicsAllocation *getDeviceCounterAllocation() const;
+    NEO::GraphicsAllocation *getHostCounterAllocation() const;
     uint64_t *getBaseHostAddress() const { return hostAddress; }
     uint64_t getBaseDeviceAddress() const { return deviceAddress; }
+    uint64_t getBaseHostGpuAddress() const;
 
     uint64_t getCounterValue() const { return counterValue; }
     void addCounterValue(uint64_t addValue) { counterValue += addValue; }
@@ -49,25 +77,52 @@ class InOrderExecInfo : public NEO::NonCopyableClass {
     uint32_t getNumDevicePartitionsToWait() const { return numDevicePartitionsToWait; }
     uint32_t getNumHostPartitionsToWait() const { return numHostPartitionsToWait; }
 
-    void addAllocationOffset(uint32_t addValue) { allocationOffset += addValue; }
+    void setAllocationOffset(uint32_t newOffset) { allocationOffset = newOffset; }
+    void initializeAllocationsFromHost();
     uint32_t getAllocationOffset() const { return allocationOffset; }
 
     void reset();
+    bool isExternalMemoryExecInfo() const { return deviceCounterNode == nullptr; }
+    void setLastWaitedCounterValue(uint64_t value) {
+        lastWaitedCounterValue = std::max(value, lastWaitedCounterValue);
+    }
+
+    bool isCounterAlreadyDone(uint64_t waitValue) const {
+        return lastWaitedCounterValue >= waitValue && this->allocationOffset == 0u;
+    }
+
+    NEO::GraphicsAllocation *getExternalHostAllocation() const { return externalHostAllocation; }
+    NEO::GraphicsAllocation *getExternalDeviceAllocation() const { return externalDeviceAllocation; }
+
+    void pushTempTimestampNode(TagNodeBase *node, uint64_t value);
+    void releaseNotUsedTempTimestampNodes(bool forceReturn);
 
   protected:
-    NEO::MemoryManager &memoryManager;
-    NEO::GraphicsAllocation *deviceCounterAllocation = nullptr;
-    NEO::GraphicsAllocation *hostCounterAllocation = nullptr;
+    void uploadToTbx(TagNodeBase &node, size_t size);
+
+    NEO::Device &device;
+    NEO::TagNodeBase *deviceCounterNode = nullptr;
+    NEO::TagNodeBase *hostCounterNode = nullptr;
+    NEO::GraphicsAllocation *externalHostAllocation = nullptr;
+    NEO::GraphicsAllocation *externalDeviceAllocation = nullptr;
+    std::vector<std::pair<NEO::TagNodeBase *, uint64_t>> tempTimestampNodes;
+
+    std::mutex mutex;
+
     uint64_t counterValue = 0;
+    uint64_t lastWaitedCounterValue = 0;
+
     uint64_t regularCmdListSubmissionCounter = 0;
     uint64_t deviceAddress = 0;
     uint64_t *hostAddress = nullptr;
     uint32_t numDevicePartitionsToWait = 0;
     uint32_t numHostPartitionsToWait = 0;
     uint32_t allocationOffset = 0;
+    uint32_t rootDeviceIndex = 0;
     bool regularCmdList = false;
     bool duplicatedHostStorage = false;
     bool atomicDeviceSignalling = false;
+    bool isTbx = false;
 };
 
 namespace InOrderPatchCommandHelpers {
@@ -84,7 +139,8 @@ enum class PatchCmdType {
     lri64b,
     sdi,
     semaphore,
-    walker
+    walker,
+    pipeControl
 };
 
 template <typename GfxFamily>
@@ -97,6 +153,9 @@ struct PatchCmd {
     }
 
     void patch(uint64_t appendCounterValue) {
+        if (skipPatching) {
+            return;
+        }
         switch (patchCmdType) {
         case PatchCmdType::sdi:
             patchSdi(appendCounterValue);
@@ -110,10 +169,21 @@ struct PatchCmd {
         case PatchCmdType::lri64b:
             patchLri64b(appendCounterValue);
             break;
+        case PatchCmdType::pipeControl:
+            patchPipeControl(appendCounterValue);
+            break;
         default:
             UNRECOVERABLE_IF(true);
             break;
         }
+    }
+
+    void updateInOrderExecInfo(std::shared_ptr<InOrderExecInfo> *inOrderExecInfo) {
+        this->inOrderExecInfo = *inOrderExecInfo;
+    }
+
+    void setSkipPatching(bool value) {
+        skipPatching = value;
     }
 
     bool isExternalDependency() const { return inOrderExecInfo.get(); }
@@ -125,6 +195,7 @@ struct PatchCmd {
     const PatchCmdType patchCmdType = PatchCmdType::none;
     bool deviceAtomicSignaling = false;
     bool duplicatedHostStorage = false;
+    bool skipPatching = false;
 
   protected:
     void patchSdi(uint64_t appendCounterValue) {
@@ -146,6 +217,11 @@ struct PatchCmd {
     }
 
     void patchComputeWalker(uint64_t appendCounterValue);
+
+    void patchPipeControl(uint64_t appendCounterValue) {
+        auto pcCmd = reinterpret_cast<typename GfxFamily::PIPE_CONTROL *>(cmd1);
+        pcCmd->setImmediateData(static_cast<uint64_t>(baseCounterValue + appendCounterValue));
+    }
 
     void patchLri64b(uint64_t appendCounterValue) {
         if (isExternalDependency()) {

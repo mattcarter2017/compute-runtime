@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2023 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -147,11 +147,12 @@ struct MockDebugSession : public L0::DebugSessionImp {
 
     using L0::DebugSession::allThreads;
     using L0::DebugSession::debugArea;
-
     using L0::DebugSessionImp::addThreadToNewlyStoppedFromRaisedAttention;
     using L0::DebugSessionImp::allocateStateSaveAreaMemory;
     using L0::DebugSessionImp::apiEvents;
     using L0::DebugSessionImp::applyResumeWa;
+    using L0::DebugSessionImp::attentionEventContext;
+    using L0::DebugSessionImp::calculateSrMagicOffset;
     using L0::DebugSessionImp::calculateThreadSlotOffset;
     using L0::DebugSessionImp::checkTriggerEventsForAttention;
     using L0::DebugSessionImp::fillResumeAndStoppedThreadsFromNewlyStopped;
@@ -160,13 +161,21 @@ struct MockDebugSession : public L0::DebugSessionImp {
     using L0::DebugSessionImp::generateEventsForStoppedThreads;
     using L0::DebugSessionImp::getRegisterSize;
     using L0::DebugSessionImp::getStateSaveAreaHeader;
+    using L0::DebugSessionImp::interruptTimeout;
+    using L0::DebugSessionImp::isValidNode;
     using L0::DebugSessionImp::newAttentionRaised;
+    using L0::DebugSessionImp::pollFifo;
+    using L0::DebugSessionImp::readDebugScratchRegisters;
+    using L0::DebugSessionImp::readFifo;
+    using L0::DebugSessionImp::readModeFlags;
     using L0::DebugSessionImp::readSbaRegisters;
+    using L0::DebugSessionImp::readThreadScratchRegisters;
     using L0::DebugSessionImp::registersAccessHelper;
     using L0::DebugSessionImp::resumeAccidentallyStoppedThreads;
     using L0::DebugSessionImp::sendInterrupts;
     using L0::DebugSessionImp::stateSaveAreaMemory;
     using L0::DebugSessionImp::typeToRegsetDesc;
+    using L0::DebugSessionImp::updateStoppedThreadsAndCheckTriggerEvents;
     using L0::DebugSessionImp::validateAndSetStateSaveAreaHeader;
 
     using L0::DebugSessionImp::interruptSent;
@@ -174,9 +183,11 @@ struct MockDebugSession : public L0::DebugSessionImp {
     using L0::DebugSessionImp::triggerEvents;
 
     using L0::DebugSessionImp::expectedAttentionEvents;
+    using L0::DebugSessionImp::fifoPollInterval;
     using L0::DebugSessionImp::interruptMutex;
     using L0::DebugSessionImp::interruptRequests;
     using L0::DebugSessionImp::isValidGpuAddress;
+    using L0::DebugSessionImp::lastFifoReadTime;
     using L0::DebugSessionImp::minSlmSipVersion;
     using L0::DebugSessionImp::newlyStoppedThreads;
     using L0::DebugSessionImp::pendingInterrupts;
@@ -189,7 +200,10 @@ struct MockDebugSession : public L0::DebugSessionImp {
 
     MockDebugSession(const zet_debug_config_t &config, L0::Device *device) : MockDebugSession(config, device, true) {}
 
-    MockDebugSession(const zet_debug_config_t &config, L0::Device *device, bool rootAttach) : DebugSessionImp(config, device) {
+    MockDebugSession(const zet_debug_config_t &config, L0::Device *device, bool rootAttach) : MockDebugSession(config, device, rootAttach, 2) {
+    }
+
+    MockDebugSession(const zet_debug_config_t &config, L0::Device *device, bool rootAttach, uint32_t stateSaveHeaderVersion) : DebugSessionImp(config, device) {
         if (device) {
             topologyMap = DebugSessionMock::buildMockTopology(device);
         }
@@ -197,9 +211,12 @@ struct MockDebugSession : public L0::DebugSessionImp {
         if (rootAttach) {
             createEuThreads();
         }
-        stateSaveAreaHeader = NEO::MockSipData::createStateSaveAreaHeader(2);
+        if (stateSaveHeaderVersion == 3) {
+            stateSaveAreaHeader = NEO::MockSipData::createStateSaveAreaHeader(3);
+        } else {
+            stateSaveAreaHeader = NEO::MockSipData::createStateSaveAreaHeader(2);
+        }
     }
-
     ~MockDebugSession() override {
         for (auto session : tileSessions) {
             delete session.first;
@@ -237,6 +254,14 @@ struct MockDebugSession : public L0::DebugSessionImp {
     }
     ze_result_t acknowledgeEvent(const zet_debug_event_t *event) override {
         return ZE_RESULT_SUCCESS;
+    }
+
+    ze_result_t isValidNode(uint64_t vmHandle, uint64_t gpuVa, SIP::fifo_node &node) override {
+        if (isValidNodeResult != ZE_RESULT_SUCCESS) {
+            return isValidNodeResult;
+        } else {
+            return DebugSessionImp::isValidNode(vmHandle, gpuVa, node);
+        }
     }
 
     ze_result_t readRegistersImp(EuThread::ThreadId thread, uint32_t type, uint32_t start, uint32_t count, void *pRegisterValues) override {
@@ -287,6 +312,10 @@ struct MockDebugSession : public L0::DebugSessionImp {
     }
 
     ze_result_t readGpuMemory(uint64_t memoryHandle, char *output, size_t size, uint64_t gpuVa) override {
+        readGpuMemoryCallCount++;
+        if (forcereadGpuMemoryFailOnCount == readGpuMemoryCallCount) {
+            return ZE_RESULT_ERROR_UNKNOWN;
+        }
         if (gpuVa != 0 && gpuVa >= reinterpret_cast<uint64_t>(stateSaveAreaHeader.data()) &&
             ((gpuVa + size) <= reinterpret_cast<uint64_t>(stateSaveAreaHeader.data() + stateSaveAreaHeader.size()))) {
             [[maybe_unused]] auto offset = ptrDiff(gpuVa, reinterpret_cast<uint64_t>(stateSaveAreaHeader.data()));
@@ -301,6 +330,10 @@ struct MockDebugSession : public L0::DebugSessionImp {
         return readMemoryResult;
     }
     ze_result_t writeGpuMemory(uint64_t memoryHandle, const char *input, size_t size, uint64_t gpuVa) override {
+        writeGpuMemoryCallCount++;
+        if (forceWriteGpuMemoryFailOnCount == writeGpuMemoryCallCount) {
+            return ZE_RESULT_ERROR_UNKNOWN;
+        }
 
         if (gpuVa != 0 && gpuVa >= reinterpret_cast<uint64_t>(stateSaveAreaHeader.data()) &&
             ((gpuVa + size) <= reinterpret_cast<uint64_t>(stateSaveAreaHeader.data() + stateSaveAreaHeader.size()))) {
@@ -310,6 +343,15 @@ struct MockDebugSession : public L0::DebugSessionImp {
         return writeMemoryResult;
     }
 
+    ze_result_t readThreadScratchRegisters(EuThread::ThreadId thread, uint32_t start, uint32_t count, void *pRegisterValues) override {
+
+        if (readThreadScratchRegistersResult != ZE_RESULT_FORCE_UINT32) {
+            return readThreadScratchRegistersResult;
+        }
+        return DebugSessionImp::readThreadScratchRegisters(thread, start, count, pRegisterValues);
+    }
+
+    void updateStoppedThreadsAndCheckTriggerEvents(const AttentionEventFields &attention, uint32_t tileIndex, std::vector<EuThread::ThreadId> &threadsWithAttention) override {}
     void resumeAccidentallyStoppedThreads(const std::vector<EuThread::ThreadId> &threadIds) override {
         resumeAccidentallyStoppedCalled++;
         return DebugSessionImp::resumeAccidentallyStoppedThreads(threadIds);
@@ -486,8 +528,14 @@ struct MockDebugSession : public L0::DebugSessionImp {
         return L0::DebugSessionImp::checkStoppedThreadsAndGenerateEvents(threads, memoryHandle, deviceIndex);
     }
 
+    ze_result_t readFifo(uint64_t vmHandle, std::vector<EuThread::ThreadId> &threadsWithAttention) override {
+        readFifoCallCount++;
+        return L0::DebugSessionImp::readFifo(vmHandle, threadsWithAttention);
+    }
+
     NEO::TopologyMap topologyMap;
 
+    uint32_t readFifoCallCount = 0;
     uint32_t interruptImpCalled = 0;
     uint32_t resumeImpCalled = 0;
     uint32_t resumeAccidentallyStoppedCalled = 0;
@@ -507,12 +555,20 @@ struct MockDebugSession : public L0::DebugSessionImp {
     ze_result_t readMemoryResult = ZE_RESULT_SUCCESS;
     ze_result_t writeMemoryResult = ZE_RESULT_SUCCESS;
     ze_result_t writeRegistersResult = ZE_RESULT_FORCE_UINT32;
+    ze_result_t readThreadScratchRegistersResult = ZE_RESULT_FORCE_UINT32;
+    ze_result_t isValidNodeResult = ZE_RESULT_SUCCESS;
 
     uint32_t readStateSaveAreaHeaderCalled = 0;
     uint32_t readRegistersCallCount = 0;
     uint32_t readRegistersReg = 0;
     uint32_t writeRegistersCallCount = 0;
     uint32_t writeRegistersReg = 0;
+
+    uint32_t readGpuMemoryCallCount = 0;
+    uint32_t forcereadGpuMemoryFailOnCount = 0;
+
+    uint32_t writeGpuMemoryCallCount = 0;
+    uint32_t forceWriteGpuMemoryFailOnCount = 0;
 
     bool skipWriteResumeCommand = true;
     uint32_t writeResumeCommandCalled = 0;
@@ -531,7 +587,7 @@ struct MockDebugSession : public L0::DebugSessionImp {
     std::vector<uint8_t> readMemoryBuffer;
     uint64_t regs[16];
 
-    int returnTimeDiff = -1;
+    int64_t returnTimeDiff = -1;
     bool returnStateSaveAreaGpuVa = true;
     bool forceZeroStateSaveAreaSize = false;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -28,8 +28,6 @@ using CommandListAppendUsedPacketSignalEvent = Test<CommandListEventUsedPacketSi
 using CommandListAppendEventResetSecondaryBatchBuffer = Test<CommandListSecondaryBatchBufferFixture>;
 
 HWTEST_F(CommandListAppendEventReset, givenCmdlistWhenResetEventAppendedThenStoreDataImmIsGenerated) {
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
     using MI_STORE_DATA_IMM = typename FamilyType::MI_STORE_DATA_IMM;
 
     auto usedSpaceBefore = commandList->getCmdContainer().getCommandStream()->getUsed();
@@ -128,8 +126,6 @@ HWTEST_F(CommandListAppendEventReset, givenCmdlistWhenResetEventWithTimeStampIsA
 }
 
 HWTEST_F(CommandListAppendEventResetSecondaryBatchBuffer, whenResetEventIsAppendedAndNoSpaceIsAvailableThenNextCommandBufferIsCreated) {
-    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
-    using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
     using MI_BATCH_BUFFER_END = typename FamilyType::MI_BATCH_BUFFER_END;
 
     auto firstBatchBufferAllocation = commandList->getCmdContainer().getCommandStream()->getGraphicsAllocation();
@@ -217,7 +213,7 @@ HWTEST_F(CommandListAppendEventReset, givenImmediateCmdlistWhenAppendingEventRes
 HWTEST_F(CommandListAppendEventReset, WhenIsCompletedClearedThenSetStateSignaledWhenSignalAgain) {
     event->reset();
     EXPECT_FALSE(event->isAlreadyCompleted());
-    event->hostSignal();
+    event->hostSignal(false);
     EXPECT_TRUE(event->isAlreadyCompleted());
 }
 
@@ -225,7 +221,7 @@ HWTEST_F(CommandListAppendEventReset, WhenIsCompletedDisabledThenDontSetStateSig
     auto result = commandList->appendEventReset(event->toHandle());
     ASSERT_EQ(ZE_RESULT_SUCCESS, result);
     EXPECT_FALSE(event->isAlreadyCompleted());
-    event->hostSignal();
+    event->hostSignal(false);
     EXPECT_FALSE(event->isAlreadyCompleted());
 }
 
@@ -234,7 +230,7 @@ HWTEST_F(CommandListAppendEventReset, givenRegularCommandListWhenHostCachingDisa
     ASSERT_EQ(ZE_RESULT_SUCCESS, result);
     EXPECT_FALSE(event->isAlreadyCompleted());
     event->reset();
-    event->hostSignal();
+    event->hostSignal(false);
     EXPECT_FALSE(event->isAlreadyCompleted());
 }
 
@@ -245,11 +241,11 @@ HWTEST_F(CommandListAppendEventReset, givenRegulatCommandListWhenHostCachingDisa
 
     EXPECT_FALSE(event->isAlreadyCompleted());
     event->reset();
-    event->hostSignal();
+    event->hostSignal(false);
     EXPECT_TRUE(event->isAlreadyCompleted());
 }
 
-HWTEST2_F(CommandListAppendEventReset, givenImmediateCmdlistWhenAppendingEventResetThenCommandsAreExecuted, IsAtLeastSkl) {
+HWTEST2_F(CommandListAppendEventReset, givenImmediateCmdlistWhenAppendingEventResetThenCommandsAreExecuted, MatchAny) {
     const ze_command_queue_desc_t desc = {};
     bool internalEngine = true;
 
@@ -266,8 +262,7 @@ HWTEST2_F(CommandListAppendEventReset, givenImmediateCmdlistWhenAppendingEventRe
     ASSERT_EQ(ZE_RESULT_SUCCESS, result);
 }
 
-HWTEST2_F(CommandListAppendUsedPacketSignalEvent, givenTimestampEventUsedInResetThenPipeControlAppendedCorrectly, IsAtLeastSkl) {
-    using GfxFamily = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
+HWTEST2_F(CommandListAppendUsedPacketSignalEvent, givenTimestampEventUsedInResetThenPipeControlAppendedCorrectly, MatchAny) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
     auto &commandContainer = commandList->getCmdContainer();
@@ -321,8 +316,7 @@ HWTEST2_F(CommandListAppendUsedPacketSignalEvent, givenTimestampEventUsedInReset
     ASSERT_EQ(1u, postSyncFound);
 }
 
-HWTEST2_F(CommandListAppendEventReset, givenEventWithHostScopeUsedInResetThenPipeControlWithDcFlushAppended, IsAtLeastSkl) {
-    using GfxFamily = typename NEO::GfxFamilyMapper<gfxCoreFamily>::GfxFamily;
+HWTEST2_F(CommandListAppendEventReset, givenEventWithHostScopeUsedInResetThenPipeControlWithDcFlushAppended, MatchAny) {
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using POST_SYNC_OPERATION = typename PIPE_CONTROL::POST_SYNC_OPERATION;
     auto &commandContainer = commandList->getCmdContainer();
@@ -477,6 +471,7 @@ HWTEST2_F(CommandListAppendUsedPacketSignalEvent,
         expectedSize));
 
     uint32_t miFlushCountFactor = 1;
+    waArgs.isWaRequired = false;
     if (MockEncodeMiFlushDW<FamilyType>::getWaSize(waArgs) > 0) {
         miFlushCountFactor = 2;
     }

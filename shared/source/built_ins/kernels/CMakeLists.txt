@@ -31,15 +31,6 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
   list(APPEND __ocloc__options__ "-D DEBUG")
 endif()
 
-function(get_bits_for_stateless core_type platform_it_lower)
-  # Force 32bits compiling on gen9lp for stateless builtins
-  if((${core_type} STREQUAL "GEN9") AND ((${platform_it_lower} STREQUAL "glk") OR (${platform_it_lower} STREQUAL "bxt")))
-    set(BITS "32" PARENT_SCOPE)
-  else()
-    set(BITS ${NEO_BITS} PARENT_SCOPE)
-  endif()
-endfunction()
-
 function(get_builtin_options core_type neo_arch mode_type)
   if("${neo_arch}" STREQUAL "x32")
     set(BUILTIN_OPTIONS "${BUILTIN_OPTIONS_STATELESS}" PARENT_SCOPE)
@@ -55,9 +46,12 @@ function(get_generated_builtins core_type mode_type)
     # Compile all builtin kernels as stateless for XeHpc
     set(generated_builtins "${GENERATED_BUILTINS};${GENERATED_BUILTINS_STATELESS}" PARENT_SCOPE)
     set(generated_builtins_images "${GENERATED_BUILTINS_IMAGES};${GENERATED_BUILTINS_IMAGES_STATELESS}" PARENT_SCOPE)
-  elseif(${mode_type} STREQUAL "stateless" OR ${mode_type} STREQUAL "stateless_heapless")
+  elseif(${mode_type} STREQUAL "stateless")
     set(generated_builtins "${GENERATED_BUILTINS_STATELESS}" PARENT_SCOPE)
     set(generated_builtins_images "${GENERATED_BUILTINS_IMAGES_STATELESS}" PARENT_SCOPE)
+  elseif(${mode_type} STREQUAL "stateless_heapless")
+    set(generated_builtins "${GENERATED_BUILTINS_STATELESS}" PARENT_SCOPE)
+    set(generated_builtins_images "${GENERATED_BUILTINS_IMAGES};${GENERATED_BUILTINS_IMAGES_STATELESS}" PARENT_SCOPE)
   else()
     set(generated_builtins "${GENERATED_BUILTINS}" PARENT_SCOPE)
     set(generated_builtins_images "${GENERATED_BUILTINS_IMAGES}" PARENT_SCOPE)
@@ -86,6 +80,18 @@ function(compile_builtin core_type platform_it builtin bits builtin_options mode
                      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                      DEPENDS ${builtin} ocloc copy_compiler_files
   )
+
+  set(stateful_address_mode "default")
+  if(${mode} STREQUAL "bindless")
+    set(stateful_address_mode "bindless")
+  elseif(${mode} STREQUAL "bindful")
+    set(stateful_address_mode "bindful")
+  elseif(${mode} STREQUAL "stateless")
+    set(stateful_address_mode "bindful")
+  endif()
+
+  set(OUTPUT_FILES_BINARIES_PREV)
+
   foreach(RELEASE ${${platform_it}_${core_type}_RELEASES})
     string(REPLACE "." "_" RELEASE_FILENAME ${RELEASE})
     set(OUTPUT_FILE_CPP
@@ -101,10 +107,13 @@ function(compile_builtin core_type platform_it builtin bits builtin_options mode
       get_filename_component(absolute_filepath_spv ${OUTPUT_FILE_SPV} ABSOLUTE)
       add_custom_command(
                          OUTPUT ${OUTPUT_FILES_BINARIES}
-                         COMMAND ${ocloc_cmd_prefix} -q -file ${absolute_filepath_spv} -spirv_input -device ${RELEASE} ${builtin_options} -${bits} -output ${mode}_${BASENAME}_${RELEASE_FILENAME} -output_no_suffix -out_dir ${OUTPUTDIR} ${INTERNAL_OPTIONS} -options "$<JOIN:${__ocloc__options__}, >"
+                         COMMAND ${ocloc_cmd_prefix} -q -file ${absolute_filepath_spv} -spirv_input -device ${RELEASE} ${builtin_options} -${bits} -stateful_address_mode ${stateful_address_mode} -output ${mode}_${BASENAME}_${RELEASE_FILENAME} -output_no_suffix -out_dir ${OUTPUTDIR} ${INTERNAL_OPTIONS} -options "$<JOIN:${__ocloc__options__}, >"
                          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                         DEPENDS ${OUTPUT_FILE_SPV} ocloc copy_compiler_files
+                         DEPENDS ${OUTPUT_FILE_SPV} ocloc copy_compiler_files ${OUTPUT_FILES_BINARIES_PREV}
       )
+      if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+        set(OUTPUT_FILES_BINARIES_PREV ${OUTPUT_FILES_BINARIES})
+      endif()
       add_custom_command(
                          OUTPUT ${OUTPUT_FILE_CPP}
                          COMMAND $<TARGET_FILE:cpp_generate_tool> --file ${BINARY_OUTPUT}.bin --output ${OUTPUT_FILE_CPP} --array ${mode}_${BASENAME} --device ${RELEASE_FILENAME}
@@ -124,14 +133,12 @@ function(compile_builtin core_type platform_it builtin bits builtin_options mode
         endif()
       endforeach()
       set(_file_prebuilt "${NEO_KERNELS_BIN_DIR}/built_ins/${NEO_ARCH}/${core_type_lower}/${mode}_${BASENAME}_${RELEASE_FILENAME}.cpp")
-      if(EXISTS ${_file_prebuilt})
-        add_custom_command(
-                           OUTPUT ${OUTPUT_FILE_CPP}
-                           COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUTDIR}
-                           COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_file_prebuilt} ${OUTPUTDIR}
-        )
-        list(APPEND BUILTINS_COMMANDS "${OUTPUT_FILE_CPP}")
-      endif()
+      add_custom_command(
+                         OUTPUT ${OUTPUT_FILE_CPP}
+                         COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUTDIR}
+                         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_file_prebuilt} ${OUTPUTDIR}
+      )
+      list(APPEND BUILTINS_COMMANDS "${OUTPUT_FILE_CPP}")
     endif()
   endforeach()
   set(BUILTINS_COMMANDS ${BUILTINS_COMMANDS} PARENT_SCOPE)
@@ -150,13 +157,17 @@ function(generate_cpp_spirv builtin)
   set(OUTPUT_FILE_CPP
       ${OUTPUTDIR}/${BASENAME}.cpp
   )
+
   if(NOT NEO_DISABLE_BUILTINS_COMPILATION)
     add_custom_command(
                        OUTPUT ${GENERATED_SPV_INPUT}
                        COMMAND ${ocloc_cmd_prefix} -q -spv_only -file ${absolute_filepath} -out_dir ${OUTPUTDIR} -output_no_suffix -options "-cl-kernel-arg-info"
                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                       DEPENDS ${INPUT_FILENAME} ocloc copy_compiler_files
+                       DEPENDS ${INPUT_FILENAME} ocloc copy_compiler_files ${OUTPUT_FILES_SPIRV_PREV}
     )
+    if(NEO_SERIALIZED_BUILTINS_COMPILATION)
+      set(OUTPUT_FILES_SPIRV_PREV ${GENERATED_SPV_INPUT})
+    endif()
     add_custom_command(
                        OUTPUT ${OUTPUT_FILE_CPP}
                        COMMAND $<TARGET_FILE:cpp_generate_tool> --file ${GENERATED_SPV_INPUT} --output ${OUTPUT_FILE_CPP} --array ${BASENAME}
@@ -191,7 +202,6 @@ macro(macro_for_each_platform)
   CORE_CONTAINS_PLATFORM("SUPPORTED_AUX_TRANSLATION" ${CORE_TYPE} ${PLATFORM_IT} AUX_TRANSLATION_SUPPORT)
   CORE_CONTAINS_PLATFORM("SUPPORTED_HEAPLESS" ${CORE_TYPE} ${PLATFORM_IT} HEAPLESS_SUPPORT)
 
-  get_bits_for_stateless(${CORE_TYPE} ${PLATFORM_IT})
   set(target_name builtins_${PLATFORM_IT_LOWER})
   add_custom_target(${target_name})
   add_dependencies(builtins ${target_name})
@@ -252,6 +262,9 @@ macro(macro_for_each_core_type)
 endmacro()
 
 file(MAKE_DIRECTORY "${BUILTINS_OUTDIR_WITH_ARCH}/spirv")
+
+set(OUTPUT_FILES_SPIRV_PREV)
+
 foreach(builtin ${GENERATED_BUILTINS})
   generate_cpp_spirv(${builtin})
 endforeach()

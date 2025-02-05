@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -103,7 +103,8 @@ ze_result_t zeKernelSuggestGroupSize(
 ze_result_t zeKernelSuggestMaxCooperativeGroupCount(
     ze_kernel_handle_t hKernel,
     uint32_t *totalGroupCount) {
-    return L0::Kernel::fromHandle(hKernel)->suggestMaxCooperativeGroupCount(totalGroupCount, NEO::EngineGroupType::compute, false);
+    *totalGroupCount = L0::Kernel::fromHandle(hKernel)->suggestMaxCooperativeGroupCount(NEO::EngineGroupType::compute, false);
+    return ZE_RESULT_SUCCESS;
 }
 
 ze_result_t zeKernelSetArgumentValue(
@@ -139,6 +140,13 @@ ze_result_t zeKernelGetProperties(
     return L0::Kernel::fromHandle(hKernel)->getProperties(pKernelProperties);
 }
 
+ze_result_t zeKernelGetBinaryExp(
+    ze_kernel_handle_t hKernel,
+    size_t *pSize,
+    uint8_t *pKernelBinary) {
+    return L0::Kernel::fromHandle(hKernel)->getKernelProgramBinary(pSize, reinterpret_cast<char *>(pKernelBinary));
+}
+
 ze_result_t zeCommandListAppendLaunchKernel(
     ze_command_list_handle_t hCommandList,
     ze_kernel_handle_t kernelHandle,
@@ -162,7 +170,11 @@ ze_result_t zeCommandListAppendLaunchCooperativeKernel(
     ze_event_handle_t hSignalEvent,
     uint32_t numWaitEvents,
     ze_event_handle_t *phWaitEvents) {
-    return L0::CommandList::fromHandle(hCommandList)->appendLaunchCooperativeKernel(kernelHandle, *launchKernelArgs, hSignalEvent, numWaitEvents, phWaitEvents, false);
+
+    L0::CmdListKernelLaunchParams launchParams = {};
+    launchParams.isCooperative = true;
+
+    return L0::CommandList::fromHandle(hCommandList)->appendLaunchKernel(kernelHandle, *launchKernelArgs, hSignalEvent, numWaitEvents, phWaitEvents, launchParams, false);
 }
 
 ze_result_t zeCommandListAppendLaunchKernelIndirect(
@@ -432,6 +444,16 @@ ZE_APIEXPORT ze_result_t ZE_APICALL zeKernelGetProperties(
     return L0::zeKernelGetProperties(
         hKernel,
         pKernelProperties);
+}
+
+ZE_APIEXPORT ze_result_t ZE_APICALL zeKernelGetBinaryExp(
+    ze_kernel_handle_t hKernel,
+    size_t *pSize,
+    uint8_t *pKernelBinary) {
+    return L0::zeKernelGetBinaryExp(
+        hKernel,
+        pSize,
+        pKernelBinary);
 }
 
 ZE_APIEXPORT ze_result_t ZE_APICALL zeKernelGetName(

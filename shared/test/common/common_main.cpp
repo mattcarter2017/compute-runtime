@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Intel Corporation
+ * Copyright (C) 2023-2025 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -9,14 +9,17 @@
 #include "shared/source/gmm_helper/gmm_helper.h"
 #include "shared/source/gmm_helper/gmm_interface.h"
 #include "shared/source/helpers/api_specific_config.h"
+#include "shared/source/utilities/cpu_info.h"
 #include "shared/source/utilities/debug_settings_reader.h"
 #include "shared/source/utilities/logger.h"
 #include "shared/test/common/helpers/custom_event_listener.h"
 #include "shared/test/common/helpers/default_hw_info.inl"
 #include "shared/test/common/helpers/kernel_binary_helper.h"
 #include "shared/test/common/helpers/memory_leak_listener.h"
+#include "shared/test/common/helpers/mock_sip_listener.h"
 #include "shared/test/common/helpers/test_files.h"
 #include "shared/test/common/helpers/ult_hw_config.inl"
+#include "shared/test/common/helpers/virtual_file_system_listener.h"
 #include "shared/test/common/libult/global_environment.h"
 #include "shared/test/common/libult/signal_utils.h"
 #include "shared/test/common/mocks/mock_gmm_client_context.h"
@@ -32,6 +35,9 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#if !defined(__linux__)
+#include <regex>
+#endif
 
 namespace NEO {
 namespace PagaFaultManagerTestConfig {
@@ -72,7 +78,6 @@ extern PRODUCT_FAMILY productFamily;
 extern GFXCORE_FAMILY renderCoreFamily;
 
 void applyWorkarounds();
-bool isPlatformSupported(const HardwareInfo &hwInfoForTests);
 void setupTestFiles(std::string testBinaryFiles, int32_t revId);
 std::string getBaseExecutionDir();
 void addUltListener(::testing::TestEventListeners &listener);
@@ -94,8 +99,10 @@ std::string getRunPath(char *argv0) {
 #else
         cwd = _getcwd(nullptr, 0);
 #endif
-        res = cwd;
-        free(cwd);
+        if (cwd) {
+            res = cwd;
+            free(cwd);
+        }
     }
 
     return res;
@@ -135,6 +142,13 @@ void applyCommonWorkarounds() {
 
 bool enableAlarm = true;
 int main(int argc, char **argv) {
+#if !defined(__linux__)
+    std::regex dummyRegex{"dummyRegex"};   // these dummy objects are neededed to prevent false-positive
+    std::wstringstream dummyWstringstream; // leaks when using instances of std::regex and std::wstringstream in tests
+    dummyWstringstream << std::setw(4)     // in Windows Release builds
+                       << std::setfill(L'0')
+                       << std::hex << 5;
+#endif
     int retVal = 0;
     bool useDefaultListener = false;
     bool enableAbrt = true;
@@ -144,6 +158,8 @@ int main(int argc, char **argv) {
     std::string dumpTestStatsFileName = "";
     applyWorkarounds();
     applyCommonWorkarounds();
+    CpuInfo::cpuidexFunc = [](int *, int, int) -> void {};
+    CpuInfo::cpuidFunc = [](int[4], int) -> void {};
 
 #if defined(__linux__)
     if (getenv("IGDRCL_TEST_SELF_EXEC") == nullptr) {
@@ -171,6 +187,7 @@ int main(int argc, char **argv) {
     uint32_t sliceCount = 0;
     uint32_t subSlicePerSliceCount = 0;
     int32_t revId = -1;
+    int32_t devId = -1;
     int dieRecovery = 0;
     bool productOptionSelected = false;
 
@@ -195,7 +212,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp("--disable_pagefaulting_tests", argv[i])) { // disable tests which raise page fault signal during execution
             NEO::PagaFaultManagerTestConfig::disabled = true;
         } else if (!strcmp("--tbx", argv[i])) {
-            if (testMode == TestMode::aubTests) {
+            if (isAubTestMode(testMode)) {
                 testMode = TestMode::aubTestsWithTbx;
             }
             initialHardwareTag = 0;
@@ -203,6 +220,11 @@ int main(int argc, char **argv) {
             ++i;
             if (i < argc) {
                 revId = atoi(argv[i]);
+            }
+        } else if (!strcmp("--dev_id", argv[i])) {
+            ++i;
+            if (i < argc) {
+                devId = static_cast<int32_t>(strtol(argv[i], nullptr, 16));
             }
         } else if (!strcmp("--product", argv[i])) {
             ++i;
@@ -261,21 +283,26 @@ int main(int argc, char **argv) {
             }
         } else if (!strcmp("--generate_random_inputs", argv[i])) {
             generateRandomInput = true;
-        } else if (!strcmp("--read-config", argv[i]) && (testMode == TestMode::aubTests || testMode == TestMode::aubTestsWithTbx)) {
+        } else if (!strcmp("--read-config", argv[i]) && isAubTestMode(testMode)) {
             if (debugManager.registryReadAvailable()) {
                 debugManager.setReaderImpl(SettingsReader::create(ApiSpecificConfig::getRegistryPath()));
                 debugManager.injectSettingsFromReader();
             }
-        } else if (!strcmp("--dump_buffer_format", argv[i]) && testMode == TestMode::aubTests) {
+        } else if (!strcmp("--dump_buffer_format", argv[i]) && isAubTestMode(testMode)) {
             ++i;
             std::string dumpBufferFormat(argv[i]);
             std::transform(dumpBufferFormat.begin(), dumpBufferFormat.end(), dumpBufferFormat.begin(), ::toupper);
             debugManager.flags.AUBDumpBufferFormat.set(dumpBufferFormat);
-        } else if (!strcmp("--dump_image_format", argv[i]) && testMode == TestMode::aubTests) {
+        } else if (!strcmp("--dump_image_format", argv[i]) && isAubTestMode(testMode)) {
             ++i;
             std::string dumpImageFormat(argv[i]);
             std::transform(dumpImageFormat.begin(), dumpImageFormat.end(), dumpImageFormat.begin(), ::toupper);
             debugManager.flags.AUBDumpImageFormat.set(dumpImageFormat);
+        } else if (!strcmp("--null_aubstream", argv[i])) {
+            if (isAubTestMode(testMode)) {
+                testMode = TestMode::aubTestsWithoutOutputFiles;
+            }
+            initialHardwareTag = 0;
         }
     }
 
@@ -293,6 +320,7 @@ int main(int argc, char **argv) {
     bool gmmInitialized = false;
     bool sipInitialized = false;
 
+    adjustCsrType(testMode);
     for (auto &selectedProduct : selectedTestProducts) {
         hwInfoForTests = *hardwareInfoTable[selectedProduct];
 
@@ -301,6 +329,7 @@ int main(int argc, char **argv) {
         PLATFORM &platform = hwInfoForTests.platform;
 
         auto testRevId = revId;
+        auto testDevId = devId;
 
         if (testRevId != -1) {
             platform.usRevId = testRevId;
@@ -308,13 +337,11 @@ int main(int argc, char **argv) {
             testRevId = platform.usRevId;
         }
 
-        adjustHwInfoForTests(hwInfoForTests, euPerSubSlice, sliceCount, subSlicePerSliceCount, dieRecovery);
-        // Platforms with uninitialized factory are not supported
-        if (!isPlatformSupported(hwInfoForTests)) {
-            std::cout << "unsupported product family has been set: " << NEO::hardwarePrefix[::productFamily] << std::endl;
-            std::cout << "skipping tests" << std::endl;
-            return 0;
+        if (testDevId != -1) {
+            platform.usDeviceID = testDevId;
         }
+
+        adjustHwInfoForTests(hwInfoForTests, euPerSubSlice, sliceCount, subSlicePerSliceCount, dieRecovery);
 
         binaryNameSuffix = hardwarePrefix[hwInfoForTests.platform.eProductFamily];
 
@@ -361,7 +388,9 @@ int main(int argc, char **argv) {
                 listeners.Append(customEventListener);
             }
 
+            listeners.Append(new MockSipListener);
             listeners.Append(new MemoryLeakListener);
+            listeners.Append(new NEO::VirtualFileSystemListener);
 
             addUltListener(listeners);
             ultListenersInitialized = true;
@@ -380,7 +409,7 @@ int main(int argc, char **argv) {
         } else {
             builtInsFileName = KernelBinaryHelper::BUILT_INS;
         }
-        retrieveBinaryKernelFilename(fclDebugVars.fileName, builtInsFileName + "_", ".bc");
+        retrieveBinaryKernelFilename(fclDebugVars.fileName, builtInsFileName + "_", ".spv");
         retrieveBinaryKernelFilename(igcDebugVars.fileName, builtInsFileName + "_", ".bin");
 
         gEnvironment->setMockFileNames(fclDebugVars.fileName, igcDebugVars.fileName);
@@ -409,6 +438,9 @@ int main(int argc, char **argv) {
             MockSipData::mockSipKernel.reset(new MockSipKernel());
             if (testMode == TestMode::aubTests || testMode == TestMode::aubTestsWithTbx) {
                 MockSipData::useMockSip = false;
+                debugManager.flags.OverrideCsrAllocationSize.set(1);
+            } else {
+                MockSipData::useMockSip = true;
             }
             sipInitialized = true;
         }

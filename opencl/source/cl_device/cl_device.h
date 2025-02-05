@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (C) 2020-2024 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -101,6 +101,11 @@ class ClDevice : public BaseObject<_cl_device_id> {
                                const void *&src,
                                size_t &srcSize,
                                size_t &retSize);
+    bool getDeviceInfoExtra(cl_device_info paramName,
+                            ClDeviceInfoParam &param,
+                            const void *&src,
+                            size_t &srcSize,
+                            size_t &retSize);
 
     // This helper template is meant to simplify getDeviceInfo
     template <cl_device_info param>
@@ -140,7 +145,9 @@ class ClDevice : public BaseObject<_cl_device_id> {
     void initializeCaps();
     void initializeExtensionsWithVersion();
     void initializeOpenclCAllVersions();
+    void initializeILsWithVersion();
     void initializeOsSpecificCaps();
+    void initializeMaxPoolCount();
     void initGTPinHelper();
     void setupFp64Flags();
     const std::string getClDeviceName() const;
